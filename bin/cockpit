@@ -1,0 +1,426 @@
+#!/usr/bin/env bash
+# dsh-cockpit/bin/cockpit — 启动 / 管理 dsh-cockpit 驾驶舱(非阻塞)。
+#
+#   cockpit              启动:未运行 → build(如需要)→ 后台拉起 → 就绪后打开 UI;
+#                        已运行 → 直接打开 UI
+#   cockpit start        同上(显式子命令)
+#   cockpit build        只 build,不启动
+#   cockpit stop         停止 cockpit server(校验 3090 端口归属后才 kill)
+#   cockpit restart      重启:stop → 等端口释放 → start(避免竞态)
+#   cockpit bootstrap    初始化依赖(pnpm install,幂等;--force 强制重装)
+#   cockpit install      安装 cockpit 命令到 ~/.local/bin(相对符号链接,幂等)
+#   cockpit uninstall    卸载 ~/.local/bin/cockpit
+#   cockpit status       查看运行状态(PID / 端口 / 数据目录)
+#
+#   --foreground  前台运行(调试用,阻塞)
+#   --no-open     启动/检测时不自动打开 UI
+#   --dev         开发模式:pnpm -r --parallel dev(tsx watch + vite)
+#   -b, --build   强制重新 build 后再启动
+#
+# 环境变量:
+#   DSH_COCKPIT_HOME  数据目录(默认 ~/.dsh-cockpit;日志写 cockpit.log)
+#   COCKPIT_BIN_DIR   安装目录(默认 ~/.local/bin)
+#   COCKPIT_PORT      服务端口(默认 3090)
+#
+# 安装:仓库根先 ./bin/cockpit bootstrap,再 ./bin/cockpit install
+#      (装到 ~/.local/bin/cockpit,可重复执行 / 卸载)
+set -euo pipefail
+
+# Resolve symlinks so the repo path is correct when invoked via ~/.local/bin
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+REPO="$(cd "$(dirname "$SOURCE")/.." && pwd)"
+cd "$REPO"
+
+COCKPIT_HOME="${DSH_COCKPIT_HOME:-$HOME/.dsh-cockpit}"
+BIN_DIR="${COCKPIT_BIN_DIR:-$HOME/.local/bin}"
+PORT="${COCKPIT_PORT:-3090}"
+LINK="$BIN_DIR/cockpit"
+LOG="$COCKPIT_HOME/cockpit.log"
+URL="http://127.0.0.1:$PORT"
+
+ACTION=""            # start|build|stop|restart|bootstrap|install|uninstall|status
+FOREGROUND=0
+NO_OPEN=0
+DEV=0
+BUILD=0
+FORCE=0
+
+usage() {
+  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  exit "${1:-0}"
+}
+
+# ---------- 基础工具检查 ----------
+version_lt() {
+  local a="${1%%-*}" b="${2%%-*}" i
+  local -a x y
+  IFS=. read -r -a x <<< "$a"
+  IFS=. read -r -a y <<< "$b"
+  for i in 0 1 2; do
+    local xi="${x[i]:-0}" yi="${y[i]:-0}"
+    xi="${xi//[!0-9]/}"; yi="${yi//[!0-9]/}"
+    (( 10#${xi:-0} < 10#${yi:-0} )) && return 0
+    (( 10#${xi:-0} > 10#${yi:-0} )) && return 1
+  done
+  return 1
+}
+
+check_environment() {
+  local need=0
+  if ! command -v node >/dev/null 2>&1; then
+    echo "error: 未找到 node,需要 Node.js >= 22(https://nodejs.org 或 nvm install && nvm use)" >&2
+    need=1
+  elif version_lt "$(node -v | sed 's/^v//')" "22.0.0"; then
+    echo "error: node 版本过低: $(node -v)(需要 >= 22)" >&2
+    need=1
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "error: 未找到 pnpm(本仓库用 pnpm 管理依赖)" >&2
+    echo "  安装: npm install -g pnpm  或  corepack enable && corepack prepare pnpm@latest --activate" >&2
+    need=1
+  fi
+  if [[ $need -eq 1 ]]; then
+    exit 1
+  fi
+}
+
+# ---------- bootstrap / install ----------
+do_bootstrap() {
+  check_environment
+  mkdir -p "$COCKPIT_HOME"
+  if [[ $FORCE -eq 1 ]]; then
+    echo "bootstrap: 强制重新安装依赖(pnpm install --force)..."
+    pnpm install --force
+  else
+    echo "bootstrap: 安装依赖(已装则跳过)..."
+    pnpm install
+  fi
+  echo "bootstrap 完成。下一步: ./bin/cockpit install"
+}
+
+# 从目录 $1 到路径 $2(均须绝对路径)的相对路径,纯 bash 实现
+relpath() {
+  local from="$1" to="$2"
+  local -a f t up
+  local i j out=""
+  IFS='/' read -r -a f <<< "${from#/}"
+  IFS='/' read -r -a t <<< "${to#/}"
+  i=0
+  while [ "$i" -lt "${#f[@]}" ] && [ "$i" -lt "${#t[@]}" ] && [ "${f[$i]}" = "${t[$i]}" ]; do
+    i=$((i + 1))
+  done
+  for ((j = i; j < ${#f[@]}; j++)); do up+=(".."); done
+  if [ "${#up[@]}" -gt 0 ]; then
+    out="$(IFS='/'; printf '%s' "${up[*]}")"
+  fi
+  for ((j = i; j < ${#t[@]}; j++)); do
+    out="${out:+$out/}${t[$j]}"
+  done
+  printf '%s' "${out:-.}"
+}
+
+do_install() {
+  mkdir -p "$BIN_DIR"
+  # 物理解析两侧路径再算相对路径:macOS 上 /var → /private/var 这类符号链接
+  # 前缀会让纯字符串 relpath 算错(安装到 /var/folders/... 时会坏)。
+  local bin_phys target_phys
+  bin_phys="$(cd "$BIN_DIR" && pwd -P)"
+  target_phys="$(cd "$REPO/bin" && pwd -P)"
+  REL="$(relpath "$bin_phys" "$target_phys/cockpit")"
+  ln -sfn "$REL" "$LINK"
+  echo "OK  已安装: $LINK -> $REL"
+  echo "    (相对符号链接,仓库整体移动后仍可用;重复执行可覆盖更新)"
+  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
+    echo
+    echo "WARN $BIN_DIR 不在当前 PATH,按你的 shell 配置一行(重开终端生效):"
+    echo "  bash:     echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
+    echo "  zsh:      echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+  fi
+  echo
+  echo "完成。新终端里执行 cockpit 即可。"
+}
+
+do_uninstall() {
+  if [ -L "$LINK" ] || [ -e "$LINK" ]; then
+    rm -f "$LINK"
+    echo "OK  已卸载: $LINK"
+  else
+    echo "未安装($LINK 不存在),无需处理"
+  fi
+}
+
+# ---------- build ----------
+# 需要 build 当且仅当:任一包产物缺失,或任一 src 比 server dist 产物新。
+needs_build() {
+  [[ -f packages/cockpit-server/dist/main.js ]] || return 0
+  [[ -f packages/cockpit-web/dist/index.html ]] || return 0
+  [[ -f packages/shared/dist/index.js ]] || return 0
+  find packages/cockpit-server/src packages/cockpit-web/src packages/shared/src \
+    -type f -newer packages/cockpit-server/dist/main.js -print -quit 2>/dev/null | grep -q .
+}
+
+do_build() {
+  check_environment
+  echo "build: pnpm -r build ..."
+  pnpm -r build
+  echo "build 完成。"
+}
+
+# ---------- server 进程 / 端口 ----------
+server_pids() {
+  command -v lsof >/dev/null 2>&1 || return 3
+  lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u
+}
+
+is_server_up() {
+  [[ -n "$(server_pids 2>/dev/null || true)" ]]
+}
+
+# 只接受 cockpit server 的 argv 形态:
+#   prod:  node packages/cockpit-server/dist/main.js
+#   dev:   tsx watch src/main.ts(父进程)
+#          node --require ...tsx/... src/main.ts(tsx 拉起的实际监听进程)
+is_cockpit_pid() {
+  local pid="$1" command
+  command="$(ps -o command= -p "$pid" 2>/dev/null)" || return 1
+  case "$command" in
+    *"cockpit-server/dist/main.js"*) return 0 ;;
+    *"cockpit-server/src/main.ts"*) return 0 ;;
+    *"dsh-cockpit"*"src/main.ts"*) return 0 ;;
+    *"tsx watch"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# 收集一个 listener 需要连带终止的 dev 链路进程:
+#   prod: node packages/cockpit-server/dist/main.js(无父链)
+#   dev:  pnpm -r --parallel dev → tsx watch → node src/main.ts → 连坐 vite dev server
+# 沿父链向上追(最多 3 层),只认已知 dev 形态的 argv,否则停止(fail-closed)。
+collect_stop_set() {
+  local pid="$1" parent parent_cmd child children ccmd depth=0
+  echo "$pid"
+  while [[ $depth -lt 3 ]]; do
+    parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
+    [[ -n "$parent" ]] || break
+    parent_cmd="$(ps -o command= -p "$parent" 2>/dev/null || true)"
+    case "$parent_cmd" in
+      *"tsx"*"watch"*|*"parallel dev"*)
+        echo "$parent"
+        # pnpm 常同时拉起 vite dev(5173);不监听 3090,但同属 dev 环境,一起收
+        children="$(pgrep -P "$parent" 2>/dev/null || true)"
+        for child in $children; do
+          [[ "$child" == "$pid" || "$child" == "$parent" ]] && continue
+          ccmd="$(ps -o command= -p "$child" 2>/dev/null || true)"
+          case "$ccmd" in
+            *"dsh-cockpit"*"vite"*|*"tsx"*"watch"*) echo "$child" ;;
+          esac
+        done
+        pid="$parent"
+        depth=$((depth + 1))
+        ;;
+      *) break ;;
+    esac
+  done
+}
+
+# 停止占用端口的 cockpit server。返回码:
+#   0 已停止;1 无监听;2 监听者非 cockpit 拒绝杀;3 缺 lsof;4 TERM/KILL 后仍未退出
+stop_server_on_port() {
+  local pids pid stop_set still="" attempts="${1:-40}"
+  command -v lsof >/dev/null 2>&1 || return 3
+  pids="$(server_pids || true)"
+  [[ -n "$pids" ]] || return 1
+
+  # 先全部校验归属,再发信号(fail-closed)
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    is_cockpit_pid "$pid" || return 2
+  done <<< "$pids"
+
+  # 收集整条可证明的 dev/prod 进程集合,先 TERM 外层再 TERM listener
+  stop_set="$(while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    collect_stop_set "$pid"
+  done <<< "$pids" | sort -u)"
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    kill -TERM "$pid" 2>/dev/null || true
+  done <<< "$stop_set"
+
+  for _ in $(seq 1 "$attempts"); do
+    still="$(server_pids || true)"
+    [[ -z "$still" ]] && return 0
+    sleep 0.25
+  done
+
+  # 强制前重新校验归属:等待期间端口可能被别的进程抢占
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    is_cockpit_pid "$pid" || return 2
+    kill -KILL "$pid" 2>/dev/null || true
+  done <<< "$still"
+  sleep 0.1
+  [[ -z "$(server_pids || true)" ]] || return 4
+  return 0
+}
+
+do_stop() {
+  local rc=0
+  if stop_server_on_port; then
+    echo "cockpit stopped (port $PORT)"
+  else
+    rc=$?
+    case "$rc" in
+      1) echo "no cockpit server found on port $PORT" ;;
+      2) echo "error: port $PORT listener is not provably cockpit; refusing to kill" >&2 ;;
+      3) echo "error: lsof is required to stop cockpit safely" >&2 ;;
+      4) echo "error: cockpit server on port $PORT did not stop" >&2 ;;
+      *) echo "error: failed to stop cockpit server on port $PORT(rc=$rc)" >&2 ;;
+    esac
+  fi
+  [[ $rc -eq 0 || $rc -eq 1 ]]
+}
+
+# ---------- start ----------
+wait_for_port() {
+  local tries="$1"
+  for _ in $(seq 1 "$tries"); do
+    if is_server_up; then return 0; fi
+    sleep 0.5
+  done
+  return 1
+}
+
+open_ui() {
+  [[ $NO_OPEN -eq 1 ]] && return 0
+  if command -v open >/dev/null 2>&1; then
+    open "$URL"
+    echo "UI: 已打开浏览器 $URL"
+  elif command -v xdg-open >/dev/null 2>&1; then
+    xdg-open "$URL" >/dev/null 2>&1 || true
+    echo "UI: 已打开浏览器 $URL"
+  else
+    echo "cockpit started — open $URL"
+  fi
+}
+
+start_server() {
+  local pid
+  mkdir -p "$COCKPIT_HOME"
+  if [[ $FOREGROUND -eq 1 ]]; then
+    node packages/cockpit-server/dist/main.js &
+    pid=$!
+    trap 'kill -TERM "${pid:-}" 2>/dev/null || true' INT TERM
+    if ! wait_for_port 60; then
+      echo "warn: server did not answer on port $PORT within 30s" >&2
+    fi
+    open_ui
+    echo "cockpit 已启动: $URL"
+    wait "$pid" || echo "cockpit stopped"
+  else
+    nohup node packages/cockpit-server/dist/main.js >>"$LOG" 2>&1 &
+    pid=$!
+    disown 2>/dev/null || true
+    if wait_for_port 60; then
+      open_ui
+      echo "cockpit 已启动: $URL (PID $pid,日志 $LOG)"
+    elif kill -0 "$pid" 2>/dev/null; then
+      echo "warn: server did not answer on port $PORT within 30s — see $LOG" >&2
+    else
+      echo "error: server exited early — see $LOG" >&2
+    fi
+  fi
+}
+
+do_start() {
+  # 幂等:已在运行则只打开 UI(或提示)
+  if is_server_up; then
+    if [[ $NO_OPEN -eq 1 ]]; then
+      echo "cockpit 已在运行: $URL"
+    else
+      open_ui
+      echo "cockpit 已在运行,已为你打开 UI: $URL"
+    fi
+    exit 0
+  fi
+
+  check_environment
+  if [[ $BUILD -eq 1 ]] || needs_build; then
+    do_build
+  fi
+  start_server
+}
+
+do_restart() {
+  do_stop || return 1
+  if is_server_up; then
+    echo "error: port $PORT still busy after stopping cockpit" >&2
+    return 1
+  fi
+  echo "port $PORT released"
+  do_start
+}
+
+do_status() {
+  local pids
+  pids="$(server_pids 2>/dev/null || true)"
+  if [[ -n "$pids" ]]; then
+    echo "cockpit 运行中:"
+    echo "  URL:      $URL"
+    echo "  PID:      $(echo "$pids" | tr '\n' ' ')"
+    echo "  数据目录: $COCKPIT_HOME"
+    echo "  日志:     $LOG"
+  else
+    echo "cockpit 未运行(端口 $PORT 无监听)"
+    echo "  数据目录: $COCKPIT_HOME"
+  fi
+}
+
+# ---------- 参数解析 ----------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    start) ACTION=start; shift ;;
+    build) ACTION=build; shift ;;
+    stop) ACTION=stop; shift ;;
+    restart) ACTION=restart; shift ;;
+    bootstrap) ACTION=bootstrap; shift ;;
+    install) ACTION=install; shift ;;
+    uninstall) ACTION=uninstall; shift ;;
+    status) ACTION=status; shift ;;
+    --foreground) FOREGROUND=1; shift ;;
+    --no-open) NO_OPEN=1; shift ;;
+    --dev) DEV=1; shift ;;
+    -b|--build) BUILD=1; shift ;;
+    --force) FORCE=1; shift ;;
+    -h|--help) usage ;;
+    *)
+      echo "error: 未知参数 $1" >&2
+      usage 2
+      ;;
+  esac
+done
+ACTION="${ACTION:-start}"
+
+case "$ACTION" in
+  bootstrap) do_bootstrap ;;
+  install) do_install ;;
+  uninstall) do_uninstall ;;
+  build) do_build ;;
+  stop) do_stop ;;
+  restart) do_restart ;;
+  status) do_status ;;
+  start)
+    if [[ $DEV -eq 1 ]]; then
+      check_environment
+      echo "dev: pnpm -r --parallel dev(tsx watch + vite,Ctrl+C 退出)..."
+      exec pnpm -r --parallel dev
+    fi
+    do_start
+    ;;
+esac

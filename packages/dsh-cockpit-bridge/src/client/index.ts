@@ -23,6 +23,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 export const inject = ['sessions']
 
 const COCKPIT_BASE = 'http://127.0.0.1:3090'
+const PLUGIN_VERSION = '0.1.0'
 
 /** Fire-and-forget report; failures must never disturb the DSH page. */
 async function reportOpen(ctx: ClientContext, sessionId: string): Promise<void> {
@@ -50,6 +51,30 @@ async function reportOpen(ctx: ClientContext, sessionId: string): Promise<void> 
   }
 }
 
+/** Startup hello: stamps bridgeSeenAt in the cockpit so the connection layer
+ * is visible in the top bar; 401 → bootstrap first (issues the cookie). */
+async function reportHello(): Promise<void> {
+  try {
+    const response = await fetch(`${COCKPIT_BASE}/api/bridge/hello`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ version: PLUGIN_VERSION }),
+    })
+    if (response.status === 401) {
+      await fetch(`${COCKPIT_BASE}/api/bootstrap`, { credentials: 'include' })
+      await fetch(`${COCKPIT_BASE}/api/bridge/hello`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ version: PLUGIN_VERSION }),
+      })
+    }
+  } catch {
+    // Cockpit not running: stay quiet; a later session-open retries the flow.
+  }
+}
+
 /** Debounce consecutive selection changes (rapid left/right clicks). */
 function schedule(callback: () => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -64,8 +89,10 @@ export function apply(ctx: ClientContext): void {
 
   // Subscribe to the official sessions list store; `current` flips exactly
   // when the user opens a session (SessionManager.select persists it to
-  // dsh.sessions.current).
+  // dsh.sessions.current). A startup hello (one per page load) stamps the
+  // bridge connection state in the cockpit.
   ctx.effect(() => {
+    void reportHello()
     const flush = schedule(() => {
       const current = ctx.sessions.list.getSnapshot().current
       if (current === undefined || current === last) return
@@ -73,5 +100,5 @@ export function apply(ctx: ClientContext): void {
       void reportOpen(ctx, current)
     })
     return ctx.sessions.list.subscribe(flush)
-  }, 'cockpit-bridge: current session watch')
+  }, 'cockpit-bridge: hello + current session watch')
 }

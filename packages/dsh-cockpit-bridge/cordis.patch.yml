@@ -1,0 +1,14 @@
+# dsh-cockpit-bridge bundle patch
+#
+# Mounts the Web client bridge as a profile bundle row: each device's DSH web
+# client then loads `./client` (via the package's `dsh.client` declaration),
+# subscribes to the official sessions list store and reports session-open
+# selections to the local dsh-cockpit.
+#
+# This is the `dsh.bundle.patch` layer declared in package.json; installing
+# through the official CLI (`dsh plugin --profile web add ...`) or through the
+# ohmydsh manifest (source: remote + this spec) appends `dsh-cockpit-bridge`
+# to the bundle stack automatically.
+- insert:
+    - id: dsh-cockpit-bridge
+      name: dsh-cockpit-bridge

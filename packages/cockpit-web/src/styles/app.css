@@ -40,6 +40,12 @@ body {
 .topbar-device:hover { background: #22262b; color: var(--fg); }
 .topbar-device.active { background: #23282e; color: var(--fg); border-color: var(--border); }
 .topbar-device-name { white-space: nowrap; flex: none; }
+/* bridge mark: the device's DSH web client runs dsh-cockpit-bridge and has
+   contacted the cockpit (startup hello) */
+.bridge-mark {
+  color: var(--accent); font-size: 12px; line-height: 1;
+  flex: none; cursor: help;
+}
 /* session-row status chips: official StateDot icons (chase matrix / amber /
    green) + count; no text labels on the tab, status name lives in the title */
 .topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; flex: none; }

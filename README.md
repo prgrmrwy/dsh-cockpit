@@ -55,13 +55,19 @@
 ## 运行
 
 ```bash
-# 依赖
+# 方式一:bin 命令(推荐,可装到 ~/.local/bin)
+./bin/cockpit bootstrap      # 初始化依赖(幂等)
+./bin/cockpit install        # 安装 cockpit 命令到 ~/.local/bin(可选)
+cockpit start                # 构建(如需要)+ 后台启动 + 打开 UI
+cockpit restart              # 重启
+cockpit stop                 # 停止(严格校验 3090 端口归属后才 kill)
+cockpit status               # 查看运行状态
+cockpit build                # 只构建
+cockpit start --dev          # 开发模式(tsx watch + vite,前台)
+# 其他:--no-open 不自动开浏览器;--foreground 前台调试;-b 强制重新 build
+
+# 方式二:手动(等价于 cockpit start 的前半段)
 pnpm install
-
-# 开发（后端 127.0.0.1:3090 + 前端 vite dev，代理 /api 到后端）
-pnpm dev
-
-# 生产构建并启动
 pnpm build
 node packages/cockpit-server/dist/main.js
 ```

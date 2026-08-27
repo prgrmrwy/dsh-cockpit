@@ -64,6 +64,9 @@ export interface DeviceStatusFacts {
   /** Official session-row status groups, non-zero only, ordered by official
    * priority (pending warning first, then active work). */
   readonly sessionStatuses: readonly SessionActivitySummary[]
+  /** Epoch ms of the last bridge hello from this device's DSH web client
+   * (the dsh-cockpit-bridge plugin); undefined = plugin not seen yet. */
+  readonly bridgeSeenAt?: number
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
   readonly diagnostic?: string

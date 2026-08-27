@@ -126,6 +126,18 @@ describe('top bar', () => {
     expect(getComputedStyle(tab).outlineStyle).toBe('none')
   })
 
+  it('shows the bridge mark when the device DSH runs dsh-cockpit-bridge', () => {
+    const devices = [
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
+      device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
+    ]
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    expect(getByRole('tab', { name: /A/ }).querySelector('.bridge-mark')).not.toBeNull()
+    expect(getByRole('tab', { name: /B/ }).querySelector('.bridge-mark')).toBeNull()
+  })
+
   it('clicking the completed chip acknowledges the reminders (mark as read)', () => {
     const acked: string[] = []
     const pending: string[] = []

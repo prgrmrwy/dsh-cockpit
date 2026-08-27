@@ -38,11 +38,26 @@ describe('cockpit bridge client', () => {
   beforeEach(() => { vi.stubGlobal('fetch', fetchMock) })
   afterEach(() => { fetchMock.mockReset(); vi.unstubAllGlobals() })
 
+  it('sends a startup hello (with version) before watching selections', async () => {
+    fetchMock.mockResolvedValue({ status: 200 })
+    const { ctx } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('http://127.0.0.1:3090/api/bridge/hello')
+    expect(JSON.parse(String(init.body))).toMatchObject({ version: expect.any(String) })
+  })
+
   it('reports the opened session id to the cockpit', async () => {
     fetchMock.mockResolvedValue({ status: 200 })
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0)) // hello consumed
+    fetchMock.mockClear()
     set('session-a')
     await new Promise(r => setTimeout(r, 300))
     set('session-b')
@@ -62,6 +77,8 @@ describe('cockpit bridge client', () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0))
+    fetchMock.mockClear()
     set('a')
     set('b')
     set('c')
@@ -75,6 +92,8 @@ describe('cockpit bridge client', () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0))
+    fetchMock.mockClear()
     set('a')
     await new Promise(r => setTimeout(r, 300))
     set('a') // list refresh with the same current
@@ -84,21 +103,23 @@ describe('cockpit bridge client', () => {
 
   it('bootstraps on 401 then retries, and survives a dead cockpit', async () => {
     fetchMock
-      .mockResolvedValueOnce({ status: 401 })
-      .mockResolvedValueOnce({ status: 200 })
-      .mockResolvedValueOnce({ status: 200 })
+      .mockResolvedValueOnce({ status: 200 }) // hello
+      .mockResolvedValueOnce({ status: 401 })  // session-opened → 401
+      .mockResolvedValueOnce({ status: 200 })  // bootstrap
+      .mockResolvedValueOnce({ status: 200 })  // retried session-opened
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0))
     set('a')
     await new Promise(r => setTimeout(r, 300))
-    // 401 → bootstrap → retried POST; a later change when cockpit is gone
-    // must resolve quietly.
-    expect(fetchMock).toHaveBeenCalledTimes(3)
-    expect(fetchMock.mock.calls[1]![0]).toBe('http://127.0.0.1:3090/api/bootstrap')
+    // hello + 401 → bootstrap → retried POST; a later change when cockpit is
+    // gone must resolve quietly.
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(fetchMock.mock.calls[2]![0]).toBe('http://127.0.0.1:3090/api/bootstrap')
     fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
     set('b')
     await new Promise(r => setTimeout(r, 300))
-    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
   })
 })

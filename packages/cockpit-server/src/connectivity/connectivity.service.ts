@@ -12,6 +12,8 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #registry: DeviceRegistry
   readonly #tunnels: TunnelManager
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
+  /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
+  readonly #bridgeSeenAt = new Map<string, number>()
 
   constructor(
     @Inject(DeviceRegistry) registry: DeviceRegistry,
@@ -68,6 +70,9 @@ export class ConnectivityService implements OnApplicationShutdown {
           pendingInteractionCount: facts.pendingInteractionCount,
           outcomeUnknownCount: 0,
           sessionStatuses: facts.sessionStatuses,
+          ...(this.#bridgeSeenAt.has(facts.deviceId)
+            ? { bridgeSeenAt: this.#bridgeSeenAt.get(facts.deviceId)! }
+            : {}),
           compatibility: facts.compatibility,
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
@@ -184,6 +189,22 @@ export class ConnectivityService implements OnApplicationShutdown {
    * the request's Origin header against live endpoints, then clears exactly
    * that session's completion reminder. */
   bridgeSessionOpened(origin: string, sessionId: string): void {
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    lifecycle.clearCompletedSession(sessionId)
+  }
+
+  /** Bridge plugin hello: records that the device's DSH web client runs the
+   * plugin, and stamps the last-seen time (surfaces as bridgeSeenAt in the
+   * status pushed to the browser). */
+  bridgeHello(origin: string, version: string): void {
+    void version
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    const deviceId = lifecycle.deviceId
+    this.#bridgeSeenAt.set(deviceId, Date.now())
+    this.events.publish(this.statuses())
+  }
+
+  #lifecycleByOrigin(origin: string): DeviceLifecycle {
     let originUrl: URL
     try {
       originUrl = new URL(origin)
@@ -194,10 +215,7 @@ export class ConnectivityService implements OnApplicationShutdown {
       const endpoint = lifecycle.current().endpoint
       if (endpoint === undefined) continue
       const endpointUrl = new URL(endpoint)
-      if (endpointUrl.origin === originUrl.origin) {
-        lifecycle.clearCompletedSession(sessionId)
-        return
-      }
+      if (endpointUrl.origin === originUrl.origin) return lifecycle
     }
     throw new Error(`no cockpit device matches origin ${origin}`)
   }

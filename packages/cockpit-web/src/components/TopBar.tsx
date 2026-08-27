@@ -80,6 +80,13 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
             >
               <span className={`dot ${DOT[device.state]}`} aria-hidden="true" />
               <span className="topbar-device-name">{device.displayName}</span>
+              {device.bridgeSeenAt !== undefined && (
+                <span
+                  className="bridge-mark"
+                  title={`桥接已连接 @ ${new Date(device.bridgeSeenAt).toLocaleTimeString()}`}
+                  aria-label="桥接已连接"
+                >⛓</span>
+              )}
               {device.sessionStatuses.length > 0 && (
                 <span className="topbar-sessions" data-cockpit-session-statuses={device.deviceId}>
                   {device.sessionStatuses.map(status => {

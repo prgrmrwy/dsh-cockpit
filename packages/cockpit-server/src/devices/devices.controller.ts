@@ -107,10 +107,7 @@ export class DevicesController {
     @Req() request: import('express').Request,
     @Body() body: { sessionId?: unknown },
   ): Promise<{ opened: boolean }> {
-    const origin = request.headers.origin
-    if (typeof origin !== 'string' || origin === '') {
-      throw new HttpException(toError('bad-request', 'origin header required'), HttpStatus.BAD_REQUEST)
-    }
+    const origin = requireOrigin(request)
     if (typeof body?.sessionId !== 'string' || body.sessionId === '') {
       throw new HttpException(toError('bad-request', 'sessionId required'), HttpStatus.BAD_REQUEST)
     }
@@ -121,11 +118,36 @@ export class DevicesController {
       throw toHttp(cause)
     }
   }
+
+  /** Bridge plugin startup hello: stamps bridgeSeenAt on the matching device
+   * so the top bar can show the connection layer is alive. */
+  @Post('bridge/hello')
+  async bridgeHello(
+    @Req() request: import('express').Request,
+    @Body() body: { version?: unknown },
+  ): Promise<{ helloed: boolean }> {
+    const origin = requireOrigin(request)
+    const version = typeof body?.version === 'string' ? body.version : 'unknown'
+    try {
+      this.connectivity.bridgeHello(origin, version)
+      return { helloed: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
 }
 
 function decodeDeviceId(value: string): string {
   if (typeof value !== 'string' || value === '') throw new HttpException(toError('bad-request', 'deviceId required'), HttpStatus.BAD_REQUEST)
   return value
+}
+
+function requireOrigin(request: import('express').Request): string {
+  const origin = request.headers.origin
+  if (typeof origin !== 'string' || origin === '') {
+    throw new HttpException(toError('bad-request', 'origin header required'), HttpStatus.BAD_REQUEST)
+  }
+  return origin
 }
 
 function requireAdd(body: AddDeviceRequest): AddDeviceRequest {
