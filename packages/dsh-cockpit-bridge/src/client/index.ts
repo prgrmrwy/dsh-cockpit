@@ -23,7 +23,7 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 export const inject = ['sessions']
 
 const COCKPIT_BASE = 'http://127.0.0.1:3090'
-const PLUGIN_VERSION = '0.1.0'
+const PLUGIN_VERSION = '0.1.1'
 
 /** Fire-and-forget report; failures must never disturb the DSH page. */
 async function reportOpen(ctx: ClientContext, sessionId: string): Promise<void> {
