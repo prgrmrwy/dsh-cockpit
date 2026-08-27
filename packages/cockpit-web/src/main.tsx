@@ -25,9 +25,13 @@ export function App() {
     }
   }, [])
 
-  // Initial load + keep the aggregation fresh via manual refresh only; the
-  // design forbids periodic polling.
-  useEffect(() => { void refresh() }, [refresh])
+  // First visit: ask the server to set the cookie, then load. Subsequent
+  // reloads already hold the cookie and skip the round trip.
+  const boot = async () => {
+    try { await api.bootstrap() } catch { /* token may already exist */ }
+    await refresh()
+  }
+  useEffect(() => { void boot() }, [refresh])
 
   // Startup behavior: enter the last used device; first run shows overview.
   const lastUsed = useMemo(() => {

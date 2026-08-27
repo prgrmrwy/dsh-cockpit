@@ -29,6 +29,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export interface DevicesPayload { readonly device: readonly DeviceStatusFacts[] }
 
 export const api = {
+  bootstrap: () => request<{ ok: true }>('/bootstrap'),
   devices: () => request<DevicesPayload>('/devices'),
   addDevice: (input: AddDeviceRequest) => request<{ deviceId: string }>('/devices', { method: 'POST', body: JSON.stringify(input) }),
   updateDevice: (deviceId: string, input: UpdateDeviceRequest) => request<{ deviceId: string }>(`/devices/${encodeURIComponent(deviceId)}`, { method: 'PUT', body: JSON.stringify(input) }),

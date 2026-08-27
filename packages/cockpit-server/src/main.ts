@@ -1,14 +1,25 @@
 import 'reflect-metadata'
+import { fileURLToPath } from 'node:url'
+import path from 'node:path'
 import { NestFactory } from '@nestjs/core'
+import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module.js'
 
-/** Loopback-only listener: the cockpit is a local tool, never exposed. */
 export async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] })
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log'] })
   app.enableShutdownHooks()
+
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  // src/main.ts (dev) or dist/main.js (built) both resolve to repository root.
+  const repoRoot = path.resolve(here, '../../..')
+  const webDist = path.join(repoRoot, 'packages/cockpit-web/dist')
+  app.useStaticAssets(webDist)
+
   await app.listen(3090, '127.0.0.1')
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const invokedDirectly = process.argv[1] !== undefined
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+if (invokedDirectly) {
   void bootstrap()
 }
