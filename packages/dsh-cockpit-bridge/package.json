@@ -1,0 +1,52 @@
+{
+  "name": "dsh-cockpit-bridge",
+  "version": "0.1.0",
+  "description": "Cockpit bridge: reports session-open selections from the official DSH web client to the local dsh-cockpit so completion reminders clear exactly like the official select did",
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ]
+    }
+  },
+  "scripts": {
+    "clean": "rm -rf lib",
+    "build:client": "tsdown",
+    "build": "npm run clean && npm run build:client",
+    "typecheck": "tsc -p tsconfig.client.json --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22.19"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.1-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.1-rc.2",
+    "@types/node": "^24.0.0",
+    "tsdown": "^0.14.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

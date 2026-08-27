@@ -229,6 +229,14 @@ export class DeviceLifecycle {
     this.#emitFacts()
   }
 
+  /** Clear exactly one session's completion reminder (the official select
+   * semantics: opening a session dismisses only that session's green dot).
+   * prevRunning is kept — the next true→false edge must still re-arm. */
+  clearCompletedSession(sessionId: string): void {
+    if (!this.#completed.delete(sessionId)) return
+    this.#emitFacts()
+  }
+
   start(): void {
     if (this.#task !== undefined) return
     this.#task = this.#run()

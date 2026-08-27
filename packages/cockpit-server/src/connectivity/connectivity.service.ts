@@ -179,6 +179,29 @@ export class ConnectivityService implements OnApplicationShutdown {
     lifecycle.clearCompleted()
   }
 
+  /** Cross-origin bridge from the device's own DSH web client (a cockpit
+   * plugin reports "the user just opened session X"). Matches the device by
+   * the request's Origin header against live endpoints, then clears exactly
+   * that session's completion reminder. */
+  bridgeSessionOpened(origin: string, sessionId: string): void {
+    let originUrl: URL
+    try {
+      originUrl = new URL(origin)
+    } catch {
+      throw new Error(`invalid origin ${origin}`)
+    }
+    for (const lifecycle of this.#lifecycles.values()) {
+      const endpoint = lifecycle.current().endpoint
+      if (endpoint === undefined) continue
+      const endpointUrl = new URL(endpoint)
+      if (endpointUrl.origin === originUrl.origin) {
+        lifecycle.clearCompletedSession(sessionId)
+        return
+      }
+    }
+    throw new Error(`no cockpit device matches origin ${origin}`)
+  }
+
   async onApplicationShutdown(): Promise<void> {
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     await this.#tunnels.disposeAll()

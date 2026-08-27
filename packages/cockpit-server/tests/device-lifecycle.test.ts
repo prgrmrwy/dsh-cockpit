@@ -187,6 +187,44 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
+  it('clearCompletedSession() clears only the selected session and keeps re-arm', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Arm two independent completion edges (s1, s3).
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 2 },
+    ])
+
+    // Opening s1 (bridge) clears exactly its reminder.
+    ;(lifecycle as unknown as { clearCompletedSession(id: string): void }).clearCompletedSession('s1')
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    // Unknown session id is a no-op (no crash, no state change).
+    ;(lifecycle as unknown as { clearCompletedSession(id: string): void }).clearCompletedSession('nope')
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    // Re-running s1 and finishing again re-arms it (prevRunning preserved).
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 2 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
   it('excludes subagent sessions from running, completed and pending counts', async () => {
     // Baseline: one running root (s1), one running subagent (sub-a) and one
     // idle subagent (sub-b) — like a real host with 100+ subagent sessions.

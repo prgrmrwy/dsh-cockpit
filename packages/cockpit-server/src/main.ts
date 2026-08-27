@@ -8,6 +8,22 @@ import { AppModule } from './app.module.js'
 export async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log'] })
   app.enableShutdownHooks()
+  // The bridge plugin runs inside each device's own DSH web client, which is a
+  // DIFFERENT origin (127.0.0.1:<device port>). Cross-origin fetches to the
+  // cockpit API need CORS; only loopback origins are allowed and cookies
+  // (SameSite=Strict is cross-origin-hostile) are NOT relied on by the bridge
+  // — the plugin sends the same-origin token in a header instead.
+  app.enableCors({
+    origin: (origin, callback) => {
+      if (origin === undefined) { callback(null, false); return }
+      try {
+        const url = new URL(origin)
+        const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
+        callback(null, loopback)
+      } catch { callback(null, false) }
+    },
+    credentials: true,
+  })
 
   const here = path.dirname(fileURLToPath(import.meta.url))
   // src/main.ts (dev) or dist/main.js (built) both resolve to repository root.

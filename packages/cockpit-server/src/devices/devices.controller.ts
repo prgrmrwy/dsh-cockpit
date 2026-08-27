@@ -98,6 +98,29 @@ export class DevicesController {
       throw toHttp(cause)
     }
   }
+
+  /** Bridge from the device's official DSH web client: its cockpit plugin
+   * reports that the user just opened a session. The device is identified by
+   * the request's Origin (the plugin is same-origin with its DSH web). */
+  @Post('bridge/session-opened')
+  async bridgeSessionOpened(
+    @Req() request: import('express').Request,
+    @Body() body: { sessionId?: unknown },
+  ): Promise<{ opened: boolean }> {
+    const origin = request.headers.origin
+    if (typeof origin !== 'string' || origin === '') {
+      throw new HttpException(toError('bad-request', 'origin header required'), HttpStatus.BAD_REQUEST)
+    }
+    if (typeof body?.sessionId !== 'string' || body.sessionId === '') {
+      throw new HttpException(toError('bad-request', 'sessionId required'), HttpStatus.BAD_REQUEST)
+    }
+    try {
+      this.connectivity.bridgeSessionOpened(origin, body.sessionId)
+      return { opened: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
 }
 
 function decodeDeviceId(value: string): string {
@@ -147,5 +170,6 @@ function toHttp(cause: unknown): HttpException {
   const message = cause instanceof Error ? cause.message : String(cause)
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)
+  if (/invalid origin|matches origin/.test(message)) return new HttpException(toError('bad-request', message), HttpStatus.BAD_REQUEST)
   return new HttpException(toError('device-command-failed', message), HttpStatus.BAD_REQUEST)
 }
