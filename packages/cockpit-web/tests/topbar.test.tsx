@@ -9,7 +9,7 @@ afterEach(cleanup)
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, outcomeUnknownCount: 0,
-  compatibility: 'SUPPORTED', lastUpdatedAt: 0,
+  sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0,
   ...overrides,
 })
 
@@ -34,18 +34,57 @@ describe('top bar', () => {
     expect(selected).toEqual(['d2'])
   })
 
-  it('renders attention badge only for pending interactions', () => {
+  it('renders official session-status groups as "label ×N" chips', () => {
     const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', pendingInteractionCount: 2 }),
-      device({ deviceId: 'd2', displayName: 'B', state: 'READY', pendingInteractionCount: 0 }),
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        runningSessionCount: 2, pendingInteractionCount: 3,
+        sessionStatuses: [
+          { state: 'warning', kind: 'approval', count: 2 },
+          { state: 'warning', kind: 'question', count: 1 },
+          { state: 'ongoing', kind: 'running', count: 2 },
+        ],
+      }),
+      device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
     ]
-    const { getByRole } = render(
+    const { getByRole, container } = render(
       <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
-    const attention = getByRole('tab', { name: /A/ })
-    expect(attention.className).toContain('attention')
-    const badge = attention.querySelector('.badge')
-    expect(badge?.textContent).toBe('2')
+    const tab = getByRole('tab', { name: /A/ })
+    expect(tab.className).toContain('attention')
+    // Pending interactions keep the attention ring (official warning state).
+    const chips = container.querySelectorAll('[data-cockpit-session-statuses="d1"] .session-chip')
+    expect(chips).toHaveLength(3)
+    expect(chips[0]!.getAttribute('data-session-kind')).toBe('approval')
+    expect(chips[0]!.getAttribute('data-session-state')).toBe('warning')
+    expect(chips[0]!.textContent).toContain('等待审批')
+    expect(chips[0]!.textContent).toContain('×2')
+    expect(chips[1]!.textContent).toContain('等待回答')
+    expect(chips[2]!.getAttribute('data-session-state')).toBe('ongoing')
+    expect(chips[2]!.textContent).toContain('进行中')
+    expect(chips[2]!.textContent).toContain('×2')
+
+    // A device without live activity shows no chips at all.
+    const quiet = getByRole('tab', { name: /B/ })
+    expect(quiet.querySelector('[data-cockpit-session-statuses]')).toBeNull()
+  })
+
+  it('keeps the official dot colors for session groups (warning=yellow, ongoing=green)', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        sessionStatuses: [
+          { state: 'warning', kind: 'approval', count: 1 },
+          { state: 'ongoing', kind: 'running', count: 1 },
+        ],
+      }),
+    ]
+    const { container } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const chip = (kind: string) => container.querySelector(`[data-session-kind="${kind}"] .dot`)
+    expect(chip('approval')!.className).toContain('warn')
+    expect(chip('running')!.className).toContain('ok')
   })
 
   it('opens the context menu on right click', () => {

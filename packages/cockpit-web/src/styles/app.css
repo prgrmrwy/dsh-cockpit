@@ -38,6 +38,17 @@ body {
 .topbar-device.active { background: #23282e; color: var(--fg); border-color: var(--border); }
 .topbar-device.attention { outline: 1px solid var(--warn); }
 .topbar-device-name { white-space: nowrap; }
+/* session-row status chips: official stoplight vocabulary (ongoing/warning),
+   rendered as "进行中 ×2" / "等待审批 ×1" on each device tab */
+.topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; }
+.session-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; line-height: 1; color: var(--fg-dim);
+  background: var(--bg-panel); border: 1px solid var(--border);
+  border-radius: 999px; padding: 2px 7px; white-space: nowrap;
+}
+.session-chip .dot { width: 7px; height: 7px; }
+.session-chip-count { font-weight: 600; color: var(--fg); }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);

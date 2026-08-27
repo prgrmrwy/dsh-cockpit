@@ -34,6 +34,22 @@ export interface DeviceConnectionStatus {
   readonly lastUpdatedAt: number
 }
 
+/** Official session-row status families (dsh-client-ui-workspace
+ * sessionStatuses): warning = pending human interaction, ongoing = active
+ * work, done = completed/idle. The cockpit reuses the official vocabulary and
+ * ordering — no new states or homegrown mappings. */
+export type SessionActivityState = 'ongoing' | 'warning' | 'done'
+
+/** Which official status a summary group represents. */
+export type SessionActivityKind = 'running' | 'approval' | 'question'
+
+/** One non-zero session-status group of a device, e.g. { running ×N }. */
+export interface SessionActivitySummary {
+  readonly state: SessionActivityState
+  readonly kind: SessionActivityKind
+  readonly count: number
+}
+
 /** Aggregated status the shell renders on the top bar. */
 export interface DeviceStatusFacts {
   readonly deviceId: string
@@ -45,6 +61,9 @@ export interface DeviceStatusFacts {
   readonly runningSessionCount: number
   readonly pendingInteractionCount: number
   readonly outcomeUnknownCount: number
+  /** Official session-row status groups, non-zero only, ordered by official
+   * priority (pending warning first, then active work). */
+  readonly sessionStatuses: readonly SessionActivitySummary[]
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
   readonly diagnostic?: string

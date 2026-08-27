@@ -130,8 +130,8 @@ export function OverviewPanel({ devices, onClose, onSelect }: PanelProps & {
               <span className="dot" aria-hidden="true" data-state={device.state} />
               <button className="panel-row-name" onClick={() => onSelect(device.deviceId)}>{device.displayName}</button>
               <span className="panel-row-state">
-                {device.runningSessionCount > 0 ? `${device.runningSessionCount} 在跑 · ` : ''}
-                {device.pendingInteractionCount > 0 ? `${device.pendingInteractionCount} 等待决策` : device.state}
+                {device.runningSessionCount > 0 ? `进行中 ×${device.runningSessionCount} · ` : ''}
+                {device.pendingInteractionCount > 0 ? `等待决策 ×${device.pendingInteractionCount}` : device.state}
               </span>
             </li>
           ))}

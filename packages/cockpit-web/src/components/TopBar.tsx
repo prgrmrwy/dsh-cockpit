@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react'
-import type { DeviceStatusFacts, DeviceState } from '@dsh-cockpit/shared'
+import type { DeviceStatusFacts, DeviceState, SessionActivityKind, SessionActivityState } from '@dsh-cockpit/shared'
 import type { PanelName } from '../panels/Panels.jsx'
 
 /** Status dot semantics: direct mapping of the connectivity state to the
@@ -14,6 +14,23 @@ const DOT: Record<DeviceState, string> = {
   DSH_UNAVAILABLE: 'error',
   NON_DSH_SERVICE: 'error',
   INCOMPATIBLE: 'error',
+}
+
+/** Session-row status groups reuse the official stoplight vocabulary of
+ * dsh-client-ui-workspace (sessionStatuses): warning = pending interaction,
+ * ongoing = active work. */
+const ACTIVITY_DOT: Record<SessionActivityState, string> = {
+  warning: 'warn',
+  ongoing: 'ok',
+  done: 'ok',
+}
+
+/** Official label vocabulary (dsh-client-ui-workspace i18n: status.running →
+ * 进行中, status.waitingApproval → 等待审批, status.waitingAnswer → 等待回答). */
+const ACTIVITY_LABEL: Record<SessionActivityKind, string> = {
+  running: '进行中',
+  approval: '等待审批',
+  question: '等待回答',
 }
 
 export interface TopBarProps {
@@ -60,8 +77,22 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
             >
               <span className={`dot ${DOT[device.state]}`} aria-hidden="true" />
               <span className="topbar-device-name">{device.displayName}</span>
-              {attention && <span className="badge" title={`${device.pendingInteractionCount} 项等待决策`}>{device.pendingInteractionCount}</span>}
-              {device.runningSessionCount > 0 && <span className="running-count" title={`${device.runningSessionCount} 个在跑`}>{device.runningSessionCount}</span>}
+              {device.sessionStatuses.length > 0 && (
+                <span className="topbar-sessions" data-cockpit-session-statuses={device.deviceId}>
+                  {device.sessionStatuses.map(status => (
+                    <span
+                      key={status.kind}
+                      className="session-chip"
+                      data-session-kind={status.kind}
+                      data-session-state={status.state}
+                    >
+                      <span className={`dot ${ACTIVITY_DOT[status.state]}`} aria-hidden="true" />
+                      {ACTIVITY_LABEL[status.kind]}
+                      <span className="session-chip-count">×{status.count}</span>
+                    </span>
+                  ))}
+                </span>
+              )}
             </button>
           )
         })}

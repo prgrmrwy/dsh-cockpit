@@ -80,6 +80,41 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
+  it('tracks approval and question separately and reports official status groups', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Baseline: one running session → ongoing ×1.
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    emit({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: false })
+    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: false })
+    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-2', resolved: false })
+    // Official priority: pending warning groups first, then ongoing work.
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'warning', kind: 'approval', count: 1 },
+      { state: 'warning', kind: 'question', count: 2 },
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+    expect(lifecycle.current().pendingInteractionCount).toBe(3)
+
+    // Resolving a question decrements only its own bucket.
+    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-2', resolved: true })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'warning', kind: 'approval', count: 1 },
+      { state: 'warning', kind: 'question', count: 1 },
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
   it('stop() reports CONNECTING afterwards', async () => {
     const { lifecycle } = device()
     await lifecycle.stop()

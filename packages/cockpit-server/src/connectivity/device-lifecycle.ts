@@ -1,4 +1,4 @@
-import type { DeviceState } from '@dsh-cockpit/shared'
+import type { DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { TunnelManager } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
@@ -12,6 +12,7 @@ export interface LiveDeviceFacts {
   readonly state: DeviceState
   readonly runningSessionCount: number
   readonly pendingInteractionCount: number
+  readonly sessionStatuses: readonly SessionActivitySummary[]
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
   readonly diagnostic?: string
@@ -42,7 +43,8 @@ export class DeviceLifecycle {
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #abort = new AbortController()
   #runningSessions = 0
-  #pendingInteractions = 0
+  #pendingApprovals = 0
+  #pendingQuestions = 0
   #stateExplicit: DeviceState = 'CONNECTING'
   #diagnostic = ''
   #endpoint: URL | undefined
@@ -71,12 +73,24 @@ export class DeviceLifecycle {
       order: this.#record.order,
       state: this.#stateExplicit,
       runningSessionCount: this.#runningSessions,
-      pendingInteractionCount: this.#pendingInteractions,
+      pendingInteractionCount: this.#pendingApprovals + this.#pendingQuestions,
+      sessionStatuses: this.#sessionStatuses(),
       compatibility: this.#stateExplicit === 'READY' || this.#stateExplicit === 'DEGRADED' ? 'SUPPORTED' : 'INCOMPATIBLE',
       lastUpdatedAt: Date.now(),
       ...(this.#diagnostic === '' ? {} : { diagnostic: this.#diagnostic }),
       ...(this.#endpoint === undefined ? {} : { endpoint: this.#endpoint.toString() }),
     }
+  }
+
+  /** Official session-row status groups, non-zero only, pending warning first
+   * then active work — mirrors dsh-client-ui-workspace sessionStatuses
+   * ordering (approval/question before running). */
+  #sessionStatuses(): readonly SessionActivitySummary[] {
+    const groups: SessionActivitySummary[] = []
+    if (this.#pendingApprovals > 0) groups.push({ state: 'warning', kind: 'approval', count: this.#pendingApprovals })
+    if (this.#pendingQuestions > 0) groups.push({ state: 'warning', kind: 'question', count: this.#pendingQuestions })
+    if (this.#runningSessions > 0) groups.push({ state: 'ongoing', kind: 'running', count: this.#runningSessions })
+    return groups
   }
 
   start(): void {
@@ -181,7 +195,8 @@ export class DeviceLifecycle {
     // Baseline.
     const sessions = await this.#client.listSessions()
     this.#runningSessions = sessions.filter(s => s.running).length
-    this.#pendingInteractions = 0
+    this.#pendingApprovals = 0
+    this.#pendingQuestions = 0
 
     this.#stream = this.#createStream(endpoint)
     this.#stream.on('event', event => {
@@ -190,10 +205,12 @@ export class DeviceLifecycle {
           if (event.running) this.#runningSessions += 1
           else this.#runningSessions = Math.max(0, this.#runningSessions - 1)
           break
-        case 'interaction':
-          this.#pendingInteractions += event.resolved ? -1 : 1
-          if (this.#pendingInteractions < 0) this.#pendingInteractions = 0
+        case 'interaction': {
+          const delta = event.resolved ? -1 : 1
+          if (event.kind === 'approval') this.#pendingApprovals = Math.max(0, this.#pendingApprovals + delta)
+          else this.#pendingQuestions = Math.max(0, this.#pendingQuestions + delta)
           break
+        }
         case 'session-added':
         case 'session-removed':
           // Re-baseline lazily: refresh() reconciles exact counts.
@@ -224,7 +241,8 @@ export class DeviceLifecycle {
     try {
       const sessions = await this.#client.listSessions()
       this.#runningSessions = sessions.filter(s => s.running).length
-      this.#pendingInteractions = 0
+      this.#pendingApprovals = 0
+      this.#pendingQuestions = 0
       this.#emitFacts()
     } catch {
       // Keep last known facts; disconnect path will surface an error state.

@@ -121,12 +121,14 @@ export class DualEventStream extends EventEmitter {
         if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
         return { type: 'interaction', deviceId: this.#deviceId, kind: 'approval', rpcId: payload.rpcId, resolved: false }
       case 'approval/resolved':
-      case 'question/resolved':
         if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
         return { type: 'interaction', deviceId: this.#deviceId, kind: 'approval', rpcId: payload.rpcId, resolved: true }
       case 'question/requested':
         if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
         return { type: 'interaction', deviceId: this.#deviceId, kind: 'question', rpcId: payload.rpcId, resolved: false }
+      case 'question/resolved':
+        if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
+        return { type: 'interaction', deviceId: this.#deviceId, kind: 'question', rpcId: payload.rpcId, resolved: true }
       case 'host/session-added':
       case 'session/subscribed':
         return { type: 'session-added', deviceId: this.#deviceId }

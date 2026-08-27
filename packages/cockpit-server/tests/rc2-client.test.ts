@@ -29,14 +29,17 @@ describe('dual event stream conversion', () => {
     sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r2', method: 'approval/requested', payload: { sessionId: 's1', rpcId: 'a-1' } }))
     sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r3', method: 'question/requested', payload: { sessionId: 's1', rpcId: 'q-1' } }))
     sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r4', method: 'approval/resolved', payload: { sessionId: 's1', rpcId: 'a-1' } }))
+    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r5', method: 'question/resolved', payload: { sessionId: 's1', rpcId: 'q-1' } }))
     // Unknown method must be ignored, malformed payload must not throw.
-    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r5', method: 'host/workspace-changed', payload: {} }))
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r6', method: 'host/workspace-changed', payload: {} }))
     sockets[1]!.emit('message', 'not-json')
 
     expect(events).toContainEqual({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
     expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: false })
     expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: false })
     expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: true })
+    // question/resolved must keep the question bucket (not silently become approval).
+    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: true })
     expect(events.filter(e => e.type === 'workspace-changed')).toEqual([])
     stream.dispose()
   })

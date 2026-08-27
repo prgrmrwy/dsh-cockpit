@@ -67,6 +67,7 @@ export class ConnectivityService implements OnApplicationShutdown {
           runningSessionCount: facts.runningSessionCount,
           pendingInteractionCount: facts.pendingInteractionCount,
           outcomeUnknownCount: 0,
+          sessionStatuses: facts.sessionStatuses,
           compatibility: facts.compatibility,
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
