@@ -12,3 +12,6 @@ build/
 
 coverage/
 .vite/
+
+# 本地 worktree 会话 checkout（可随时重建，勿提交）
+.worktrees/
