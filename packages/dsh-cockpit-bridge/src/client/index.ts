@@ -24,7 +24,7 @@ export const inject = ['sessions']
 
 const COCKPIT_BASE = 'http://127.0.0.1:3090'
 const DEVICE_ACTIVATED_MESSAGE = 'dsh-cockpit:device-activated'
-const PLUGIN_VERSION = '0.1.1'
+const PLUGIN_VERSION = '0.1.2'
 
 /** Fire-and-forget report; failures must never disturb the DSH page. */
 async function reportOpen(ctx: ClientContext, sessionId: string): Promise<void> {

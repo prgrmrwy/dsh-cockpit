@@ -8,7 +8,9 @@ dsh-cockpit，使驾驶舱顶栏的完成提醒（绿点）按官方 select 语�
 官方侧栏打开会话（`ctx.sessions.open` → `SessionManager.select`）是纯浏览器端
 内存状态，事件流上没有任何"选中"信号；驾驶舱又按架构原则不读 iframe DOM。
 **这个插件运行在官方 web 客户端**（同源），订阅 `sessions.list` 的 `current`
-变化，在用户点击会话时把 `{ sessionId }` POST 给驾驶舱。
+变化，在用户点击会话时把 `{ sessionId }` POST 给驾驶舱。驾驶舱切回一个已加载的
+设备 iframe 时，`0.1.2` 还会重新确认该 iframe 当前选中的会话，使该会话若刚好
+处于完成未读状态，其绿点按官方 select 语义清除。
 
 - 驾驶舱按请求 `Origin`（`127.0.0.1:<设备端口>`）匹配设备，**插件不需要知道自己是哪台设备**
 - 只传 `sessionId`——不读不传会话内容、settings、credentials
