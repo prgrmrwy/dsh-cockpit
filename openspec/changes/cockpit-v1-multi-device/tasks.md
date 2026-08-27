@@ -6,7 +6,7 @@
 - [x] 1.2 初始化 NestJS 后端（`cockpit-server`）：`@nestjs/core`、`@nestjs/websockets`、`@nestjs/platform-express`，TypeScript strict，`node --test` 或 Jest 任选其一作为测试
 - [x] 1.3 初始化前端（`cockpit-web`）：Vite + React + TypeScript strict，shadcn/Base UI（按当前默认 Base UI），Tailwind
 - [x] 1.4 添加共享类型包或约定（设备/状态/事件聚合类型），两端共用
-- [ ] 1.5 配置 lint/format（eslint + prettier）与 CI 基础（build/typecheck/test）
+- [x] 1.5 配置 lint/format（eslint + prettier）与 CI 基础（build/typecheck/test）
 
 ## 2. 连接层：设备注册（参考已提取资产由 ohmydsh committed `5060459` 提供的实现）
 
@@ -52,6 +52,6 @@
 
 - [x] 7.1 端到端：真实 lumevm（或本机 + 一台远端）添加设备 → 隧道建 → READY → 顶栏显示 → 工作台加载 → 状态聚合收到事件
 - [x] 7.2 故障注入：杀掉 ssh 子进程 → 重连 → 恢复；启动窗口 SIGTERM → 无孤儿
-- [ ] 7.3 内存基准：5 台设备（含 iframe 常驻）实测，对照设计 Risk R2
-- [ ] 7.4 文档：README（运行/数据目录/安全），OpenSpec 构建通过
+- [x] 7.3 内存基准：5 台设备（含 iframe 常驻）实测，对照设计 Risk R2
+- [x] 7.4 文档：README（运行/数据目录/安全），OpenSpec 构建通过
 - [ ] 7.5 最终安全/兼容审查与验收报告

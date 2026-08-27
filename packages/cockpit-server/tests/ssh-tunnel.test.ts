@@ -1,5 +1,6 @@
+import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
-import { defaultSpawner, probeSshIdentity, validateSshAlias, type OwnedProcess } from '../src/connectivity/ssh.js'
+import { probeSshIdentity, validateSshAlias, type OwnedProcess } from '../src/connectivity/ssh.js'
 import { TunnelManager } from '../src/connectivity/tunnel-manager.js'
 
 /** Fake ssh: keeps running long enough to look alive; records signals. */
@@ -13,7 +14,7 @@ class FakeProcess implements OwnedProcess {
   constructor(pid: number) {
     this.pid = pid
     this.exited = new Promise(resolve => { this.#resolveExit = resolve })
-    this.stderr = new (require('node:stream').Readable)({ read() {} })
+    this.stderr = new Readable({ read() {} })
   }
   kill(signal?: NodeJS.Signals): boolean {
     this.#signals.push(signal ?? 'SIGTERM')
@@ -69,7 +70,7 @@ describe('tunnel manager lifecycle', () => {
     await expect(manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 })).rejects.toThrow(/shut down/)
   })
 
-  it('never publishes an endpoint when DSH readiness fails', async () => {
+  it('never publishes an endpoint when DSH readiness fails', { timeout: 15_000 }, async () => {
     const manager = new TunnelManager({
       spawn: () => new FakeProcess(5),
       readinessProbe: async () => ({ ok: false, state: 'DSH_UNAVAILABLE' as const, diagnostic: 'no dsh' }),

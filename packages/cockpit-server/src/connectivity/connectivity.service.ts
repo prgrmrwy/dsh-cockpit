@@ -1,7 +1,7 @@
 import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common'
 import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
-import { DeviceLifecycle, type LiveDeviceFacts } from './device-lifecycle.js'
+import { DeviceLifecycle } from './device-lifecycle.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { Rc2Client } from './rc2-client.js'
@@ -15,7 +15,7 @@ export class ConnectivityService implements OnApplicationShutdown {
   constructor(@Inject(DeviceRegistry) registry: DeviceRegistry) {
     this.#registry = registry
     this.#tunnels = new TunnelManager({
-      readinessProbe: async (endpoint, signal) => {
+      readinessProbe: async (endpoint, _signal) => {
         const client = new Rc2Client({ endpoint })
         return client.probe()
       },

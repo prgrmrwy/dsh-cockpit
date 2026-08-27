@@ -1,4 +1,4 @@
-import type { DeviceConnectionStatus, DeviceState } from '@dsh-cockpit/shared'
+import type { DeviceState } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { TunnelManager } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'

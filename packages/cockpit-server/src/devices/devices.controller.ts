@@ -1,5 +1,5 @@
 import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query } from '@nestjs/common'
-import type { AddDeviceRequest, ApiError, DeviceStatusFacts, RemoveDeviceRequest, UpdateDeviceRequest } from '@dsh-cockpit/shared'
+import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 
 @Controller('api')

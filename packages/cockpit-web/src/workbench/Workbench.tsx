@@ -11,7 +11,7 @@ export interface WorkbenchProps {
  * workbench crash cannot affect it and vice versa. */
 export function Workbench({ device }: WorkbenchProps) {
   const [loaded, setLoaded] = useState<ReadonlySet<string>>(new Set())
-  const { registry, keepAlive } = useWorkbench()
+  const { keepAlive } = useWorkbench()
   const current = device?.deviceId
 
   useEffect(() => {
@@ -60,7 +60,7 @@ interface FrameInfo {
   readonly lastUpdatedAt: number
 }
 
-function useWorkbench(): { registry: Map<string, FrameInfo>; keepAlive: (deviceId: string, device?: DeviceStatusFacts) => FrameInfo | undefined } {
+function useWorkbench(): { keepAlive: (deviceId: string, device?: DeviceStatusFacts) => FrameInfo | undefined } {
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const keepAlive = (deviceId: string, device?: DeviceStatusFacts): FrameInfo | undefined => {
     const existing = registryRef.current.get(deviceId)
@@ -76,5 +76,5 @@ function useWorkbench(): { registry: Map<string, FrameInfo>; keepAlive: (deviceI
     registryRef.current.set(deviceId, frame)
     return frame
   }
-  return { registry: registryRef.current, keepAlive }
+  return { keepAlive }
 }
