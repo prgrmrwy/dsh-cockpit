@@ -171,6 +171,14 @@ export class ConnectivityService implements OnApplicationShutdown {
     await lifecycle.reconnect()
   }
 
+  /** Mark one device's completion reminders as read (green done dots cleared;
+   * the official clear-on-select is not observable from the event stream). */
+  ackCompletedDevice(deviceId: string): void {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    lifecycle.clearCompleted()
+  }
+
   async onApplicationShutdown(): Promise<void> {
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     await this.#tunnels.disposeAll()

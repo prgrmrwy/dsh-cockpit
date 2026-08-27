@@ -219,6 +219,16 @@ export class DeviceLifecycle {
     return total
   }
 
+  /** Mark all pending completion reminders as read — the cockpit-level
+   * equivalent of the official select() which deletes the green done reminder
+   * when a session is opened (that is browser-local state the cockpit cannot
+   * observe, so the reminder is cleared explicitly instead). */
+  clearCompleted(): void {
+    if (this.#completed.size === 0) return
+    this.#completed.clear()
+    this.#emitFacts()
+  }
+
   start(): void {
     if (this.#task !== undefined) return
     this.#task = this.#run()

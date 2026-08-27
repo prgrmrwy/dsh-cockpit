@@ -66,6 +66,14 @@ export function App() {
     }
   }, [currentId])
 
+  // Mark this device's completion reminders as read. The green dot clears;
+  // a later running→idle edge re-arms it (official semantics).
+  const ackCompleted = useCallback(async (deviceId: string) => {
+    try { await api.ackCompleted(deviceId) } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
+
   const current = devices.find(d => d.deviceId === currentId)
 
   return (
@@ -77,6 +85,7 @@ export function App() {
         onOpenPanel={setPanel}
         onRefresh={reconnectCurrent}
         onRefreshLabel="重连当前设备"
+        onAckCompleted={ackCompleted}
       />
       <main className="cockpit-main">
         {error !== undefined && <div className="cockpit-error" role="alert">{error}</div>}

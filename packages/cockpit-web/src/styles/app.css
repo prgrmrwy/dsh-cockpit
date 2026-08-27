@@ -52,6 +52,8 @@ body {
 .session-chip .dsh-state-dot-matrix,
 .session-chip .dsh-state-dot { vertical-align: middle; }
 .session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+.session-chip.clickable { cursor: pointer; border-color: var(--fg-dim); }
+.session-chip.clickable:hover { background: #22262b; }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);

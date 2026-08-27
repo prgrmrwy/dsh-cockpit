@@ -86,6 +86,18 @@ export class DevicesController {
       throw toHttp(cause)
     }
   }
+
+  /** Clears this device's green completion reminders (official select
+   * semantics are browser-local; the cockpit clears them explicitly). */
+  @Post('devices/:deviceId/completed/ack')
+  async ackCompleted(@Param('deviceId') deviceId: string): Promise<{ acked: boolean }> {
+    try {
+      this.connectivity.ackCompletedDevice(decodeDeviceId(deviceId))
+      return { acked: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
 }
 
 function decodeDeviceId(value: string): string {

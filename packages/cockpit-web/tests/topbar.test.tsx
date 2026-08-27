@@ -126,6 +126,29 @@ describe('top bar', () => {
     expect(getComputedStyle(tab).outlineStyle).toBe('none')
   })
 
+  it('clicking the completed chip acknowledges the reminders (mark as read)', () => {
+    const acked: string[] = []
+    const pending: string[] = []
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        sessionStatuses: [
+          { state: 'warning', kind: 'approval', count: 1 },
+          { state: 'done', kind: 'completed', count: 2 },
+        ],
+      }),
+    ]
+    const { container } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={p => pending.push(p)} onRefresh={() => {}} onAckCompleted={id => acked.push(id)} /></StrictMode>,
+    )
+    const completed = container.querySelector('[data-session-kind="completed"]') as HTMLElement
+    // Only the completed chip is interactive (mark-as-read); warning chips are not.
+    expect(completed.className).toContain('clickable')
+    expect(container.querySelector('[data-session-kind="approval"]')!.className).not.toContain('clickable')
+    fireEvent.click(completed)
+    expect(acked).toEqual(['d1'])
+  })
+
   it('opens the context menu on right click', () => {
     const devices = [device({ deviceId: 'd1', displayName: 'A' })]
     const { container } = render(
