@@ -138,9 +138,7 @@ describe('top bar', () => {
     expect(getByRole('tab', { name: /B/ }).querySelector('.bridge-mark')).toBeNull()
   })
 
-  it('clicking the completed chip acknowledges the reminders (mark as read)', () => {
-    const acked: string[] = []
-    const pending: string[] = []
+  it('renders the completed chip like the other statuses (no click-to-clear)', () => {
     const devices = [
       device({
         deviceId: 'd1', displayName: 'A', state: 'READY',
@@ -151,14 +149,15 @@ describe('top bar', () => {
       }),
     ]
     const { container } = render(
-      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={p => pending.push(p)} onRefresh={() => {}} onAckCompleted={id => acked.push(id)} /></StrictMode>,
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
     const completed = container.querySelector('[data-session-kind="completed"]') as HTMLElement
-    // Only the completed chip is interactive (mark-as-read); warning chips are not.
-    expect(completed.className).toContain('clickable')
-    expect(container.querySelector('[data-session-kind="approval"]')!.className).not.toContain('clickable')
-    fireEvent.click(completed)
-    expect(acked).toEqual(['d1'])
+    const approval = container.querySelector('[data-session-kind="approval"]') as HTMLElement
+    // Same static presentation as every other status chipline: no clickable
+    // affordance (mark-as-read removed), plain status title.
+    expect(completed.className).toBe(approval.className)
+    expect(completed.className).not.toContain('clickable')
+    expect(completed.title).toBe('已完成 ×2')
   })
 
   it('opens the context menu on right click', () => {

@@ -42,11 +42,9 @@ export interface TopBarProps {
   readonly onOpenPanel: (panel: PanelName) => void
   readonly onRefresh: () => void
   readonly onRefreshLabel?: string
-  /** Clears this device's green completion reminders (mark as read). */
-  readonly onAckCompleted?: (deviceId: string) => void
 }
 
-export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, onRefreshLabel, onAckCompleted }: TopBarProps) {
+export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, onRefreshLabel }: TopBarProps) {
   const [menuFor, setMenuFor] = useState<string | undefined>()
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | undefined>()
   const refreshRef = useRef(onRefresh)
@@ -89,25 +87,18 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
               )}
               {device.sessionStatuses.length > 0 && (
                 <span className="topbar-sessions" data-cockpit-session-statuses={device.deviceId}>
-                  {device.sessionStatuses.map(status => {
-                    // The green completion reminder is interactive: clicking it
-                    // marks the reminder as read (official clear-on-select is
-                    // browser-local and not observable from the event stream).
-                    const clickable = status.kind === 'completed' && onAckCompleted !== undefined
-                    return (
-                      <span
-                        key={status.kind}
-                        className={`session-chip${clickable ? ' clickable' : ''}`}
-                        data-session-kind={status.kind}
-                        data-session-state={status.state}
-                        title={clickable ? `点击标记已读：${ACTIVITY_LABEL[status.kind]} ×${status.count}` : `${ACTIVITY_LABEL[status.kind]} ×${status.count}`}
-                        onClick={clickable ? () => onAckCompleted(device.deviceId) : undefined}
-                      >
-                        <StateDot state={ACTIVITY_STATE[status.kind]} size={10} />
-                        <span className="session-chip-count">×{status.count}</span>
-                      </span>
-                    )
-                  })}
+                  {device.sessionStatuses.map(status => (
+                    <span
+                      key={status.kind}
+                      className="session-chip"
+                      data-session-kind={status.kind}
+                      data-session-state={status.state}
+                      title={`${ACTIVITY_LABEL[status.kind]} ×${status.count}`}
+                    >
+                      <StateDot state={ACTIVITY_STATE[status.kind]} size={10} />
+                      <span className="session-chip-count">×{status.count}</span>
+                    </span>
+                  ))}
                 </span>
               )}
             </button>

@@ -87,18 +87,6 @@ export class DevicesController {
     }
   }
 
-  /** Clears this device's green completion reminders (official select
-   * semantics are browser-local; the cockpit clears them explicitly). */
-  @Post('devices/:deviceId/completed/ack')
-  async ackCompleted(@Param('deviceId') deviceId: string): Promise<{ acked: boolean }> {
-    try {
-      this.connectivity.ackCompletedDevice(decodeDeviceId(deviceId))
-      return { acked: true }
-    } catch (cause) {
-      throw toHttp(cause)
-    }
-  }
-
   /** Bridge from the device's official DSH web client: its cockpit plugin
    * reports that the user just opened a session. The device is identified by
    * the request's Origin (the plugin is same-origin with its DSH web). */

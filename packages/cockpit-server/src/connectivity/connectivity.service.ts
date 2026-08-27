@@ -176,14 +176,6 @@ export class ConnectivityService implements OnApplicationShutdown {
     await lifecycle.reconnect()
   }
 
-  /** Mark one device's completion reminders as read (green done dots cleared;
-   * the official clear-on-select is not observable from the event stream). */
-  ackCompletedDevice(deviceId: string): void {
-    const lifecycle = this.#lifecycles.get(deviceId)
-    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
-    lifecycle.clearCompleted()
-  }
-
   /** Cross-origin bridge from the device's own DSH web client (a cockpit
    * plugin reports "the user just opened session X"). Matches the device by
    * the request's Origin header against live endpoints, then clears exactly

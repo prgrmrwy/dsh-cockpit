@@ -160,33 +160,6 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
-  it('clearCompleted() acknowledges the green reminders until the next edge', async () => {
-    const { lifecycle, tunnel, emit } = device()
-    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
-    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
-      await new Promise(r => setTimeout(r, 5))
-    }
-    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'done', kind: 'completed', count: 1 },
-    ])
-
-    // Mark as read: the green dot clears.
-    ;(lifecycle as unknown as { clearCompleted(): void }).clearCompleted()
-    expect(lifecycle.current().sessionStatuses).toEqual([])
-
-    // A later completion edge re-arms the reminder (official semantics).
-    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
-    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'done', kind: 'completed', count: 1 },
-    ])
-
-    await lifecycle.stop()
-    await task
-    await tunnel.disposeAll()
-  })
-
   it('clearCompletedSession() clears only the selected session and keeps re-arm', async () => {
     const { lifecycle, tunnel, emit } = device()
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>

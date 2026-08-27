@@ -77,14 +77,11 @@ body {
 .session-chip {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; line-height: 1; color: var(--fg-dim);
-  background: var(--bg-panel); border: 1px solid var(--border);
   border-radius: 999px; padding: 3px 8px; white-space: nowrap;
 }
 .session-chip .dsh-state-dot-matrix,
 .session-chip .dsh-state-dot { vertical-align: middle; }
 .session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
-.session-chip.clickable { cursor: pointer; border-color: var(--fg-dim); }
-.session-chip.clickable:hover { background: var(--bg-hover); }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);
