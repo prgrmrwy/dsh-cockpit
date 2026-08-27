@@ -35,4 +35,5 @@ export const api = {
   updateDevice: (deviceId: string, input: UpdateDeviceRequest) => request<{ deviceId: string }>(`/devices/${encodeURIComponent(deviceId)}`, { method: 'PUT', body: JSON.stringify(input) }),
   removeDevice: (input: RemoveDeviceRequest) => request<{ removed: boolean; requiresConfirmation: boolean }>(`/devices/${encodeURIComponent(input.deviceId)}${input.confirmed ? '?confirmed=true' : ''}`, { method: 'DELETE' }),
   refreshDevice: (deviceId: string) => request<{ refreshed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/refresh`, { method: 'POST' }),
+  reconnectDevice: (deviceId: string) => request<{ reconnecting: boolean }>(`/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: 'POST' }),
 }

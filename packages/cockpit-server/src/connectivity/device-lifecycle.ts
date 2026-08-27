@@ -95,6 +95,24 @@ export class DeviceLifecycle {
     await this.#tunnels.disposeNode(this.deviceId)
   }
 
+  /** Force a reconnect of this single device: tear down the current attempt and
+   * restart the connect loop. Connected devices are untouched. */
+  async reconnect(): Promise<void> {
+    if (this.#stopped) return
+    await this.#stream?.dispose()
+    await this.#tunnels.disposeNode(this.deviceId)
+    this.#stream = undefined
+    this.#endpoint = undefined
+    this.#setState('CONNECTING', 'manual reconnect')
+    this.#restartLoop()
+  }
+
+  #restartLoop(): void {
+    const previous = this.#task
+    this.#task = this.#run()
+    void previous?.catch(() => {})
+  }
+
   async #run(): Promise<void> {
     let attempt = 0
     while (!this.#abort.signal.aborted && !this.#stopped) {
@@ -105,7 +123,16 @@ export class DeviceLifecycle {
         continue
       }
       try {
-        await this.#connectOnce()
+        const connected = await this.#connectOnce()
+        if (!connected) {
+          // Probe/baseline failed: the stream never opened, so waiting on a
+          // disconnect would hang forever. Retry with backoff immediately.
+          const delay = this.#reconnectDelay(attempt)
+          attempt += 1
+          this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+          await this.#delay(delay)
+          continue
+        }
         attempt = 0
         // Stay connected until the stream drops; then reconnect with backoff.
         await this.#waitForDisconnect()
@@ -119,15 +146,17 @@ export class DeviceLifecycle {
     }
   }
 
-  async #connectOnce(): Promise<void> {
+  /** Returns true when the device is connected (stream open); false when the
+   * probe/baseline failed and the caller should retry with backoff instead of
+   * waiting for a disconnect that will never arrive. */
+  async #connectOnce(): Promise<boolean> {
     if (this.#abort.signal.aborted) throw new Error('aborted')
     if (this.#record.kind === 'local') {
       // This Mac: no tunnel. The DSH runs on the machine itself, so we target
       // the loopback port directly. Everything else (probe, baseline, streams)
       // is identical to a remote device.
       this.#endpoint = new URL(`http://127.0.0.1:${this.#record.remoteDshPort}`)
-      await this.#connectRc2(this.#endpoint, undefined)
-      return
+      return this.#connectRc2(this.#endpoint, undefined)
     }
     const handle = await this.#tunnels.connect({
       deviceId: this.deviceId,
@@ -135,18 +164,19 @@ export class DeviceLifecycle {
       remoteDshPort: this.#record.remoteDshPort,
     })
     this.#endpoint = handle.endpoint
-    await this.#connectRc2(handle.endpoint, async () => { await handle.dispose() })
+    return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() })
   }
 
-  /** Shared probe/baseline/stream wiring for local and remote endpoints. */
-  async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<void> {
+  /** Shared probe/baseline/stream wiring for local and remote endpoints.
+   * Returns connected (stream opened) or false when probe/baseline failed. */
+  async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<boolean> {
     this.#client = await this.#createClient(endpoint)
     const probe = await this.#client.probe()
     if (!probe.ok) {
       this.#setState(probe.state, probe.diagnostic)
       await onFailure?.()
       this.#endpoint = undefined
-      return
+      return false
     }
     // Baseline.
     const sessions = await this.#client.listSessions()
@@ -173,6 +203,7 @@ export class DeviceLifecycle {
     })
     await this.#stream.open()
     this.#setState(probe.state === 'READY' ? 'READY' : 'DEGRADED', probe.diagnostic)
+    return true
   }
 
   #waitForDisconnect(): Promise<void> {

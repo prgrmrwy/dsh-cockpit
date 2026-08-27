@@ -163,6 +163,13 @@ export class ConnectivityService implements OnApplicationShutdown {
     await this.#lifecycles.get(deviceId)?.refresh()
   }
 
+  /** Force reconnect of one device only. */
+  async reconnectDevice(deviceId: string): Promise<void> {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    await lifecycle.reconnect()
+  }
+
   async onApplicationShutdown(): Promise<void> {
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     await this.#tunnels.disposeAll()

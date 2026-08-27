@@ -51,6 +51,15 @@ export function App() {
     try { window.localStorage.setItem('cockpit:last-device', deviceId) } catch { /* ignore */ }
   }, [])
 
+  // Reconnect only the current device; everything that is already connected
+  // stays untouched (a global refresh would disrupt healthy tunnels).
+  const reconnectCurrent = useCallback(async () => {
+    if (currentId === undefined) return
+    try { await api.reconnectDevice(currentId) } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [currentId])
+
   const current = devices.find(d => d.deviceId === currentId)
 
   return (
@@ -60,11 +69,12 @@ export function App() {
         currentId={currentId}
         onSelect={select}
         onOpenPanel={setPanel}
-        onRefresh={refresh}
+        onRefresh={reconnectCurrent}
+        onRefreshLabel="重连当前设备"
       />
       <main className="cockpit-main">
         {error !== undefined && <div className="cockpit-error" role="alert">{error}</div>}
-        <Workbench device={current} />
+        <Workbench device={current} onReconnect={reconnectCurrent} />
       </main>
       {panel === 'devices' && (
         <DevicePanel devices={devices} onClose={() => setPanel(undefined)} onChanged={() => void refresh()} />

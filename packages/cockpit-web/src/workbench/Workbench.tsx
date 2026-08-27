@@ -3,6 +3,9 @@ import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 
 export interface WorkbenchProps {
   readonly device: DeviceStatusFacts | undefined
+  /** Reconnects this single device; provided by the shell so the offline
+   * overlay offers an explicit recovery action. */
+  readonly onReconnect?: () => void
 }
 
 interface FrameInfo {
@@ -19,7 +22,7 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device }: WorkbenchProps) {
+export function Workbench({ device, onReconnect }: WorkbenchProps) {
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
 
@@ -77,6 +80,9 @@ export function Workbench({ device }: WorkbenchProps) {
                 <p className="overlay-title">设备不可用</p>
                 <p className="overlay-diagnostic">{frame.diagnostic}</p>
                 <p className="overlay-meta">最后更新：{new Date(frame.lastUpdatedAt).toLocaleTimeString()}</p>
+                {onReconnect !== undefined && (
+                  <button className="overlay-action" onClick={onReconnect}>重连此设备</button>
+                )}
               </div>
             )}
           </div>

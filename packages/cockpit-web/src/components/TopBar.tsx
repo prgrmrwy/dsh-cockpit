@@ -21,9 +21,10 @@ export interface TopBarProps {
   readonly onSelect: (deviceId: string) => void
   readonly onOpenPanel: (panel: PanelName) => void
   readonly onRefresh: () => void
+  readonly onRefreshLabel?: string
 }
 
-export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh }: TopBarProps) {
+export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, onRefreshLabel }: TopBarProps) {
   const [menuFor, setMenuFor] = useState<string | undefined>()
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | undefined>()
   const refreshRef = useRef(onRefresh)
@@ -65,7 +66,7 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh }:
         })}
       </div>
       <div className="topbar-actions">
-        <button className="ghost" onClick={onRefresh} title="刷新状态">↻</button>
+        <button className="ghost" onClick={onRefresh} title={onRefreshLabel ?? '刷新状态'}>↻</button>
         <button className="ghost" onClick={() => onOpenPanel('devices')} title="设备管理">☰</button>
       </div>
 
