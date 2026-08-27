@@ -34,7 +34,7 @@ describe('top bar', () => {
     expect(selected).toEqual(['d2'])
   })
 
-  it('renders official session-status groups as "label ×N" chips', () => {
+  it('renders official StateDot icons (no text labels) with "×N" counts', () => {
     const devices = [
       device({
         deviceId: 'd1', displayName: 'A', state: 'READY',
@@ -43,6 +43,7 @@ describe('top bar', () => {
           { state: 'warning', kind: 'approval', count: 2 },
           { state: 'warning', kind: 'question', count: 1 },
           { state: 'ongoing', kind: 'running', count: 2 },
+          { state: 'done', kind: 'completed', count: 1 },
         ],
       }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
@@ -52,39 +53,48 @@ describe('top bar', () => {
     )
     const tab = getByRole('tab', { name: /A/ })
     expect(tab.className).toContain('attention')
-    // Pending interactions keep the attention ring (official warning state).
+
     const chips = container.querySelectorAll('[data-cockpit-session-statuses="d1"] .session-chip')
-    expect(chips).toHaveLength(3)
-    expect(chips[0]!.getAttribute('data-session-kind')).toBe('approval')
-    expect(chips[0]!.getAttribute('data-session-state')).toBe('warning')
-    expect(chips[0]!.textContent).toContain('等待审批')
-    expect(chips[0]!.textContent).toContain('×2')
-    expect(chips[1]!.textContent).toContain('等待回答')
-    expect(chips[2]!.getAttribute('data-session-state')).toBe('ongoing')
-    expect(chips[2]!.textContent).toContain('进行中')
-    expect(chips[2]!.textContent).toContain('×2')
+    expect(chips).toHaveLength(4)
+
+    // ongoing → the official chase pixel matrix (SVG), no text inside the chip.
+    const running = container.querySelector('[data-session-kind="running"]')!
+    expect(running.querySelector('svg.dsh-state-dot-matrix')).not.toBeNull()
+    expect(running.textContent).toBe('×2') // count only, no label text
+    expect(running.getAttribute('title')).toBe('进行中 ×2')
+
+    // warning groups → amber dot (official warn-primary), count preserved.
+    const approval = container.querySelector('[data-session-kind="approval"] .dsh-state-dot')!
+    expect(approval.getAttribute('data-state')).toBe('warning')
+    expect(approval.className).toContain('dsh-state-dot')
+    expect(container.querySelector('[data-session-kind="approval"]')!.textContent).toBe('×2')
+
+    // done → green dot (official success-primary).
+    const completed = container.querySelector('[data-session-kind="completed"] .dsh-state-dot')!
+    expect(completed.getAttribute('data-state')).toBe('done')
+    expect(container.querySelector('[data-session-kind="completed"]')!.getAttribute('title')).toBe('已完成 ×1')
 
     // A device without live activity shows no chips at all.
     const quiet = getByRole('tab', { name: /B/ })
     expect(quiet.querySelector('[data-cockpit-session-statuses]')).toBeNull()
   })
 
-  it('keeps the official dot colors for session groups (warning=yellow, ongoing=green)', () => {
+  it('keeps the official dot colors for session groups (warning=yellow, done=green)', () => {
     const devices = [
       device({
         deviceId: 'd1', displayName: 'A', state: 'READY',
         sessionStatuses: [
           { state: 'warning', kind: 'approval', count: 1 },
-          { state: 'ongoing', kind: 'running', count: 1 },
+          { state: 'done', kind: 'completed', count: 1 },
         ],
       }),
     ]
     const { container } = render(
       <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
-    const chip = (kind: string) => container.querySelector(`[data-session-kind="${kind}"] .dot`)
-    expect(chip('approval')!.className).toContain('warn')
-    expect(chip('running')!.className).toContain('ok')
+    const dot = (kind: string) => container.querySelector(`[data-session-kind="${kind}"] .dsh-state-dot`)
+    expect(dot('approval')!.getAttribute('data-state')).toBe('warning')
+    expect(dot('completed')!.getAttribute('data-state')).toBe('done')
   })
 
   it('opens the context menu on right click', () => {

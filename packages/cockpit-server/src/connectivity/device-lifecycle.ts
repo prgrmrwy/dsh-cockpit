@@ -45,6 +45,13 @@ export class DeviceLifecycle {
   #runningSessions = 0
   #pendingApprovals = 0
   #pendingQuestions = 0
+  /** Last-observed running bit per session (official SessionManager
+   * prevRunning). First observation only records the bit; the true→false edge
+   * here arms the green "completed" reminder. */
+  #prevRunning = new Map<string, boolean>()
+  /** Sessions that finished running — the official green "done" reminder
+   * (completedNotifications); cleared on re-run and session-removed. */
+  #completed = new Set<string>()
   #stateExplicit: DeviceState = 'CONNECTING'
   #diagnostic = ''
   #endpoint: URL | undefined
@@ -84,13 +91,48 @@ export class DeviceLifecycle {
 
   /** Official session-row status groups, non-zero only, pending warning first
    * then active work — mirrors dsh-client-ui-workspace sessionStatuses
-   * ordering (approval/question before running). */
+   * ordering (approval/question before running before completed). */
   #sessionStatuses(): readonly SessionActivitySummary[] {
     const groups: SessionActivitySummary[] = []
     if (this.#pendingApprovals > 0) groups.push({ state: 'warning', kind: 'approval', count: this.#pendingApprovals })
     if (this.#pendingQuestions > 0) groups.push({ state: 'warning', kind: 'question', count: this.#pendingQuestions })
     if (this.#runningSessions > 0) groups.push({ state: 'ongoing', kind: 'running', count: this.#runningSessions })
+    if (this.#completed.size > 0) groups.push({ state: 'done', kind: 'completed', count: this.#completed.size })
     return groups
+  }
+
+  /** Official completed-notification edge semantics over a full session list
+   * (baseline/refresh): first observation only records the running bit —
+   * sessions already idle at load get no reminder. A running→idle edge arms
+   * the reminder; running again disarms it; a session that disappeared drops
+   * both. */
+  #syncCompleted(sessions: readonly { sessionId: string; running: boolean }[]): void {
+    const seen = new Set<string>()
+    for (const s of sessions) {
+      seen.add(s.sessionId)
+      const prev = this.#prevRunning.get(s.sessionId)
+      if (prev === undefined) {
+        this.#prevRunning.set(s.sessionId, s.running)
+        continue
+      }
+      if (prev && !s.running) this.#completed.add(s.sessionId)
+      else if (s.running) this.#completed.delete(s.sessionId)
+      this.#prevRunning.set(s.sessionId, s.running)
+    }
+    for (const id of this.#prevRunning.keys()) if (!seen.has(id)) this.#prevRunning.delete(id)
+    for (const id of this.#completed) if (!seen.has(id)) this.#completed.delete(id)
+  }
+
+  /** Incremental edge from a single live session-status frame. */
+  #observeRunning(sessionId: string, running: boolean): void {
+    const prev = this.#prevRunning.get(sessionId)
+    if (prev === undefined) {
+      this.#prevRunning.set(sessionId, running)
+      return
+    }
+    if (prev && !running) this.#completed.add(sessionId)
+    else if (running) this.#completed.delete(sessionId)
+    this.#prevRunning.set(sessionId, running)
   }
 
   start(): void {
@@ -197,11 +239,13 @@ export class DeviceLifecycle {
     this.#runningSessions = sessions.filter(s => s.running).length
     this.#pendingApprovals = 0
     this.#pendingQuestions = 0
+    this.#syncCompleted(sessions)
 
     this.#stream = this.#createStream(endpoint)
     this.#stream.on('event', event => {
       switch (event.type) {
         case 'session-status':
+          this.#observeRunning(event.sessionId, event.running)
           if (event.running) this.#runningSessions += 1
           else this.#runningSessions = Math.max(0, this.#runningSessions - 1)
           break
@@ -212,8 +256,11 @@ export class DeviceLifecycle {
           break
         }
         case 'session-added':
-        case 'session-removed':
           // Re-baseline lazily: refresh() reconciles exact counts.
+          break
+        case 'session-removed':
+          this.#prevRunning.delete(event.sessionId)
+          this.#completed.delete(event.sessionId)
           break
       }
       this.#emitFacts()
@@ -243,6 +290,7 @@ export class DeviceLifecycle {
       this.#runningSessions = sessions.filter(s => s.running).length
       this.#pendingApprovals = 0
       this.#pendingQuestions = 0
+      this.#syncCompleted(sessions)
       this.#emitFacts()
     } catch {
       // Keep last known facts; disconnect path will surface an error state.

@@ -115,6 +115,44 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
+  it('arms the green completed reminder on a running→idle edge only', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Baseline: sessions already idle at load get NO reminder (official edge
+    // semantics — first observation only records the running bit).
+    expect(lifecycle.current().sessionStatuses).not.toContainEqual({ state: 'done', kind: 'completed', count: expect.any(Number) })
+
+    // A live running→idle edge arms the green "已完成" reminder.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    expect(lifecycle.current().runningSessionCount).toBe(0)
+
+    // Re-running disarms it (official: running deletes the reminder).
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    // Running→idle again re-arms it.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    // Session removed drops the reminder.
+    emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
   it('stop() reports CONNECTING afterwards', async () => {
     const { lifecycle } = device()
     await lifecycle.stop()

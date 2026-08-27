@@ -41,7 +41,7 @@ export interface DeviceConnectionStatus {
 export type SessionActivityState = 'ongoing' | 'warning' | 'done'
 
 /** Which official status a summary group represents. */
-export type SessionActivityKind = 'running' | 'approval' | 'question'
+export type SessionActivityKind = 'running' | 'approval' | 'question' | 'completed'
 
 /** One non-zero session-status group of a device, e.g. { running ×N }. */
 export interface SessionActivitySummary {

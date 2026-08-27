@@ -1,0 +1,42 @@
+/* Official DSH session-row StateDot, shadowed from
+ * @deepseek-ai/dsh-client-ui-primitives + dsh-client-ui-theme:
+ * - --dsw-static-deepseek-450: #5686fe (chase matrix, brand blue)
+ * - --dsw-alias-state-success-primary: rgb(0,187,0) (done, green)
+ * - --dsw-alias-state-warn-primary: rgb(187,187,0) (warning, amber)
+ * - --dsw-alias-state-error-primary: rgb(187,0,0) (error, red) */
+.dsh-state-dot {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+.dsh-state-dot[data-state='done'] { color: rgb(0, 187, 0); }
+.dsh-state-dot[data-state='warning'] { color: rgb(187, 187, 0); }
+.dsh-state-dot[data-state='error'] { color: rgb(187, 0, 0); }
+.dsh-state-dot::after {
+  content: '';
+  position: absolute;
+  top: 20%;
+  right: 20%;
+  bottom: 20%;
+  left: 20%;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* ongoing: 8-pixel chase matrix — every cell starts at the dim state and
+ * the animation phases through opacity rises in clockwise order. */
+.dsh-state-dot-matrix {
+  flex: none;
+  color: #5686fe;
+}
+.dsh-state-dot-cell {
+  fill: currentColor;
+  opacity: 0.15;
+  animation: dsh-state-dot-chase 1s infinite;
+}
+@keyframes dsh-state-dot-chase {
+  0%, 12.4% { opacity: 1; }
+  12.5%, 24.9% { opacity: 0.6; }
+  25%, 37.4% { opacity: 0.35; }
+  37.5%, to { opacity: 0.15; }
+}

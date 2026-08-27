@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react'
 import type { DeviceStatusFacts, DeviceState, SessionActivityKind, SessionActivityState } from '@dsh-cockpit/shared'
 import type { PanelName } from '../panels/Panels.jsx'
+import { StateDot } from './StateDot.jsx'
 
 /** Status dot semantics: direct mapping of the connectivity state to the
  * official stoplight vocabulary. No new states; CONNECTING additionally
@@ -16,21 +17,22 @@ const DOT: Record<DeviceState, string> = {
   INCOMPATIBLE: 'error',
 }
 
-/** Session-row status groups reuse the official stoplight vocabulary of
- * dsh-client-ui-workspace (sessionStatuses): warning = pending interaction,
- * ongoing = active work. */
-const ACTIVITY_DOT: Record<SessionActivityState, string> = {
-  warning: 'warn',
-  ongoing: 'ok',
-  done: 'ok',
-}
-
 /** Official label vocabulary (dsh-client-ui-workspace i18n: status.running →
- * 进行中, status.waitingApproval → 等待审批, status.waitingAnswer → 等待回答). */
+ * 进行中, status.waitingApproval → 等待审批, status.waitingAnswer → 等待回答,
+ * status.completed → 已完成). Hover titles only; the tab itself is icon + count. */
 const ACTIVITY_LABEL: Record<SessionActivityKind, string> = {
   running: '进行中',
   approval: '等待审批',
   question: '等待回答',
+  completed: '已完成',
+}
+
+/** The official StateDot state for each cockpit activity group. */
+const ACTIVITY_STATE: Record<SessionActivityKind, SessionActivityState> = {
+  running: 'ongoing',
+  approval: 'warning',
+  question: 'warning',
+  completed: 'done',
 }
 
 export interface TopBarProps {
@@ -85,9 +87,9 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
                       className="session-chip"
                       data-session-kind={status.kind}
                       data-session-state={status.state}
+                      title={`${ACTIVITY_LABEL[status.kind]} ×${status.count}`}
                     >
-                      <span className={`dot ${ACTIVITY_DOT[status.state]}`} aria-hidden="true" />
-                      {ACTIVITY_LABEL[status.kind]}
+                      <StateDot state={ACTIVITY_STATE[status.kind]} size={8} />
                       <span className="session-chip-count">×{status.count}</span>
                     </span>
                   ))}
