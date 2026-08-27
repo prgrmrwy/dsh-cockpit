@@ -63,13 +63,12 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
       <div className="topbar-devices" role="tablist">
         {devices.map(device => {
           const active = device.deviceId === currentId
-          const attention = device.pendingInteractionCount > 0
           return (
             <button
               key={device.deviceId}
               role="tab"
               aria-selected={active}
-              className={`topbar-device${active ? ' active' : ''}${attention ? ' attention' : ''}`}
+              className={`topbar-device${active ? ' active' : ''}`}
               title={device.diagnostic ?? device.displayName}
               onClick={() => onSelect(device.deviceId)}
               onContextMenu={event => openContextMenu(event, device.deviceId)}

@@ -52,7 +52,7 @@ describe('top bar', () => {
       <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
     const tab = getByRole('tab', { name: /A/ })
-    expect(tab.className).toContain('attention')
+    expect(tab.className).toContain('active')
 
     const chips = container.querySelectorAll('[data-cockpit-session-statuses="d1"] .session-chip')
     expect(chips).toHaveLength(4)
@@ -79,7 +79,18 @@ describe('top bar', () => {
     expect(quiet.querySelector('[data-cockpit-session-statuses]')).toBeNull()
   })
 
-  it('keeps the official dot colors for session groups (warning=yellow, done=green)', () => {
+  it('keeps the official dot colors for session groups (warning=amber, done=green)', async () => {
+    const { readFile } = await import('node:fs/promises')
+    const { resolve } = await import('node:path')
+    // Vitest runs with the package dir as cwd, so the source CSS resolves
+    // from there (import.meta.url has an http scheme under vitest).
+    const css = await readFile(resolve('src/components/state-dot.css'), 'utf8')
+    // Official theme tokens (dsh-client-ui-theme): warn=amber-500 #f59e0b,
+    // done=green-500 #22c55e, ongoing=deepseek-450 #5686fe.
+    expect(css).toContain("[data-state='warning'] { color: #f59e0b; }")
+    expect(css).toContain("[data-state='done'] { color: #22c55e; }")
+    expect(css).toContain('color: #5686fe;')
+
     const devices = [
       device({
         deviceId: 'd1', displayName: 'A', state: 'READY',
@@ -95,6 +106,24 @@ describe('top bar', () => {
     const dot = (kind: string) => container.querySelector(`[data-session-kind="${kind}"] .dsh-state-dot`)
     expect(dot('approval')!.getAttribute('data-state')).toBe('warning')
     expect(dot('completed')!.getAttribute('data-state')).toBe('done')
+  })
+
+  it('does not outline a tab whose device has pending interactions', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY', pendingInteractionCount: 2,
+        sessionStatuses: [{ state: 'warning', kind: 'approval', count: 2 }],
+      }),
+      device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
+    ]
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const tab = getByRole('tab', { name: /A/ })
+    // No outline/attention class: pending state is shown by the amber chip,
+    // and switching tabs must not leave a stale border behind.
+    expect(tab.className).not.toContain('attention')
+    expect(getComputedStyle(tab).outlineStyle).toBe('none')
   })
 
   it('opens the context menu on right click', () => {

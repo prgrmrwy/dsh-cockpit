@@ -1,17 +1,18 @@
 /* Official DSH session-row StateDot, shadowed from
  * @deepseek-ai/dsh-client-ui-primitives + dsh-client-ui-theme:
  * - --dsw-static-deepseek-450: #5686fe (chase matrix, brand blue)
- * - --dsw-alias-state-success-primary: rgb(0,187,0) (done, green)
- * - --dsw-alias-state-warn-primary: rgb(187,187,0) (warning, amber)
- * - --dsw-alias-state-error-primary: rgb(187,0,0) (error, red) */
+ * - --dsw-alias-state-success-primary: var(--dsw-static-green-500) #22c55e
+ * - --dsw-alias-state-warn-primary: var(--dsw-static-amber-500) #f59e0b
+ * - --dsw-alias-state-error-primary: var(--dsw-static-red-400) #f25a5a
+ *   (dark theme token; the light theme token is red-600) */
 .dsh-state-dot {
   position: relative;
   display: inline-block;
   flex: none;
 }
-.dsh-state-dot[data-state='done'] { color: rgb(0, 187, 0); }
-.dsh-state-dot[data-state='warning'] { color: rgb(187, 187, 0); }
-.dsh-state-dot[data-state='error'] { color: rgb(187, 0, 0); }
+.dsh-state-dot[data-state='done'] { color: #22c55e; }
+.dsh-state-dot[data-state='warning'] { color: #f59e0b; }
+.dsh-state-dot[data-state='error'] { color: #f25a5a; }
 .dsh-state-dot::after {
   content: '';
   position: absolute;
