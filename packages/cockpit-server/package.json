@@ -1,0 +1,35 @@
+{
+  "name": "@dsh-cockpit/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cockpit local service: device connectivity, SSH tunnels, status aggregation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@nestjs/common": "^11",
+    "@nestjs/core": "^11",
+    "@nestjs/platform-express": "^11",
+    "@nestjs/websockets": "^11",
+    "reflect-metadata": "^0.2",
+    "rxjs": "^7.8",
+    "ws": "^8",
+    "@dsh-cockpit/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22",
+    "@types/ws": "^8",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^2"
+  }
+}

@@ -1,0 +1,112 @@
+/** Device category. Local devices need no tunnel; remote devices are reached
+ * through an owned localhost SSH forward. */
+export type DeviceKind = 'local' | 'remote'
+
+/** Connection-layer states, driven by the connectivity layer only. */
+export type DeviceState =
+  | 'SSH_UNREACHABLE'
+  | 'TUNNEL_ERROR'
+  | 'DSH_UNAVAILABLE'
+  | 'NON_DSH_SERVICE'
+  | 'INCOMPATIBLE'
+  | 'CONNECTING'
+  | 'READY'
+  | 'DEGRADED'
+
+/** A device record as persisted by the registry. */
+export interface DeviceRecord {
+  readonly deviceId: string
+  readonly displayName: string
+  readonly kind: DeviceKind
+  readonly sshAlias?: string
+  readonly remoteDshPort: number
+  readonly localPort?: number
+  readonly enabled: boolean
+  readonly order: number
+}
+
+/** Live per-device connection facts. Endpoint is the loopback URL. */
+export interface DeviceConnectionStatus {
+  readonly state: DeviceState
+  readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
+  readonly diagnostic: string
+  readonly endpoint?: string
+  readonly lastUpdatedAt: number
+}
+
+/** Aggregated status the shell renders on the top bar. */
+export interface DeviceStatusFacts {
+  readonly deviceId: string
+  readonly displayName: string
+  readonly kind: DeviceKind
+  readonly enabled: boolean
+  readonly order: number
+  readonly state: DeviceState
+  readonly runningSessionCount: number
+  readonly pendingInteractionCount: number
+  readonly outcomeUnknownCount: number
+  readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
+  readonly lastUpdatedAt: number
+  readonly diagnostic?: string
+}
+
+/** One session status as reported by the remote rc.2 session.list / events. */
+export interface SessionStatusEvent {
+  readonly sessionId: string
+  readonly running: boolean
+}
+
+/** Pending human interaction surfaced by remote events (approval/question). */
+export interface PendingInteractionEvent {
+  readonly sessionId: string
+  readonly kind: 'approval' | 'question'
+  readonly rpcId: string
+}
+
+/** Aggregated baseline snapshot for one device (from session.list). */
+export interface DeviceBaseline {
+  readonly deviceId: string
+  readonly runningSessions: number
+  readonly totalSessions: number
+  readonly updatedAt: number
+}
+
+/** Event kinds the cockpit consumes from the official mux/host streams. */
+export type CockpitEvent =
+  | { readonly type: 'session-status'; readonly deviceId: string; readonly sessionId: string; readonly running: boolean }
+  | { readonly type: 'interaction'; readonly deviceId: string; readonly kind: 'approval' | 'question'; readonly rpcId: string; readonly resolved: boolean }
+  | { readonly type: 'session-added'; readonly deviceId: string }
+  | { readonly type: 'session-removed'; readonly deviceId: string }
+
+/** REST API responses exposed by cockpit-local. */
+export interface DevicesResponse {
+  readonly devices: readonly DeviceStatusFacts[]
+}
+
+export interface DeviceDetailResponse {
+  readonly device: DeviceStatusFacts
+}
+
+export interface AddDeviceRequest {
+  readonly displayName: string
+  readonly sshAlias: string
+  readonly remoteDshPort: number
+  readonly enabled?: boolean
+}
+
+export interface UpdateDeviceRequest {
+  readonly displayName?: string
+  readonly sshAlias?: string
+  readonly remoteDshPort?: number
+  readonly enabled?: boolean
+}
+
+export interface RemoveDeviceRequest {
+  readonly deviceId: string
+  readonly confirmed: boolean
+}
+
+export interface ApiError {
+  readonly code: string
+  readonly message: string
+}
