@@ -121,17 +121,30 @@ export class DeviceLifecycle {
 
   async #connectOnce(): Promise<void> {
     if (this.#abort.signal.aborted) throw new Error('aborted')
+    if (this.#record.kind === 'local') {
+      // This Mac: no tunnel. The DSH runs on the machine itself, so we target
+      // the loopback port directly. Everything else (probe, baseline, streams)
+      // is identical to a remote device.
+      this.#endpoint = new URL(`http://127.0.0.1:${this.#record.remoteDshPort}`)
+      await this.#connectRc2(this.#endpoint, undefined)
+      return
+    }
     const handle = await this.#tunnels.connect({
       deviceId: this.deviceId,
       sshAlias: this.#record.sshAlias ?? '',
       remoteDshPort: this.#record.remoteDshPort,
     })
     this.#endpoint = handle.endpoint
-    this.#client = await this.#createClient(handle.endpoint)
+    await this.#connectRc2(handle.endpoint, async () => { await handle.dispose() })
+  }
+
+  /** Shared probe/baseline/stream wiring for local and remote endpoints. */
+  async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<void> {
+    this.#client = await this.#createClient(endpoint)
     const probe = await this.#client.probe()
     if (!probe.ok) {
       this.#setState(probe.state, probe.diagnostic)
-      await handle.dispose()
+      await onFailure?.()
       this.#endpoint = undefined
       return
     }
@@ -140,7 +153,7 @@ export class DeviceLifecycle {
     this.#runningSessions = sessions.filter(s => s.running).length
     this.#pendingInteractions = 0
 
-    this.#stream = this.#createStream(handle.endpoint)
+    this.#stream = this.#createStream(endpoint)
     this.#stream.on('event', event => {
       switch (event.type) {
         case 'session-status':

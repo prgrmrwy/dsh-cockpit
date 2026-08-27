@@ -86,3 +86,40 @@ describe('device lifecycle', () => {
     expect(lifecycle.current().state).toBe('CONNECTING')
   })
 })
+describe('local device lifecycle', () => {
+  it('connects directly to the loopback port without a tunnel', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    let tunnelConnectCalled = false
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    // Wrap connect to observe it must NOT be invoked for a local device.
+    const original = tunnel.connect.bind(tunnel)
+    tunnel.connect = (request => {
+      tunnelConnectCalled = true
+      return original(request)
+    }) as typeof tunnel.connect
+    const lifecycle = new DeviceLifecycle({
+      record: { ...record(), kind: 'local', sshAlias: undefined },
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const facts = lifecycle.current()
+    expect(facts.kind).toBe('local')
+    expect(facts.state).toBe('CONNECTING')
+    await lifecycle.stop()
+    expect(tunnelConnectCalled).toBe(false)
+    expect(lifecycle.current().endpoint).toBeUndefined()
+  })
+})

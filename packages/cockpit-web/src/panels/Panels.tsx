@@ -15,7 +15,7 @@ export function DevicePanel({ devices, onClose, onChanged }: {
   readonly onClose: () => void
   readonly onChanged: () => void
 }) {
-  const [form, setForm] = useState({ displayName: '', sshAlias: '', remoteDshPort: '3080' })
+  const [form, setForm] = useState({ displayName: '', kind: 'remote' as 'local' | 'remote', sshAlias: '', remoteDshPort: '3080' })
   const [error, setError] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
 
@@ -25,10 +25,11 @@ export function DevicePanel({ devices, onClose, onChanged }: {
     try {
       await api.addDevice({
         displayName: form.displayName,
-        sshAlias: form.sshAlias,
+        kind: form.kind,
+        ...(form.kind === 'remote' ? { sshAlias: form.sshAlias } : {}),
         remoteDshPort: Number(form.remoteDshPort),
       })
-      setForm({ displayName: '', sshAlias: '', remoteDshPort: '3080' })
+      setForm({ displayName: '', kind: 'remote', sshAlias: '', remoteDshPort: '3080' })
       onChanged()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -75,11 +76,20 @@ export function DevicePanel({ devices, onClose, onChanged }: {
           <input value={form.displayName} onChange={e => setForm(f => ({ ...f, displayName: e.target.value }))} required />
         </label>
         <label>
-          SSH 别名
-          <input value={form.sshAlias} onChange={e => setForm(f => ({ ...f, sshAlias: e.target.value }))} required placeholder="lumevm" />
+          类型
+          <select value={form.kind} onChange={e => setForm(f => ({ ...f, kind: e.target.value as 'local' | 'remote' }))}>
+            <option value="remote">SSH 远端（需要 alias）</option>
+            <option value="local">本机（无 SSH）</option>
+          </select>
         </label>
+        {form.kind === 'remote' && (
+          <label>
+            SSH 别名
+            <input value={form.sshAlias} onChange={e => setForm(f => ({ ...f, sshAlias: e.target.value }))} required placeholder="lumevm" />
+          </label>
+        )}
         <label>
-          远端 DSH 端口
+          DSH 端口
           <input type="number" min={1} max={65535} value={form.remoteDshPort} onChange={e => setForm(f => ({ ...f, remoteDshPort: e.target.value }))} required />
         </label>
         <button type="submit" disabled={busy}>{busy ? '验证中…' : '添加'}</button>

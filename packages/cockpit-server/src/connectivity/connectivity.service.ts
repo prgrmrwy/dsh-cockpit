@@ -82,26 +82,31 @@ export class ConnectivityService implements OnApplicationShutdown {
     }
   }
 
-  /** Add a device: identity gate first, then persist and attach. */
+  /** Add a device. A remote device must pass the SSH identity gate before it is
+   * persisted; a local device (This Mac) needs no SSH — it targets the loopback
+   * DSH port directly. */
   async addDevice(input: {
     displayName: string
-    sshAlias: string
+    sshAlias?: string
     remoteDshPort: number
+    kind?: 'local' | 'remote'
     enabled?: boolean
   }): Promise<DeviceRecord> {
-    validateSshAlias(input.sshAlias)
-    const identity = await probeSshIdentity(input.sshAlias)
-    if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
+    const kind = input.kind ?? 'remote'
+    if (kind === 'remote') {
+      if (input.sshAlias === undefined || input.sshAlias === '') throw new Error('SSH alias is required for a remote device')
+      const identity = await probeSshIdentity(input.sshAlias)
+      if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
+    }
     const records = await this.#registry.load()
-    const deviceId = `device-${randomSuffix()}`
     const record: DeviceRecord = {
-      deviceId,
+      deviceId: `device-${randomSuffix()}`,
       displayName: input.displayName,
-      kind: 'remote',
-      sshAlias: input.sshAlias,
+      kind,
       remoteDshPort: input.remoteDshPort,
       enabled: input.enabled ?? true,
       order: records.length,
+      ...(kind === 'remote' ? { sshAlias: input.sshAlias! } : {}),
     }
     const next = [...records, record]
     await this.#registry.save(next)

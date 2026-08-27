@@ -90,7 +90,9 @@ export interface DeviceDetailResponse {
 
 export interface AddDeviceRequest {
   readonly displayName: string
-  readonly sshAlias: string
+  /** Kind of device; remote requires sshAlias, local targets the loopback port directly. */
+  readonly kind?: 'local' | 'remote'
+  readonly sshAlias?: string
   readonly remoteDshPort: number
   readonly enabled?: boolean
 }

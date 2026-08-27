@@ -64,12 +64,14 @@ function decodeDeviceId(value: string): string {
 
 function requireAdd(body: AddDeviceRequest): AddDeviceRequest {
   if (typeof body?.displayName !== 'string' || body.displayName === '') throw new HttpException(toError('bad-request', 'displayName required'), HttpStatus.BAD_REQUEST)
-  if (typeof body?.sshAlias !== 'string' || body.sshAlias === '') throw new HttpException(toError('bad-request', 'sshAlias required'), HttpStatus.BAD_REQUEST)
+  if (body.kind !== undefined && body.kind !== 'local' && body.kind !== 'remote') throw new HttpException(toError('bad-request', 'kind must be local or remote'), HttpStatus.BAD_REQUEST)
   if (!Number.isInteger(body?.remoteDshPort) || (body?.remoteDshPort ?? 0) < 1) throw new HttpException(toError('bad-request', 'remoteDshPort must be a positive integer'), HttpStatus.BAD_REQUEST)
+  if ((body.kind ?? 'remote') === 'remote' && (typeof body?.sshAlias !== 'string' || body.sshAlias === '')) throw new HttpException(toError('bad-request', 'sshAlias required for remote device'), HttpStatus.BAD_REQUEST)
   return {
     displayName: body.displayName,
-    sshAlias: body.sshAlias,
     remoteDshPort: body.remoteDshPort,
+    ...(body.kind === undefined ? {} : { kind: body.kind }),
+    ...(body.sshAlias === undefined ? {} : { sshAlias: body.sshAlias }),
     ...(body?.enabled === undefined ? {} : { enabled: body.enabled }),
   }
 }
