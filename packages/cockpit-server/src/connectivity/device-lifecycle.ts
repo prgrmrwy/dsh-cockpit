@@ -166,6 +166,9 @@ export class DeviceLifecycle {
     return new Promise(resolve => {
       const onDisconnect = () => {
         this.#stream?.off('disconnect', onDisconnect)
+        // The tunnel died: surface the transition immediately instead of
+        // pretending the device is still live while reconnect runs.
+        this.#setState('CONNECTING', 'event stream disconnected, reconnecting')
         resolve()
       }
       this.#stream?.on('disconnect', onDisconnect)
