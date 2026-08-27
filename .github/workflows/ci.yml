@@ -18,6 +18,9 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # server/web 通过 dist 引用 @dsh-cockpit/shared（types 指向 dist/index.d.ts，
+      # dist 已被 gitignore），先构建共享包再执行类型检查/测试
+      - run: pnpm --filter @dsh-cockpit/shared build
       - run: pnpm run typecheck
       - run: pnpm run lint
       - run: pnpm test
