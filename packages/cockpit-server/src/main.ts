@@ -16,6 +16,17 @@ export async function bootstrap(): Promise<void> {
   app.useStaticAssets(webDist)
 
   await app.listen(3090, '127.0.0.1')
+
+  // The browser keeps one SSE connection open forever (EventSource). Node's
+  // server.close() waits for every HTTP connection to end, so Ctrl-C would
+  // hang until the browser tab closes. Force-drop all connections on signal so
+  // shutdown is immediate; the SSE client reconnects on the next launch.
+  const server = app.getHttpServer() as import('node:http').Server
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.once(signal, () => {
+      server.closeAllConnections?.()
+    })
+  }
 }
 
 const invokedDirectly = process.argv[1] !== undefined
