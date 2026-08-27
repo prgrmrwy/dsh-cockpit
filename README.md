@@ -28,7 +28,8 @@
 
 ## 远端要求
 
-**标准 `dsh web` 即可，零改造、零插件。**
+**标准 `dsh web` 即可，零改造。** 下文的[桥接插件（可选）](#桥接插件可选与-dsh-的通信)是设备侧的
+可选配套，不装不影响任何核心能力。
 
 驾驶舱只使用 rc.2 官方接口：`host.describe`、`session.list` 与
 `/api/events.mux`、`/api/events.host`。所需的状态信号
@@ -51,6 +52,47 @@
 - **不假装实时** —— 设备离线时保留最后已知状态，但明确标注离线与最后更新
   时间；连接层知道的具体原因（SSH 不通 / 隧道失败 / DSH 未运行 / 非 DSH 服务 /
   版本不兼容）直接呈现，因为远端页面自己说不出来。
+
+## 桥接插件（可选）：与 DSH 的通信
+
+驾驶舱核心功能**不依赖**任何插件（见「远端要求」）；`packages/dsh-cockpit-bridge`
+是一个**可选**的官方 DSH web 客户端插件，运行在**设备自己的 dsh web 页面**里
+（同源 cordis bundle），把 DSH 页面中一个纯浏览器本地的信号——「用户点击/打开了
+哪个会话」——桥接给驾驶舱。
+
+### 为什么需要它
+
+官方侧栏打开会话（`sessions.list` store 的 `current`，即 `SessionManager.select`）
+是**纯浏览器内存状态**，事件流上没有任何「选中」信号；驾驶舱按架构原则不读
+iframe DOM，也拿不到它。有了插件后：
+
+- 驾驶舱顶栏显示 ⛓ 桥接标记（`bridgeSeenAt`），一眼确认该设备连接层活着；
+- 完成提醒绿点按**官方 select 语义**精确清除——打开哪个会话就清除哪个会话的绿点。
+  不装插件时行为仍然正确：绿点只能靠「重新运行 / 会话删除」清除。
+
+### 与 DSH 的通信
+
+| 信号 | 插件侧（设备 DSH 页面内） | 驾驶舱侧 |
+| --- | --- | --- |
+| **启动 hello** | 页面加载即 `POST /api/bridge/hello {version}` | 按请求 `Origin` 匹配设备 → 记 `bridgeSeenAt` → 顶栏 ⛓ |
+| **会话选择** | 订阅官方 `sessions.list` 的 `current`，用户点击会话（250ms 防抖）→ `POST /api/bridge/session-opened {sessionId}` | 按 `Origin` 匹配设备 → `clearCompletedSession(sessionId)`，只清该会话绿点 |
+
+- **设备识别不写死**：插件不需要、也不知道自己是哪台设备——驾驶舱拿请求的
+  `Origin`（`127.0.0.1:<隧道端口>`，与设备 endpoint 同源）与各设备实时端点比对
+  匹配。插件运行在 DSH 页面内，天然携带正确的同源 Origin。
+- **认证**：跨源 fetch 带 `credentials: include`（驾驶舱对 loopback origin 开启
+  CORS credentials），凭 HttpOnly cookie 通过 token 门禁；收到 401 时先请求
+  `GET /api/bootstrap` 领取 cookie，再重发一次。
+- **只传 `sessionId`**：不读、不传会话内容、settings、credentials。
+- **静默失败**：驾驶舱不可达时吞掉错误（fire-and-forget），绝不扰动 DSH 页面；
+  下一次会话变化会重新上报。
+
+### 安装（设备侧，可选）
+
+每台要享受桥接能力的设备：在其 `dsh.yaml`（ohmydsh manifest）的 bundles 里加入
+`"dsh-cockpit-bridge"`，profile dependencies 指向本仓库包路径，`dsh build`
+物化到该设备 `~/.dsh/profiles/web`，再重启该设备的 DSH web。详见
+`packages/dsh-cockpit-bridge/README.md`。
 
 ## 运行
 
@@ -89,14 +131,14 @@ node packages/cockpit-server/dist/main.js
 ## 安全与边界
 
 - 驾驶舱服务只监听 `127.0.0.1`，凭据仅复用系统 OpenSSH 免密，**不保存**密码/私钥/passphrase。
-- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；不向远端安装任何插件。
+- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；驾驶舱运行时零安装——桥接插件（若部署）由用户在设备侧自行安装，只上报 sessionId。
 - 每个 `127.0.0.1:<port>` 均为 secure context，远端 GUI 经隧道原生运行。
 - 可捕获信号（SIGINT/SIGTERM）下终结性清理自有 SSH 子进程（无 `ppid=1` 孤儿），不误杀用户其他 SSH 连接。
 - 已知边界：驾驶舱离线期间的 approval/question **事件**读不回来（该状态无查询字段，属 rc.2 协议限制）；进入设备后其自身 UI 会正常显示。
 
 ## 验证（当前实现已通过的实测）
 
-- server vitest 13/13（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换、设备生命周期）
+- server vitest 20/20（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换、设备生命周期）
 - 三包 typecheck + build 全绿
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
