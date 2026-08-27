@@ -3,7 +3,8 @@ import type { DeviceStatusFacts, DeviceState } from '@dsh-cockpit/shared'
 import type { PanelName } from '../panels/Panels.jsx'
 
 /** Status dot semantics: direct mapping of the connectivity state to the
- * official stoplight vocabulary. No new states, no animation. */
+ * official stoplight vocabulary. No new states; CONNECTING additionally
+ * pulses (CSS) so the in-progress transition is visible without a refresh. */
 const DOT: Record<DeviceState, string> = {
   READY: 'ok',
   DEGRADED: 'warn',

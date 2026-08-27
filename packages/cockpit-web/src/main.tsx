@@ -2,6 +2,7 @@ import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from './api/client.js'
+import { subscribeDevices } from './api/stream.js'
 import { TopBar } from './components/TopBar.jsx'
 import { Workbench } from './workbench/Workbench.jsx'
 import { DevicePanel, OverviewPanel, SettingsPanel, type PanelName } from './panels/Panels.jsx'
@@ -32,6 +33,11 @@ export function App() {
     await refresh()
   }
   useEffect(() => { void boot() }, [refresh])
+
+  // Live status: the server pushes every facts change over SSE. Without this
+  // subscription the UI would only update on full page refreshes — the
+  // CONNECTING → READY transition would be invisible ("刷新了才出来").
+  useEffect(() => subscribeDevices(setDevices), [])
 
   // Startup behavior: enter the last used device; first run shows overview.
   const lastUsed = useMemo(() => {

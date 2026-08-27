@@ -56,4 +56,46 @@ describe('workbench', () => {
     rerender(<StrictMode><Workbench device={ready} /></StrictMode>)
     expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
   })
+
+  it('shows the connecting overlay (spinner, no failure wording) while CONNECTING', () => {
+    const { container } = render(<StrictMode><Workbench device={device({ state: 'CONNECTING', diagnostic: 'connecting' })} /></StrictMode>)
+    const overlay = container.querySelector('[data-cockpit-offline="d1"]')
+    expect(overlay).not.toBeNull()
+    expect(overlay!.getAttribute('data-cockpit-overlay-state')).toBe('CONNECTING')
+    expect(container.querySelector('.overlay-spinner')).not.toBeNull()
+    expect(container.querySelector('.overlay-title')?.textContent).toBe('正在连接…')
+    expect(container.querySelector('.overlay-meta')).not.toBeNull()
+  })
+
+  it('refreshes the overlay timestamp when only lastUpdatedAt changes', () => {
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={device({ state: 'CONNECTING', lastUpdatedAt: 23 * 3600_000 })} /></StrictMode>,
+    )
+    const before = container.querySelector('.overlay-meta')?.textContent
+    rerender(
+      <StrictMode><Workbench device={device({ state: 'CONNECTING', lastUpdatedAt: 25 * 3600_000 })} /></StrictMode>,
+    )
+    const after = container.querySelector('.overlay-meta')?.textContent
+    expect(after).not.toBe(before)
+  })
+
+  it('follows the live tunnel endpoint after a reconnect (new loopback port)', () => {
+    const oldPort = device({ state: 'READY', endpoint: 'http://127.0.0.1:51000/' })
+    const connecting = device({ state: 'CONNECTING', diagnostic: 'reconnecting', endpoint: undefined })
+    const newPort = device({ state: 'READY', diagnostic: 'ok', endpoint: 'http://127.0.0.1:53000/' })
+    const { container, rerender } = render(<StrictMode><Workbench device={oldPort} /></StrictMode>)
+    const frame = (): Element | null => container.querySelector('iframe[data-workbench-device="d1"]')
+    expect(frame()!.getAttribute('src')).toBe('http://127.0.0.1:51000/')
+
+    // Reconnect: CONNECTING without a live endpoint keeps the last URL while
+    // the overlay (spinner) hides the stale frame.
+    rerender(<StrictMode><Workbench device={connecting} /></StrictMode>)
+    expect(frame()!.getAttribute('src')).toBe('http://127.0.0.1:51000/')
+    expect(container.querySelector('.overlay-spinner')).not.toBeNull()
+
+    // READY again on a NEW port: the iframe must follow, not keep the dead one.
+    rerender(<StrictMode><Workbench device={newPort} /></StrictMode>)
+    expect(frame()!.getAttribute('src')).toBe('http://127.0.0.1:53000/')
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
+  })
 })

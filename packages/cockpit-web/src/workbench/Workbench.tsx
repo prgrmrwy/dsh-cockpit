@@ -39,10 +39,19 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
       setFrames([...registryRef.current.values()])
     } else {
       // Keep live status current on the already-created frame (reconnect etc).
+      // The tunnel endpoint is reassigned on every reconnect (fresh random
+      // loopback port), so the iframe must follow the live endpoint — otherwise
+      // it would keep loading the OLD dead port after a successful reconnect.
       const prior = registryRef.current.get(device.deviceId)!
-      const updated: FrameInfo = { ...prior, state: device.state, diagnostic: device.diagnostic, lastUpdatedAt: device.lastUpdatedAt }
+      const updated: FrameInfo = {
+        ...prior,
+        url: device.endpoint ?? prior.url,
+        state: device.state,
+        diagnostic: device.diagnostic,
+        lastUpdatedAt: device.lastUpdatedAt,
+      }
       registryRef.current.set(device.deviceId, updated)
-      if (updated.state !== prior.state || updated.diagnostic !== prior.diagnostic) {
+      if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt) {
         setFrames([...registryRef.current.values()])
       }
     }
@@ -60,6 +69,11 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
     <section className="workbench" data-cockpit-workbench="true">
       {frames.map(frame => {
         const active = frame.deviceId === device.deviceId
+        // CONNECTING is a live "in progress" state — show a spinner and
+        // connecting wording, not the failure overlay. Everything that is not
+        // READY/DEGRADED keeps the overlay so the iframe stays mounted but
+        // hidden behind an honest status panel.
+        const busy = active && frame.state === 'CONNECTING'
         const offline = active && frame.state !== 'READY' && frame.state !== 'DEGRADED'
         return (
           <div
@@ -76,12 +90,18 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
               data-workbench-device={frame.deviceId}
             />
             {offline && (
-              <div className="workbench-overlay" role="status" data-cockpit-offline={frame.deviceId}>
-                <p className="overlay-title">设备不可用</p>
+              <div
+                className="workbench-overlay"
+                role="status"
+                data-cockpit-offline={frame.deviceId}
+                data-cockpit-overlay-state={frame.state}
+              >
+                {busy && <span className="overlay-spinner" aria-hidden="true" />}
+                <p className="overlay-title">{busy ? '正在连接…' : '设备不可用'}</p>
                 <p className="overlay-diagnostic">{frame.diagnostic}</p>
                 <p className="overlay-meta">最后更新：{new Date(frame.lastUpdatedAt).toLocaleTimeString()}</p>
                 {onReconnect !== undefined && (
-                  <button className="overlay-action" onClick={onReconnect}>重连此设备</button>
+                  <button className="overlay-action" onClick={onReconnect}>{busy ? '重新连接' : '重连此设备'}</button>
                 )}
               </div>
             )}

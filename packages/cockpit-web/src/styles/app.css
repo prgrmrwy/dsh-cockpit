@@ -49,13 +49,16 @@ body {
   color: var(--error); padding: 4px 8px; border-radius: 6px; cursor: pointer;
 }
 
-/* status dots: official stoplight vocabulary, no custom states */
+/* status dots: official stoplight vocabulary, no new states. CONNECTING
+   (busy) pulses so an in-progress connection is visible without a refresh. */
 .dot {
   width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: 0 0 auto;
 }
 .dot.ok { background: var(--ok); }
 .dot.warn, .dot.busy { background: var(--warn); }
 .dot.error { background: var(--error); }
+@keyframes cockpit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.dot.busy { animation: cockpit-pulse 1.2s ease-in-out infinite; }
 
 .badge {
   background: var(--warn); color: #1a1a1a; border-radius: 10px;
@@ -92,6 +95,12 @@ body {
   position: absolute; inset: 0; background: rgba(16, 18, 20, 0.85);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; z-index: 10;
+}
+@keyframes cockpit-spin { to { transform: rotate(360deg); } }
+.overlay-spinner {
+  width: 28px; height: 28px; border-radius: 50%; margin-bottom: 8px;
+  border: 3px solid var(--border); border-top-color: var(--fg);
+  animation: cockpit-spin 0.8s linear infinite;
 }
 .overlay-title { font-weight: 600; font-size: 16px; margin: 0; }
 .overlay-diagnostic { color: var(--fg-dim); margin: 0; max-width: 420px; text-align: center; }
