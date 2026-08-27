@@ -8,6 +8,8 @@ export interface WorkbenchProps {
   readonly onReconnect?: () => void
 }
 
+const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
+
 interface FrameInfo {
   readonly deviceId: string
   readonly url: string
@@ -24,7 +26,20 @@ interface FrameInfo {
  * cannot affect it and vice versa. */
 export function Workbench({ device, onReconnect }: WorkbenchProps) {
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
+  const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
+
+  const notifyActivated = (deviceId: string): void => {
+    const frame = registryRef.current.get(deviceId)
+    const iframe = iframeRefs.current.get(deviceId)
+    if (frame === undefined || iframe === undefined || iframe.contentWindow === null || frame.url === '') return
+    try {
+      iframe.contentWindow.postMessage(DEVICE_ACTIVATED_MESSAGE, new URL(frame.url).origin)
+    } catch {
+      // A malformed/missing endpoint is already represented by the offline
+      // overlay; activation signaling must not disturb that recovery UI.
+    }
+  }
 
   useEffect(() => {
     if (device === undefined) return
@@ -57,6 +72,14 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
     }
   }, [device])
 
+  // Device tab switches keep every iframe mounted, so the child page observes
+  // no navigation or session-store change. Explicitly tell an already-loaded
+  // frame when it becomes active again; its bridge can then re-acknowledge the
+  // session that is already focused.
+  useEffect(() => {
+    if (device !== undefined) notifyActivated(device.deviceId)
+  }, [device?.deviceId])
+
   if (device === undefined || frames.length === 0) {
     return (
       <section className="workbench" data-cockpit-workbench="true">
@@ -83,11 +106,16 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
             data-workbench-mounted={frame.deviceId}
           >
             <iframe
+              ref={element => {
+                if (element === null) iframeRefs.current.delete(frame.deviceId)
+                else iframeRefs.current.set(frame.deviceId, element)
+              }}
               src={frame.url}
               title={frame.deviceId}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               className="workbench-iframe"
               data-workbench-device={frame.deviceId}
+              onLoad={() => { if (active) notifyActivated(frame.deviceId) }}
             />
             {offline && (
               <div

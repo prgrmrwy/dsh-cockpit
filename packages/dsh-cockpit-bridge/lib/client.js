@@ -7,6 +7,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions"];
 		const COCKPIT_BASE = "http://127.0.0.1:3090";
+		const DEVICE_ACTIVATED_MESSAGE = "dsh-cockpit:device-activated";
 		const PLUGIN_VERSION = "0.1.1";
 		/** Fire-and-forget report; failures must never disturb the DSH page. */
 		async function reportOpen(ctx, sessionId) {
@@ -68,8 +69,19 @@ window.__ModuleLoader__.load({
 					last = current;
 					reportOpen(ctx, current);
 				});
-				return ctx.sessions.list.subscribe(flush);
-			}, "cockpit-bridge: hello + current session watch");
+				const unsubscribe = ctx.sessions.list.subscribe(flush);
+				const onMessage = (event) => {
+					if (event.source !== window.parent || event.origin !== COCKPIT_BASE) return;
+					if (typeof event.data !== "object" || event.data === null || event.data.type !== DEVICE_ACTIVATED_MESSAGE) return;
+					const current = ctx.sessions.list.getSnapshot().current;
+					if (current !== void 0) reportOpen(ctx, current);
+				};
+				window.addEventListener("message", onMessage);
+				return () => {
+					unsubscribe();
+					window.removeEventListener("message", onMessage);
+				};
+			}, "cockpit-bridge: hello + current session watch + device activation");
 		}
 		//#endregion
 		exports.apply = apply;

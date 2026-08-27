@@ -1,6 +1,6 @@
 import { cleanup, render } from '@testing-library/react'
 import { StrictMode } from 'react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { Workbench } from '../src/workbench/Workbench.jsx'
 
@@ -37,6 +37,25 @@ describe('workbench', () => {
     rerender(<StrictMode><Workbench device={a} /></StrictMode>)
     expect(container.querySelector('iframe[data-workbench-device="d1"]')).not.toBeNull()
     expect(container.querySelectorAll('iframe')).toHaveLength(2)
+  })
+
+  it('notifies the active iframe when it loads and whenever its device tab is reactivated', () => {
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
+    const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/' })
+    const { container, rerender } = render(<StrictMode><Workbench device={a} /></StrictMode>)
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+
+    frameA.dispatchEvent(new Event('load'))
+    expect(postToA).toHaveBeenLastCalledWith({ type: 'dsh-cockpit:device-activated' }, 'http://127.0.0.1:51000')
+
+    postToA.mockClear()
+    rerender(<StrictMode><Workbench device={b} /></StrictMode>)
+    expect(postToA).not.toHaveBeenCalled()
+
+    rerender(<StrictMode><Workbench device={a} /></StrictMode>)
+    expect(postToA).toHaveBeenCalledTimes(1)
+    expect(postToA).toHaveBeenCalledWith({ type: 'dsh-cockpit:device-activated' }, 'http://127.0.0.1:51000')
   })
 
   it('shows an offline overlay when the device is not READY', () => {

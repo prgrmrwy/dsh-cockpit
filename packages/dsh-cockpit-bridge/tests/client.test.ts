@@ -4,6 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // loaded at test time, so we exercise apply() directly with a fake ctx.
 interface SessionListStateLike { current: string | undefined }
 
+class FakeWindow {
+  parent: unknown = {}
+  readonly listeners = new Set<(event: MessageEvent) => void>()
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (type === 'message') this.listeners.add(listener as (event: MessageEvent) => void)
+  }
+
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
+    if (type === 'message') this.listeners.delete(listener as (event: MessageEvent) => void)
+  }
+
+  emitMessage(data: unknown, source: unknown = this.parent, origin = 'http://127.0.0.1:3090'): void {
+    for (const listener of [...this.listeners]) listener({ data, source, origin } as MessageEvent)
+  }
+}
+
 function fakeCtx(initial = { current: undefined }) {
   const listeners = new Set<() => void>()
   let snapshot: SessionListStateLike = { ...initial }
@@ -35,7 +52,10 @@ async function loadApply(): Promise<(ctx: unknown) => void> {
 
 describe('cockpit bridge client', () => {
   const fetchMock = vi.fn()
-  beforeEach(() => { vi.stubGlobal('fetch', fetchMock) })
+  beforeEach(() => {
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('window', new FakeWindow())
+  })
   afterEach(() => { fetchMock.mockReset(); vi.unstubAllGlobals() })
 
   it('sends a startup hello (with version) before watching selections', async () => {
@@ -87,7 +107,7 @@ describe('cockpit bridge client', () => {
     expect(fetchMock.mock.calls[0]![1]!.body).toBe(JSON.stringify({ sessionId: 'c' }))
   })
 
-  it('does not re-report the same selection', async () => {
+  it('does not re-report the same selection from an ordinary list refresh', async () => {
     fetchMock.mockResolvedValue({ status: 200 })
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
@@ -99,6 +119,32 @@ describe('cockpit bridge client', () => {
     set('a') // list refresh with the same current
     await new Promise(r => setTimeout(r, 300))
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-reports the current session when the parent reactivates this device', async () => {
+    fetchMock.mockResolvedValue({ status: 200 })
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    await new Promise(r => setTimeout(r, 0))
+    fetchMock.mockClear()
+
+    set('a')
+    await new Promise(r => setTimeout(r, 300))
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    const fakeWindow = window as unknown as FakeWindow
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await new Promise(r => setTimeout(r, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls[1]![1]!.body).toBe(JSON.stringify({ sessionId: 'a' }))
+
+    // Ignore similarly shaped messages that did not come from the expected
+    // parent window and cockpit origin.
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' }, {})
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' }, fakeWindow.parent, 'http://example.test')
+    await new Promise(r => setTimeout(r, 0))
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('bootstraps on 401 then retries, and survives a dead cockpit', async () => {
