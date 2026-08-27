@@ -97,19 +97,20 @@ export class DualEventStream extends EventEmitter {
 
   #onMessage(stream: 'mux' | 'host', raw: string): void {
     if (this.#closed) return
-    let message: { method?: unknown; payload?: unknown }
+    let message: { method?: unknown; payload?: unknown; rpcId?: unknown }
     try {
-      message = JSON.parse(raw) as { method?: unknown; payload?: unknown }
+      message = JSON.parse(raw) as { method?: unknown; payload?: unknown; rpcId?: unknown }
     } catch {
       return
     }
     if (typeof message.method !== 'string' || typeof message.payload !== 'object' || message.payload === null) return
     const payload = message.payload as Record<string, unknown>
-    const event = this.#convert(stream, message.method, payload)
+    const envelopeRpcId = typeof message.rpcId === 'string' ? message.rpcId : undefined
+    const event = this.#convert(stream, message.method, payload, envelopeRpcId)
     if (event !== undefined) this.emit('event', event)
   }
 
-  #convert(stream: 'mux' | 'host', method: string, payload: Record<string, unknown>): CockpitEvent | undefined {
+  #convert(stream: 'mux' | 'host', method: string, payload: Record<string, unknown>, envelopeRpcId: string | undefined): CockpitEvent | undefined {
     const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : undefined
     switch (method) {
       case 'host/session-status':
@@ -118,22 +119,28 @@ export class DualEventStream extends EventEmitter {
           running: payload.running === true,
         }
       case 'approval/requested':
-        if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
-        return { type: 'interaction', deviceId: this.#deviceId, kind: 'approval', rpcId: payload.rpcId, resolved: false }
+        // Official frame fields: approvalId (stated in the mux frame schema),
+        // NOT rpcId — the old converter matched nothing and dropped every
+        // pending approval, leaving pendingInteractionCount at 0 forever.
+        if (sessionId === undefined || typeof payload.approvalId !== 'string') return undefined
+        return { type: 'interaction', deviceId: this.#deviceId, sessionId, kind: 'approval', rpcId: payload.approvalId, resolved: false }
       case 'approval/resolved':
-        if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
-        return { type: 'interaction', deviceId: this.#deviceId, kind: 'approval', rpcId: payload.rpcId, resolved: true }
+        if (sessionId === undefined || typeof payload.approvalId !== 'string') return undefined
+        return { type: 'interaction', deviceId: this.#deviceId, sessionId, kind: 'approval', rpcId: payload.approvalId, resolved: true }
       case 'question/requested':
-        if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
-        return { type: 'interaction', deviceId: this.#deviceId, kind: 'question', rpcId: payload.rpcId, resolved: false }
+        // question/requested carries no identity field; the official client
+        // keys it by the outer envelope rpcId (q:${envelope.rpcId}) and the
+        // matching question/resolved echoes it back as questionRpcId.
+        if (sessionId === undefined || envelopeRpcId === undefined) return undefined
+        return { type: 'interaction', deviceId: this.#deviceId, sessionId, kind: 'question', rpcId: envelopeRpcId, resolved: false }
       case 'question/resolved':
-        if (sessionId === undefined || typeof payload.rpcId !== 'string') return undefined
-        return { type: 'interaction', deviceId: this.#deviceId, kind: 'question', rpcId: payload.rpcId, resolved: true }
+        if (sessionId === undefined || typeof payload.questionRpcId !== 'string') return undefined
+        return { type: 'interaction', deviceId: this.#deviceId, sessionId, kind: 'question', rpcId: payload.questionRpcId, resolved: true }
       case 'host/session-added':
       case 'session/subscribed':
         return { type: 'session-added', deviceId: this.#deviceId }
       case 'host/session-removed':
-        return { type: 'session-removed', deviceId: this.#deviceId }
+        return sessionId === undefined ? undefined : { type: 'session-removed', deviceId: this.#deviceId, sessionId }
       default:
         return undefined
     }

@@ -26,20 +26,20 @@ describe('dual event stream conversion', () => {
     await open
 
     sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r1', method: 'host/session-status', payload: { sessionId: 's1', running: true } }))
-    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r2', method: 'approval/requested', payload: { sessionId: 's1', rpcId: 'a-1' } }))
-    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r3', method: 'question/requested', payload: { sessionId: 's1', rpcId: 'q-1' } }))
-    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r4', method: 'approval/resolved', payload: { sessionId: 's1', rpcId: 'a-1' } }))
-    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r5', method: 'question/resolved', payload: { sessionId: 's1', rpcId: 'q-1' } }))
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r2', method: 'approval/requested', payload: { sessionId: 's1', approvalId: 'a-1', toolName: 'Bash' } }))
+    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r3', method: 'question/requested', payload: { sessionId: 's1', questions: [{ id: 'q1', prompt: 'ok?' }] } }))
+    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r5', method: 'approval/resolved', payload: { sessionId: 's1', approvalId: 'a-1', outcome: 'allowed-once' } }))
+    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r6', method: 'question/resolved', payload: { sessionId: 's1', questionRpcId: 'r3', outcome: 'answered' } }))
     // Unknown method must be ignored, malformed payload must not throw.
-    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r6', method: 'host/workspace-changed', payload: {} }))
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r7', method: 'host/workspace-changed', payload: {} }))
     sockets[1]!.emit('message', 'not-json')
 
     expect(events).toContainEqual({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
-    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: false })
-    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: false })
-    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: true })
-    // question/resolved must keep the question bucket (not silently become approval).
-    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: true })
+    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: false })
+    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'question', rpcId: 'r3', resolved: false })
+    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: true })
+    // question/resolved echoes the envelope rpcId back (official questionRpcId).
+    expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'question', rpcId: 'r3', resolved: true })
     expect(events.filter(e => e.type === 'workspace-changed')).toEqual([])
     stream.dispose()
   })

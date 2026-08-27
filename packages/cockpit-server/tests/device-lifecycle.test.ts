@@ -67,12 +67,12 @@ describe('device lifecycle', () => {
     expect(lifecycle.current().runningSessionCount).toBe(1)
     expect(lifecycle.current().state).toBe('READY')
 
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: false })
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: false })
     expect(lifecycle.current().pendingInteractionCount).toBe(1)
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: true })
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: true })
     expect(lifecycle.current().pendingInteractionCount).toBe(0)
     // Overflow guard: resolving with no pending stays at zero.
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-x', resolved: true })
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-x', resolved: true })
     expect(lifecycle.current().pendingInteractionCount).toBe(0)
 
     await lifecycle.stop()
@@ -80,7 +80,7 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
-  it('tracks approval and question separately and reports official status groups', async () => {
+  it('tracks approval and question per session and pending outranks running', async () => {
     const { lifecycle, tunnel, emit } = device()
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
     for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
@@ -91,23 +91,30 @@ describe('device lifecycle', () => {
       { state: 'ongoing', kind: 'running', count: 1 },
     ])
 
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'approval', rpcId: 'a-1', resolved: false })
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-1', resolved: false })
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-2', resolved: false })
-    // Official priority: pending warning groups first, then ongoing work.
+    // Two sessions (s1, s2) each get a pending key — approval on s1, two
+    // questions on s2. Official per-session reduction: s1 → approval,
+    // s2 → question (single status each), counts are per session.
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's2', kind: 'question', rpcId: 'q-1', resolved: false })
     expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'warning', kind: 'approval', count: 1 },
-      { state: 'warning', kind: 'question', count: 2 },
-      { state: 'ongoing', kind: 'running', count: 1 },
+      { state: 'warning', kind: 'question', count: 1 },
+      { state: 'ongoing', kind: 'running', count: 1 }, // s1 still runs, s2 is pending
     ])
-    expect(lifecycle.current().pendingInteractionCount).toBe(3)
-
-    // Resolving a question decrements only its own bucket.
-    emit({ type: 'interaction', deviceId: 'd1', kind: 'question', rpcId: 'q-2', resolved: true })
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: false })
+    // BOTH pending sessions are subtracted from running: s1 + s2 awaited,
+    // no session remains in the ongoing group.
     expect(lifecycle.current().sessionStatuses).toEqual([
       { state: 'warning', kind: 'approval', count: 1 },
       { state: 'warning', kind: 'question', count: 1 },
-      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+    expect(lifecycle.current().runningSessionCount).toBe(1)
+    expect(lifecycle.current().pendingInteractionCount).toBe(2)
+
+    // Resolving the only question on s2 clears its pending slot (sibling
+    // waits on other sessions are untouched).
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's2', kind: 'question', rpcId: 'q-1', resolved: true })
+    expect(lifecycle.current().pendingInteractionCount).toBe(1)
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'warning', kind: 'approval', count: 1 },
     ])
 
     await lifecycle.stop()

@@ -42,9 +42,14 @@ export class DeviceLifecycle {
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #abort = new AbortController()
-  #runningSessions = 0
-  #pendingApprovals = 0
-  #pendingQuestions = 0
+  /** Sessions whose current running bit is true (session.list baseline +
+   * live session-status frames). Pending sessions stay in this set — the
+   * official row shows them as warning (pending outranks running). */
+  #running = new Set<string>()
+  /** Per-session pending interactions (official pendingInteractions: session →
+   * key → status). A session's display status is a single value — pending
+   * outranks running (official sessionStatuses). */
+  #pendingBySession = new Map<string, Map<string, 'approval' | 'question'>>()
   /** Last-observed running bit per session (official SessionManager
    * prevRunning). First observation only records the bit; the true→false edge
    * here arms the green "completed" reminder. */
@@ -79,8 +84,8 @@ export class DeviceLifecycle {
       enabled: this.#record.enabled,
       order: this.#record.order,
       state: this.#stateExplicit,
-      runningSessionCount: this.#runningSessions,
-      pendingInteractionCount: this.#pendingApprovals + this.#pendingQuestions,
+      runningSessionCount: this.#running.size,
+      pendingInteractionCount: this.#totalPendingKeys(),
       sessionStatuses: this.#sessionStatuses(),
       compatibility: this.#stateExplicit === 'READY' || this.#stateExplicit === 'DEGRADED' ? 'SUPPORTED' : 'INCOMPATIBLE',
       lastUpdatedAt: Date.now(),
@@ -89,15 +94,36 @@ export class DeviceLifecycle {
     }
   }
 
-  /** Official session-row status groups, non-zero only, pending warning first
-   * then active work — mirrors dsh-client-ui-workspace sessionStatuses
-   * ordering (approval/question before running before completed). */
+  /** Official session-row status groups, non-zero only, ordered by official
+   * priority — mirrors dsh-client-ui-workspace sessionStatuses: a pending
+   * interaction outranks running (an awaiting-decision session is shown as
+   * warning, never as ongoing), then running, then completed. Per session at
+   * most one pending state is surfaced (official buildListSnapshot reduction:
+   * a non-approval status wins over approval), so counts are per session. */
   #sessionStatuses(): readonly SessionActivitySummary[] {
+    const pendingByKind = new Map<'approval' | 'question', Set<string>>()
+    for (const [sessionId, interactions] of this.#pendingBySession) {
+      if (interactions.size === 0) continue
+      const statuses = [...interactions.values()]
+      const kind = (statuses.find(status => status !== 'approval') ?? statuses[0]) as 'approval' | 'question'
+      const sessions = pendingByKind.get(kind) ?? new Set<string>()
+      sessions.add(sessionId)
+      pendingByKind.set(kind, sessions)
+    }
+    const pendingSessions = new Set<string>()
     const groups: SessionActivitySummary[] = []
-    if (this.#pendingApprovals > 0) groups.push({ state: 'warning', kind: 'approval', count: this.#pendingApprovals })
-    if (this.#pendingQuestions > 0) groups.push({ state: 'warning', kind: 'question', count: this.#pendingQuestions })
-    if (this.#runningSessions > 0) groups.push({ state: 'ongoing', kind: 'running', count: this.#runningSessions })
-    if (this.#completed.size > 0) groups.push({ state: 'done', kind: 'completed', count: this.#completed.size })
+    for (const kind of ['approval', 'question'] as const) {
+      const sessions = pendingByKind.get(kind)
+      if (sessions === undefined || sessions.size === 0) continue
+      for (const id of sessions) pendingSessions.add(id)
+      groups.push({ state: 'warning', kind, count: sessions.size })
+    }
+    // Sessions whose session.list running bit is true but that are awaiting
+    // human decision must NOT be counted as ongoing (official priority).
+    const runningNotPending = [...this.#running].filter(id => !pendingSessions.has(id)).length
+    if (runningNotPending > 0) groups.push({ state: 'ongoing', kind: 'running', count: runningNotPending })
+    const completedNotPending = [...this.#completed].filter(id => !pendingSessions.has(id))
+    if (completedNotPending.length > 0) groups.push({ state: 'done', kind: 'completed', count: completedNotPending.length })
     return groups
   }
 
@@ -133,6 +159,35 @@ export class DeviceLifecycle {
     if (prev && !running) this.#completed.add(sessionId)
     else if (running) this.#completed.delete(sessionId)
     this.#prevRunning.set(sessionId, running)
+  }
+
+  /** Replace the running set from a full session list baseline. */
+  #refreshRunning(sessions: readonly { sessionId: string; running: boolean }[]): void {
+    this.#running.clear()
+    for (const s of sessions) if (s.running) this.#running.add(s.sessionId)
+  }
+
+  /** Official trackPending/resolvePending semantics per session: add or settle
+   * one stable pending-interaction key without disturbing sibling waits. */
+  #trackInteraction(sessionId: string, key: string, kind: 'approval' | 'question', resolved: boolean): void {
+    let interactions = this.#pendingBySession.get(sessionId)
+    if (interactions === undefined) {
+      interactions = new Map()
+      this.#pendingBySession.set(sessionId, interactions)
+    }
+    if (resolved) {
+      interactions.delete(key)
+      if (interactions.size === 0) this.#pendingBySession.delete(sessionId)
+      return
+    }
+    if (!interactions.has(key)) interactions.set(key, kind)
+  }
+
+  /** Total outstanding pending keys (sum of per-session interaction maps). */
+  #totalPendingKeys(): number {
+    let total = 0
+    for (const interactions of this.#pendingBySession.values()) total += interactions.size
+    return total
   }
 
   start(): void {
@@ -234,11 +289,12 @@ export class DeviceLifecycle {
       this.#endpoint = undefined
       return false
     }
-    // Baseline.
+    // Baseline: the session.list baseline carries running bits; pending
+    // interaction state is event-driven only (official SessionManager keeps
+    // pendingInteractions manager-owned exactly the same way), so clear it.
     const sessions = await this.#client.listSessions()
-    this.#runningSessions = sessions.filter(s => s.running).length
-    this.#pendingApprovals = 0
-    this.#pendingQuestions = 0
+    this.#refreshRunning(sessions)
+    this.#pendingBySession.clear()
     this.#syncCompleted(sessions)
 
     this.#stream = this.#createStream(endpoint)
@@ -246,13 +302,11 @@ export class DeviceLifecycle {
       switch (event.type) {
         case 'session-status':
           this.#observeRunning(event.sessionId, event.running)
-          if (event.running) this.#runningSessions += 1
-          else this.#runningSessions = Math.max(0, this.#runningSessions - 1)
+          if (event.running) this.#running.add(event.sessionId)
+          else this.#running.delete(event.sessionId)
           break
         case 'interaction': {
-          const delta = event.resolved ? -1 : 1
-          if (event.kind === 'approval') this.#pendingApprovals = Math.max(0, this.#pendingApprovals + delta)
-          else this.#pendingQuestions = Math.max(0, this.#pendingQuestions + delta)
+          this.#trackInteraction(event.sessionId, event.rpcId, event.kind, event.resolved)
           break
         }
         case 'session-added':
@@ -261,6 +315,8 @@ export class DeviceLifecycle {
         case 'session-removed':
           this.#prevRunning.delete(event.sessionId)
           this.#completed.delete(event.sessionId)
+          this.#pendingBySession.delete(event.sessionId)
+          this.#running.delete(event.sessionId)
           break
       }
       this.#emitFacts()
@@ -287,9 +343,8 @@ export class DeviceLifecycle {
     if (this.#client === undefined) return
     try {
       const sessions = await this.#client.listSessions()
-      this.#runningSessions = sessions.filter(s => s.running).length
-      this.#pendingApprovals = 0
-      this.#pendingQuestions = 0
+      this.#refreshRunning(sessions)
+      this.#pendingBySession.clear()
       this.#syncCompleted(sessions)
       this.#emitFacts()
     } catch {
