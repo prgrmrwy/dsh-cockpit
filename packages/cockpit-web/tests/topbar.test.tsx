@@ -126,16 +126,29 @@ describe('top bar', () => {
     expect(getComputedStyle(tab).outlineStyle).toBe('none')
   })
 
-  it('shows the bridge mark when the device DSH runs dsh-cockpit-bridge', () => {
+  it('shows the bridge mark when the device DSH runs dsh-cockpit-bridge, faint hint otherwise', () => {
     const devices = [
       device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
+      device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
     ]
     const { getByRole } = render(
       <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
-    expect(getByRole('tab', { name: /A/ }).querySelector('.bridge-mark')).not.toBeNull()
-    expect(getByRole('tab', { name: /B/ }).querySelector('.bridge-mark')).toBeNull()
+    // Plugin present: the connected bridge mark, no hint.
+    const tabA = getByRole('tab', { name: /A/ })
+    expect(tabA.querySelector('.bridge-mark')).not.toBeNull()
+    expect(tabA.querySelector('.bridge-hint')).toBeNull()
+    // Plugin absent while connected: faint hint, hover points at the README
+    // installation section on GitHub.
+    const tabB = getByRole('tab', { name: /B/ })
+    expect(tabB.querySelector('.bridge-mark')).toBeNull()
+    const hint = tabB.querySelector('.bridge-hint') as HTMLElement
+    expect(hint).not.toBeNull()
+    expect(hint.title).toContain('github.com/prgrmrwy/dsh-cockpit')
+    expect(hint.title).toContain('桥接插件')
+    // Not connected: no hint — plugin status is unknown, don't guess.
+    expect(getByRole('tab', { name: /C/ }).querySelector('.bridge-hint')).toBeNull()
   })
 
   it('renders the completed chip like the other statuses (no click-to-clear)', () => {

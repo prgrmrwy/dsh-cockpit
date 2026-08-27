@@ -71,6 +71,12 @@ body {
   color: var(--accent); font-size: 12px; line-height: 1;
   flex: none; cursor: help;
 }
+/* bridge hint: the device's DSH web client does NOT run dsh-cockpit-bridge.
+   Deliberately faint — a weak reminder, not an alert; hover explains the fix. */
+.bridge-hint {
+  color: var(--fg-dim); opacity: 0.45; font-size: 12px; line-height: 1;
+  flex: none; cursor: help;
+}
 /* session-row status chips: official StateDot icons (chase matrix / amber /
    green) + count; no text labels on the tab, status name lives in the title */
 .topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; flex: none; }

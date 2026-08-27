@@ -27,6 +27,9 @@ const ACTIVITY_LABEL: Record<SessionActivityKind, string> = {
   completed: '已完成',
 }
 
+/** README「桥接插件（可选）」章节的 GitHub 锚点：未装插件的设备 hover 提示指向它。 */
+const BRIDGE_DOC_URL = 'https://github.com/prgrmrwy/dsh-cockpit#桥接插件可选与-dsh-的通信'
+
 /** The official StateDot state for each cockpit activity group. */
 const ACTIVITY_STATE: Record<SessionActivityKind, SessionActivityState> = {
   running: 'ongoing',
@@ -78,11 +81,18 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
             >
               <span className={`dot ${DOT[device.state]}`} aria-hidden="true" />
               <span className="topbar-device-name">{device.displayName}</span>
-              {device.bridgeSeenAt !== undefined && (
+              {device.bridgeSeenAt !== undefined ? (
                 <span
                   className="bridge-mark"
                   title={`桥接已连接 @ ${new Date(device.bridgeSeenAt).toLocaleTimeString()}`}
                   aria-label="桥接已连接"
+                >⛓</span>
+              ) : (device.state === 'READY' || device.state === 'DEGRADED') && (
+                <span
+                  className="bridge-hint"
+                  data-bridge-hint="missing"
+                  title={`未检测到桥接插件（完成绿点不会按会话清除）。安装介绍：${BRIDGE_DOC_URL}`}
+                  aria-label="未检测到桥接插件"
                 >⛓</span>
               )}
               {device.sessionStatuses.length > 0 && (
