@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from './api/client.js'
 import { subscribeDevices } from './api/stream.js'
+import { registerServiceWorker } from './pwa.js'
 import { TopBar } from './components/TopBar.jsx'
 import { Workbench } from './workbench/Workbench.jsx'
 import { DevicePanel, OverviewPanel, SettingsPanel, type PanelName } from './panels/Panels.jsx'
@@ -101,6 +102,10 @@ export function App() {
     </div>
   )
 }
+
+// PWA: register the service worker on production builds only (registering in
+// dev would let it cache vite's HMR responses and stale the dev server).
+registerServiceWorker()
 
 const root = document.getElementById('root')
 if (root !== null) {

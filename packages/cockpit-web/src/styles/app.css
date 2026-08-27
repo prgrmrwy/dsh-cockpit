@@ -1,4 +1,5 @@
 :root {
+  color-scheme: dark;
   --bg: #101214;
   --bg-panel: #171a1d;
   --fg: #e8eaed;
@@ -9,6 +10,30 @@
   --error: #ea4335;
   --busy: #fbbc04;
   --border: #2a2e33;
+  --bg-hover: #22262b;
+  --bg-active: #23282e;
+  --overlay: rgba(16, 18, 20, 0.85);
+}
+
+/* 跟随系统：浅色主题只覆盖同一组令牌，页面其余规则零改动（深色为默认）。
+   新增颜色必须走令牌，不要写死色值。 */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #f6f8fa;
+    --bg-panel: #ffffff;
+    --fg: #1f2328;
+    --fg-dim: #57606a;
+    --accent: #2f81f7;
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --error: #cf222e;
+    --busy: #9a6700;
+    --border: #d0d7de;
+    --bg-hover: #eef1f4;
+    --bg-active: #e6ebf0;
+    --overlay: rgba(246, 248, 250, 0.85);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -37,8 +62,8 @@ body {
      would cut the device name ("host" → "hos"). */
   flex: none;
 }
-.topbar-device:hover { background: #22262b; color: var(--fg); }
-.topbar-device.active { background: #23282e; color: var(--fg); border-color: var(--border); }
+.topbar-device:hover { background: var(--bg-hover); color: var(--fg); }
+.topbar-device.active { background: var(--bg-active); color: var(--fg); border-color: var(--border); }
 .topbar-device-name { white-space: nowrap; flex: none; }
 /* bridge mark: the device's DSH web client runs dsh-cockpit-bridge and has
    contacted the cockpit (startup hello) */
@@ -59,13 +84,13 @@ body {
 .session-chip .dsh-state-dot { vertical-align: middle; }
 .session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
 .session-chip.clickable { cursor: pointer; border-color: var(--fg-dim); }
-.session-chip.clickable:hover { background: #22262b; }
+.session-chip.clickable:hover { background: var(--bg-hover); }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);
   color: var(--fg); padding: 4px 10px; border-radius: 6px; cursor: pointer;
 }
-.ghost:hover { background: #22262b; }
+.ghost:hover { background: var(--bg-hover); }
 .danger {
   appearance: none; background: transparent; border: 1px solid var(--error);
   color: var(--error); padding: 4px 8px; border-radius: 6px; cursor: pointer;
@@ -98,7 +123,7 @@ body {
   appearance: none; background: transparent; border: 0; color: var(--fg);
   padding: 6px 12px; border-radius: 6px; text-align: left; cursor: pointer;
 }
-.context-menu button:hover { background: #22262b; }
+.context-menu button:hover { background: var(--bg-hover); }
 
 /* ---- main / workbench ---- */
 .cockpit-main { flex: 1; position: relative; overflow: hidden; }
@@ -114,7 +139,7 @@ body {
 .workbench-frame { position: relative; height: 100%; width: 100%; }
 .workbench-iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .workbench-overlay {
-  position: absolute; inset: 0; background: rgba(16, 18, 20, 0.85);
+  position: absolute; inset: 0; background: var(--overlay);
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; z-index: 10;
 }

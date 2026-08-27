@@ -102,6 +102,18 @@ node packages/cockpit-server/dist/main.js
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
 - 5 台 iframe 常驻内存基准：JS heap 增量 ≈ 13KB/台（浏览器原生隔离，驾驶舱机制开销可忽略）
 
+## PWA
+
+前端构建产物自带 PWA 能力（资源在 `packages/cockpit-web/public/`）：
+
+- `manifest.webmanifest` + 图标（192/512/apple-touch）：可安装到桌面/主屏。
+  `127.0.0.1` 属于 secure context，满足 PWA 安装前提。
+- `sw.js`（仅生产构建注册，见 `src/pwa.ts`；dev 不注册以免干扰 HMR）：
+  - 预缓存应用壳，断网也能打开驾驶舱；
+  - `/api/*` 网络优先、失败回退最后缓存（离线显示最后已知状态）；
+  - SSE 事件流与设备工作台 iframe（跨源端口）永不被缓存。
+- 修改 SW 行为后需 bump `sw.js` 顶部的 `CACHE_VERSION`，旧缓存会在激活时被清理。
+
 ## 状态
 
 早期开发中。设计与实施计划见 `openspec/`。
