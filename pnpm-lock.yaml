@@ -56,6 +56,9 @@ importers:
 
   packages/cockpit-web:
     dependencies:
+      '@dsh-cockpit/shared':
+        specifier: workspace:*
+        version: link:../shared
       react:
         specifier: ^18.3
         version: 18.3.1

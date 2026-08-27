@@ -13,7 +13,8 @@
   },
   "dependencies": {
     "react": "^18.3",
-    "react-dom": "^18.3"
+    "react-dom": "^18.3",
+    "@dsh-cockpit/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^18.3",

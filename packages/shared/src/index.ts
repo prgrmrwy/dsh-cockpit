@@ -48,6 +48,7 @@ export interface DeviceStatusFacts {
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
   readonly diagnostic?: string
+  readonly endpoint?: string
 }
 
 /** One session status as reported by the remote rc.2 session.list / events. */

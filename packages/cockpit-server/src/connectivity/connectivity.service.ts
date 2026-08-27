@@ -64,6 +64,7 @@ export class ConnectivityService implements OnApplicationShutdown {
           compatibility: facts.compatibility,
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
+          ...(facts.endpoint === undefined ? {} : { endpoint: facts.endpoint }),
         }
       })
   }
