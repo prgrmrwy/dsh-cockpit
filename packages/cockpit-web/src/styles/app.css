@@ -78,6 +78,9 @@ body {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; line-height: 1; color: var(--fg-dim);
   border-radius: 999px; padding: 3px 8px; white-space: nowrap;
+  /* Pure display: the status chip is decoration inside the device tab, not
+     an interactive control — no pointer affordance of its own. */
+  cursor: default;
 }
 .session-chip .dsh-state-dot-matrix,
 .session-chip .dsh-state-dot { vertical-align: middle; }
