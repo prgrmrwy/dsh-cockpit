@@ -26,6 +26,10 @@ export interface DeviceLifecycleOptions {
   readonly sshExecutable?: string
   readonly reconnectDelay?: (attempt: number) => number
   readonly onFacts: (facts: LiveDeviceFacts) => void
+  /** Test seam for the rc.2 client (defaults to a real Rc2Client). */
+  readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
+  /** Test seam for the dual event stream (defaults to a real DualEventStream). */
+  readonly createStream?: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
 }
 
 export class DeviceLifecycle {
@@ -34,14 +38,16 @@ export class DeviceLifecycle {
   readonly #tunnels: TunnelManager
   readonly #onFacts: (facts: LiveDeviceFacts) => void
   readonly #reconnectDelay: (attempt: number) => number
+  readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
+  readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #abort = new AbortController()
   #runningSessions = 0
   #pendingInteractions = 0
   #stateExplicit: DeviceState = 'CONNECTING'
   #diagnostic = ''
   #endpoint: URL | undefined
-  #stream: DualEventStream | undefined
-  #client: Rc2Client | undefined
+  #stream: Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
+  #client: Pick<Rc2Client, 'probe' | 'listSessions'> | undefined
   #task: Promise<void> | undefined
   #stopped = false
 
@@ -51,6 +57,8 @@ export class DeviceLifecycle {
     this.#tunnels = options.tunnels
     this.#onFacts = options.onFacts
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
+    this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
+    this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
   }
 
   /** Facts currently aggregated for this device. */
@@ -119,7 +127,7 @@ export class DeviceLifecycle {
       remoteDshPort: this.#record.remoteDshPort,
     })
     this.#endpoint = handle.endpoint
-    this.#client = new Rc2Client({ endpoint: handle.endpoint })
+    this.#client = await this.#createClient(handle.endpoint)
     const probe = await this.#client.probe()
     if (!probe.ok) {
       this.#setState(probe.state, probe.diagnostic)
@@ -132,7 +140,7 @@ export class DeviceLifecycle {
     this.#runningSessions = sessions.filter(s => s.running).length
     this.#pendingInteractions = 0
 
-    this.#stream = new DualEventStream({ endpoint: handle.endpoint, deviceId: this.deviceId })
+    this.#stream = this.#createStream(handle.endpoint)
     this.#stream.on('event', event => {
       switch (event.type) {
         case 'session-status':
