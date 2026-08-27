@@ -1,4 +1,4 @@
-import { Injectable, OnApplicationShutdown } from '@nestjs/common'
+import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common'
 import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle, type LiveDeviceFacts } from './device-lifecycle.js'
@@ -12,7 +12,7 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #tunnels: TunnelManager
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
 
-  constructor(registry: DeviceRegistry) {
+  constructor(@Inject(DeviceRegistry) registry: DeviceRegistry) {
     this.#registry = registry
     this.#tunnels = new TunnelManager({
       readinessProbe: async (endpoint, signal) => {

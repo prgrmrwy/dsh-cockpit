@@ -87,7 +87,7 @@ export class TunnelManager {
       const endpoint = new URL(`http://127.0.0.1:${localPort}`)
       const outcome = await Promise.race([
         process.exited.then(exit => ({ kind: 'exit' as const, exit })),
-        this.#options.readinessProbe(endpoint, abort.signal).then(result => ({ kind: 'ready' as const, result })),
+        this.#probeWithRetry(endpoint, abort.signal).then(result => ({ kind: 'ready' as const, result })),
       ])
       if (outcome.kind === 'exit') {
         lastDiagnostic = diagnostic()
@@ -127,6 +127,19 @@ export class TunnelManager {
     this.#shutDown = true
     await Promise.all([...this.#active].map(([id, active]) => this.#disposeExact(id, active)))
     await Promise.all([...this.#active].map(([id, active]) => this.#disposeExact(id, active)))
+  }
+
+  /** SSH tunnel binds are not atomic with connection readiness: retry briefly
+   * before declaring the endpoint dead. */
+  async #probeWithRetry(endpoint: URL, signal: AbortSignal): Promise<{ ok: boolean; state: DeviceState; diagnostic: string }> {
+    let last: { ok: boolean; state: DeviceState; diagnostic: string } | undefined
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      if (signal.aborted) return { ok: false, state: 'DSH_UNAVAILABLE', diagnostic: 'probe aborted' }
+      last = await this.#options.readinessProbe(endpoint, signal)
+      if (last.ok) return last
+      await new Promise(r => setTimeout(r, 500))
+    }
+    return last ?? { ok: false, state: 'DSH_UNAVAILABLE', diagnostic: 'probe failed' }
   }
 
   #disposeExact(deviceId: string, active: { process: OwnedProcess; abort: AbortController; disposed: boolean }): Promise<void> {

@@ -1,4 +1,4 @@
-import { Injectable, type NestMiddleware } from '@nestjs/common'
+import { Inject, Injectable, type NestMiddleware } from '@nestjs/common'
 import type { NextFunction, Request, Response } from 'express'
 import { TokenService } from './token.js'
 
@@ -8,7 +8,7 @@ import { TokenService } from './token.js'
  * this gates access to the loopback service. */
 @Injectable()
 export class TokenMiddleware implements NestMiddleware {
-  constructor(private readonly tokens: TokenService) {}
+  constructor(@Inject(TokenService) private readonly tokens: TokenService) {}
 
   async use(request: Request, response: Response, next: NextFunction): Promise<void> {
     const token = await this.tokens.resolve()

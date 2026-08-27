@@ -1,10 +1,10 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Param, Post, Put, Query } from '@nestjs/common'
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query } from '@nestjs/common'
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, RemoveDeviceRequest, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 
 @Controller('api')
 export class DevicesController {
-  constructor(private readonly connectivity: ConnectivityService) {}
+  constructor(@Inject(ConnectivityService) private readonly connectivity: ConnectivityService) {}
 
   @Get('devices')
   devices(): { device: readonly DeviceStatusFacts[] } {
