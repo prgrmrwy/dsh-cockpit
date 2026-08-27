@@ -22,7 +22,7 @@ const record = (overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
   ...overrides,
 })
 
-function device() {
+function device(sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string }[]) {
   const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
   const tunnel = new TunnelManager({
     spawn: () => new FakeProcess() as never,
@@ -33,7 +33,7 @@ function device() {
     tunnels: tunnel,
     createClient: async () => ({
       probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
-      listSessions: async () => [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+      listSessions: async () => sessions ?? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
     }),
     createStream: () => ({
       on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
@@ -154,6 +154,48 @@ describe('device lifecycle', () => {
     // Session removed drops the reminder.
     emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
     expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('excludes subagent sessions from running, completed and pending counts', async () => {
+    // Baseline: one running root (s1), one running subagent (sub-a) and one
+    // idle subagent (sub-b) — like a real host with 100+ subagent sessions.
+    const { lifecycle, tunnel, emit } = device([
+      { sessionId: 's1', running: true, updatedAt: 1, blank: false },
+      { sessionId: 'sub-a', running: true, updatedAt: 1, blank: false, origin: 'subagent' },
+      { sessionId: 'sub-b', running: false, updatedAt: 1, blank: false, origin: 'subagent' },
+    ])
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Only the root running session counts; the running subagent does not.
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    // A subagent running→idle edge must NOT arm the completed reminder.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sub-a', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    // A subagent pending interaction must not count either.
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 'sub-a', kind: 'approval', rpcId: 'sub-a-1', resolved: false })
+    expect(lifecycle.current().pendingInteractionCount).toBe(0)
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    // session-added origin=subagent then a status edge on it stays excluded.
+    emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-c', origin: 'subagent' })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sub-c', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
 
     await lifecycle.stop()
     await task

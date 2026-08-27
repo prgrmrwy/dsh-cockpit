@@ -44,8 +44,14 @@ export class DeviceLifecycle {
   readonly #abort = new AbortController()
   /** Sessions whose current running bit is true (session.list baseline +
    * live session-status frames). Pending sessions stay in this set — the
-   * official row shows them as warning (pending outranks running). */
+   * official row shows them as warning (pending outranks running).
+   * Subagent sessions are excluded: official rows filter origin !== 'subagent'
+   * and fold their activity into the parent's subagent count. */
   #running = new Set<string>()
+  /** Subagent session ids learned from the baseline (session.list origin) and
+   * session-added frames; host/session-status carries no origin field, so this
+   * prior knowledge is what keeps subagents out of root-session counts. */
+  #subagents = new Set<string>()
   /** Per-session pending interactions (official pendingInteractions: session →
    * key → status). A session's display status is a single value — pending
    * outranks running (official sessionStatuses). */
@@ -132,9 +138,14 @@ export class DeviceLifecycle {
    * sessions already idle at load get no reminder. A running→idle edge arms
    * the reminder; running again disarms it; a session that disappeared drops
    * both. */
-  #syncCompleted(sessions: readonly { sessionId: string; running: boolean }[]): void {
+  #syncCompleted(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
     const seen = new Set<string>()
     for (const s of sessions) {
+      if (s.origin === 'subagent') {
+        // Subagents never contribute to root-session completion reminders.
+        this.#subagents.add(s.sessionId)
+        continue
+      }
       seen.add(s.sessionId)
       const prev = this.#prevRunning.get(s.sessionId)
       if (prev === undefined) {
@@ -161,10 +172,28 @@ export class DeviceLifecycle {
     this.#prevRunning.set(sessionId, running)
   }
 
-  /** Replace the running set from a full session list baseline. */
-  #refreshRunning(sessions: readonly { sessionId: string; running: boolean }[]): void {
+  /** Replace the running set from a full session list baseline; subagents are
+   * tracked separately and excluded from root-session counts. */
+  #refreshRunning(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
     this.#running.clear()
-    for (const s of sessions) if (s.running) this.#running.add(s.sessionId)
+    this.#subagents.clear()
+    for (const s of sessions) {
+      if (s.origin === 'subagent') {
+        this.#subagents.add(s.sessionId)
+        continue
+      }
+      if (s.running) this.#running.add(s.sessionId)
+    }
+  }
+
+  /** Exclude subagent sessions from root-session status sets. */
+  #pruneSubagents(): void {
+    for (const id of this.#subagents) {
+      this.#running.delete(id)
+      this.#completed.delete(id)
+      this.#prevRunning.delete(id)
+      this.#pendingBySession.delete(id)
+    }
   }
 
   /** Official trackPending/resolvePending semantics per session: add or settle
@@ -301,22 +330,33 @@ export class DeviceLifecycle {
     this.#stream.on('event', event => {
       switch (event.type) {
         case 'session-status':
+          // host/session-status carries no origin; a session known as a
+          // subagent (baseline origin or session-added) must not contribute to
+          // root-session counts.
+          if (this.#subagents.has(event.sessionId)) break
           this.#observeRunning(event.sessionId, event.running)
           if (event.running) this.#running.add(event.sessionId)
           else this.#running.delete(event.sessionId)
           break
         case 'interaction': {
+          if (this.#subagents.has(event.sessionId)) break
           this.#trackInteraction(event.sessionId, event.rpcId, event.kind, event.resolved)
           break
         }
         case 'session-added':
-          // Re-baseline lazily: refresh() reconciles exact counts.
+          // session-added carries the origin marker; remember subagents so the
+          // origin-less status frames stay excluded.
+          if (event.origin === 'subagent') {
+            this.#subagents.add(event.sessionId)
+            this.#pruneSubagents()
+          }
           break
         case 'session-removed':
           this.#prevRunning.delete(event.sessionId)
           this.#completed.delete(event.sessionId)
           this.#pendingBySession.delete(event.sessionId)
           this.#running.delete(event.sessionId)
+          this.#subagents.delete(event.sessionId)
           break
       }
       this.#emitFacts()

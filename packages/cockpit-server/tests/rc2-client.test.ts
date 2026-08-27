@@ -41,6 +41,11 @@ describe('dual event stream conversion', () => {
     // question/resolved echoes the envelope rpcId back (official questionRpcId).
     expect(events).toContainEqual({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'question', rpcId: 'r3', resolved: true })
     expect(events.filter(e => e.type === 'workspace-changed')).toEqual([])
+
+    // session-added must surface the subagent origin marker (baseline priors
+    // keep origin-less host/session-status frames correctly filtered).
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r8', method: 'host/session-added', payload: { sessionId: 'sub-1', blank: false, origin: 'subagent' } }))
+    expect(events).toContainEqual({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-1', origin: 'subagent' })
     stream.dispose()
   })
 })

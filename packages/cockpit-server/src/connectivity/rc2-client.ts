@@ -47,8 +47,8 @@ export class Rc2Client {
     }
   }
 
-  async listSessions(): Promise<readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]> {
-    const value = await this.call<{ items: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[] }>('session.list', {})
+  async listSessions(): Promise<readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string; parentSessionId?: string }[]> {
+    const value = await this.call<{ items: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string; parentSessionId?: string }[] }>('session.list', {})
     return value.items
   }
 
@@ -138,7 +138,11 @@ export class DualEventStream extends EventEmitter {
         return { type: 'interaction', deviceId: this.#deviceId, sessionId, kind: 'question', rpcId: payload.questionRpcId, resolved: true }
       case 'host/session-added':
       case 'session/subscribed':
-        return { type: 'session-added', deviceId: this.#deviceId }
+        return {
+          type: 'session-added', deviceId: this.#deviceId,
+          ...(sessionId === undefined ? {} : { sessionId }),
+          ...(payload.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
+        }
       case 'host/session-removed':
         return sessionId === undefined ? undefined : { type: 'session-removed', deviceId: this.#deviceId, sessionId }
       default:
