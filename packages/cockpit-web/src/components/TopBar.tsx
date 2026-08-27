@@ -89,7 +89,7 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
                       data-session-state={status.state}
                       title={`${ACTIVITY_LABEL[status.kind]} ×${status.count}`}
                     >
-                      <StateDot state={ACTIVITY_STATE[status.kind]} size={8} />
+                      <StateDot state={ACTIVITY_STATE[status.kind]} size={10} />
                       <span className="session-chip-count">×{status.count}</span>
                     </span>
                   ))}

@@ -33,21 +33,26 @@ body {
   appearance: none; border: 1px solid transparent; background: transparent;
   color: var(--fg-dim); padding: 6px 10px; border-radius: 8px;
   display: flex; align-items: center; gap: 6px; cursor: pointer;
+  /* A topbar tab must never be squeezed by the scrollable tablist: shrinking
+     would cut the device name ("host" → "hos"). */
+  flex: none;
 }
 .topbar-device:hover { background: #22262b; color: var(--fg); }
 .topbar-device.active { background: #23282e; color: var(--fg); border-color: var(--border); }
 .topbar-device.attention { outline: 1px solid var(--warn); }
-.topbar-device-name { white-space: nowrap; }
+.topbar-device-name { white-space: nowrap; flex: none; }
 /* session-row status chips: official StateDot icons (chase matrix / amber /
    green) + count; no text labels on the tab, status name lives in the title */
-.topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; }
+.topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; flex: none; }
 .session-chip {
-  display: inline-flex; align-items: center; gap: 4px;
+  display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; line-height: 1; color: var(--fg-dim);
   background: var(--bg-panel); border: 1px solid var(--border);
-  border-radius: 999px; padding: 2px 7px; white-space: nowrap;
+  border-radius: 999px; padding: 3px 8px; white-space: nowrap;
 }
-.session-chip-count { font-weight: 600; color: var(--fg); }
+.session-chip .dsh-state-dot-matrix,
+.session-chip .dsh-state-dot { vertical-align: middle; }
+.session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);
