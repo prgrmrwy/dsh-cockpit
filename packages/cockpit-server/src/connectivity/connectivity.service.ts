@@ -2,6 +2,7 @@ import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common'
 import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle } from './device-lifecycle.js'
+import { DeviceEventsService } from './device-events.service.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { Rc2Client } from './rc2-client.js'
@@ -12,7 +13,10 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #tunnels: TunnelManager
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
 
-  constructor(@Inject(DeviceRegistry) registry: DeviceRegistry) {
+  constructor(
+    @Inject(DeviceRegistry) registry: DeviceRegistry,
+    @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
+  ) {
     this.#registry = registry
     this.#tunnels = new TunnelManager({
       readinessProbe: async (endpoint, _signal) => {
@@ -33,7 +37,9 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = new DeviceLifecycle({
       record,
       tunnels: this.#tunnels,
-      onFacts: () => { /* live facts consumed via statuses() */ },
+      // Any lifecycle state change is pushed to the browser immediately; the
+      // REST snapshot stays available for manual refresh.
+      onFacts: () => { this.events.publish(this.statuses()) },
     })
     this.#lifecycles.set(record.deviceId, lifecycle)
     if (record.enabled) lifecycle.start()

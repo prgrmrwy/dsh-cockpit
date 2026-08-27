@@ -1,10 +1,30 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query } from '@nestjs/common'
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
+import { DeviceEventsService } from '../connectivity/device-events.service.js'
 
 @Controller('api')
 export class DevicesController {
-  constructor(@Inject(ConnectivityService) private readonly connectivity: ConnectivityService) {}
+  constructor(
+    @Inject(ConnectivityService) private readonly connectivity: ConnectivityService,
+    @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
+  ) {}
+
+  /** Server-Sent Events stream of device status snapshots. The browser keeps
+   * one EventSource open; every lifecycle change is pushed immediately. */
+  @Get('devices/stream')
+  stream(@Req() request: import('express').Request, @Res() response: import('express').Response): void {
+    response.setHeader('content-type', 'text/event-stream')
+    response.setHeader('cache-control', 'no-cache')
+    response.setHeader('connection', 'keep-alive')
+    response.flushHeaders?.()
+    const send = (facts: readonly DeviceStatusFacts[]) => {
+      void response.write(`data: ${JSON.stringify({ device: facts })}\n\n`)
+    }
+    send(this.connectivity.statuses())
+    const unsubscribe = this.events.subscribe(send)
+    request.on('close', () => { unsubscribe() })
+  }
 
   @Get('devices')
   devices(): { device: readonly DeviceStatusFacts[] } {

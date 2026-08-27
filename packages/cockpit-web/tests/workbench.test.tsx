@@ -46,4 +46,14 @@ describe('workbench', () => {
     expect(container.querySelector('[data-cockpit-offline="d1"]')).not.toBeNull()
     expect(container.querySelector('.overlay-diagnostic')?.textContent).toBe('no dsh at port')
   })
+
+  it('removes the offline overlay when the device becomes READY live', () => {
+    const offline = device({ deviceId: 'd1', state: 'CONNECTING', diagnostic: 'connecting' })
+    const ready = device({ deviceId: 'd1', state: 'READY', diagnostic: 'ok' })
+    const { container, rerender } = render(<StrictMode><Workbench device={offline} /></StrictMode>)
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).not.toBeNull()
+    // A live status push (SSE) updates the device prop with the same id.
+    rerender(<StrictMode><Workbench device={ready} /></StrictMode>)
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
+  })
 })
