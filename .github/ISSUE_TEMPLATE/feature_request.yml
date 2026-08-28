@@ -1,0 +1,44 @@
+name: 功能建议
+description: 提出一个新能力或改进
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        本仓库是规范驱动的：功能通常会先落成一个 OpenSpec change（提案 / 规范 /
+        设计 / 任务），再开始实现。所以这里更关心**你要解决什么问题**，而不是
+        具体怎么实现。
+
+        提之前建议先扫一眼 README 的「设计原则」——有些能力是被架构刻意排除的
+        （例如代理远端 API、同步 provider token）。
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你遇到的实际问题
+      description: 你当前是怎么做的？卡在哪里？
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望的行为
+      description: 从用户可观察的角度描述，不必给出实现方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 你考虑过的其他做法
+      description: 包括「为什么现有能力不够用」
+
+  - type: checkboxes
+    id: boundaries
+    attributes:
+      label: 边界确认
+      options:
+        - label: 这个建议不需要驾驶舱代理远端 DSH 的操作 API 或接管其事件流
+        - label: 这个建议不需要驾驶舱读取或同步 provider token 等凭据
+        - label: 这个建议不把「必须在远端安装插件」作为核心功能的前提

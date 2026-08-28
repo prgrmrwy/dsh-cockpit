@@ -1,5 +1,14 @@
 # dsh-cockpit
 
+> 一个页面管理多台机器上的 DeepSeek Harness——选中设备，直接用它**原生**的
+> DSH 工作台。
+
+[![CI](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml/badge.svg)](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-3c873a.svg)](package.json)
+[![pnpm](https://img.shields.io/badge/pnpm-10.23-f69220.svg)](pnpm-workspace.yaml)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 多设备 DeepSeek Harness 驾驶舱：在一个页面里管理多台机器上的 DSH，选中设备后
 直接使用**该设备自己的 DSH 工作台**。
 
@@ -160,6 +169,17 @@ node packages/cockpit-server/dist/main.js
 
 早期开发中。设计与实施计划见 `openspec/`。
 
+本仓库采用规范驱动开发（[OpenSpec](https://github.com/Fission-AI/OpenSpec)）：
+`openspec/specs/` 是各能力的当前行为契约，`openspec/changes/archive/` 保留每
+一次变更的提案、设计、任务与验证记录。想了解某个行为「为什么是这样」，先看
+规范再看代码。
+
+## 参与贡献
+
+欢迎 issue 与 PR。开发环境、验证命令与规范驱动流程见
+[CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请按
+[SECURITY.md](SECURITY.md) 私密上报，不要开公开 issue。
+
 ## 背景
 
 本项目的前身是 `ohmydsh` 中的 OpenSpec change `federated-dsh-control-plane`
@@ -175,4 +195,4 @@ node packages/cockpit-server/dist/main.js
 
 ## License
 
-MIT
+[MIT](LICENSE) © dsh-cockpit contributors

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 安全漏洞
+    url: https://github.com/prgrmrwy/dsh-cockpit/security/advisories/new
+    about: 请私密上报，不要开公开 issue
+  - name: 使用问题与想法讨论
+    url: https://github.com/prgrmrwy/dsh-cockpit/discussions
+    about: 不确定是不是 bug、或者想先聊聊思路，来这里
