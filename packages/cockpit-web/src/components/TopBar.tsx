@@ -8,6 +8,7 @@ import { BridgeIcon } from './BridgeIcon.jsx'
  * official stoplight vocabulary. No new states; CONNECTING additionally
  * pulses (CSS) so the in-progress transition is visible without a refresh. */
 const DOT: Record<DeviceState, string> = {
+  DISABLED: 'disabled',
   READY: 'ok',
   DEGRADED: 'warn',
   CONNECTING: 'busy',
@@ -65,7 +66,7 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
   return (
     <header className="topbar" data-cockpit-topbar="true">
       <div className="topbar-devices" role="tablist">
-        {devices.map(device => {
+        {devices.filter(device => device.enabled).map(device => {
           const active = device.deviceId === currentId
           return (
             <button

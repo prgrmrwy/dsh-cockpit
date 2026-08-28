@@ -27,6 +27,7 @@ const EMPTY_DEVICE_FORM: DeviceForm = {
 }
 
 const STATE_LABELS: Record<DeviceStatusFacts['state'], string> = {
+  DISABLED: '已禁用',
   SSH_UNREACHABLE: 'SSH 不可达',
   TUNNEL_ERROR: '隧道建立失败',
   DSH_UNAVAILABLE: 'DSH 未运行',
@@ -37,9 +38,10 @@ const STATE_LABELS: Record<DeviceStatusFacts['state'], string> = {
   DEGRADED: '连接异常',
 }
 
-function stateTone(state: DeviceStatusFacts['state']): 'ok' | 'warn' | 'error' {
+function stateTone(state: DeviceStatusFacts['state']): 'ok' | 'warn' | 'error' | 'disabled' {
   if (state === 'READY') return 'ok'
   if (state === 'CONNECTING' || state === 'DEGRADED') return 'warn'
+  if (state === 'DISABLED') return 'disabled'
   return 'error'
 }
 
@@ -330,12 +332,27 @@ export function OverviewPanel({ devices, onClose, onSelect }: PanelProps & {
       ) : (
         <ul className="panel-list">
           {devices.map(device => (
-            <li key={device.deviceId} className="panel-row" data-device={device.deviceId}>
-              <span className="dot" aria-hidden="true" data-state={device.state} />
-              <button className="panel-row-name" onClick={() => onSelect(device.deviceId)}>{device.displayName}</button>
+            <li
+              key={device.deviceId}
+              className="panel-row"
+              data-device={device.deviceId}
+              data-enabled={String(device.enabled)}
+            >
+              <span className={`dot ${device.enabled ? stateTone(device.state) : 'disabled'}`} aria-hidden="true" data-state={device.state} />
+              <button
+                className="panel-row-name"
+                onClick={() => onSelect(device.deviceId)}
+                disabled={!device.enabled}
+                aria-label={device.enabled ? device.displayName : `${device.displayName}（已禁用）`}
+              >{device.displayName}</button>
               <span className="panel-row-state">
-                {device.runningSessionCount > 0 ? `进行中 ×${device.runningSessionCount} · ` : ''}
-                {device.pendingInteractionCount > 0 ? `等待决策 ×${device.pendingInteractionCount}` : device.state}
+                {!device.enabled
+                  ? '已禁用'
+                  : device.runningSessionCount > 0
+                    ? `进行中 ×${device.runningSessionCount}${device.pendingInteractionCount > 0 ? ` · 等待决策 ×${device.pendingInteractionCount}` : ''}`
+                    : device.pendingInteractionCount > 0
+                      ? `等待决策 ×${device.pendingInteractionCount}`
+                      : STATE_LABELS[device.state]}
               </span>
             </li>
           ))}

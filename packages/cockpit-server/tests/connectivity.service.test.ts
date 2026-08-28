@@ -1,14 +1,37 @@
+import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceEventsService } from '../src/connectivity/device-events.service.js'
 
 const probeSshIdentity = vi.fn()
 const validateSshAlias = vi.fn((alias: string) => alias)
+const streamInstances: FakeDualEventStream[] = []
+
+class FakeRc2Client {
+  constructor(readonly options: { endpoint: URL }) {}
+  async probe() { return { ok: true, state: 'READY' as const, diagnostic: 'ok' } }
+  async listSessions() { return [] }
+}
+
+class FakeDualEventStream extends EventEmitter {
+  disposed = false
+  constructor(readonly options: { endpoint: URL; deviceId: string }) {
+    super()
+    streamInstances.push(this)
+  }
+  async open() {}
+  async dispose() { this.disposed = true }
+}
 
 vi.mock('../src/connectivity/ssh.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/connectivity/ssh.js')>()
   return { ...actual, probeSshIdentity, validateSshAlias }
 })
+
+vi.mock('../src/connectivity/rc2-client.js', () => ({
+  Rc2Client: FakeRc2Client,
+  DualEventStream: FakeDualEventStream,
+}))
 
 const { ConnectivityService } = await import('../src/connectivity/connectivity.service.js')
 
@@ -59,6 +82,7 @@ async function serviceFor(records: readonly DeviceRecord[]) {
 beforeEach(() => {
   probeSshIdentity.mockReset()
   validateSshAlias.mockClear()
+  streamInstances.length = 0
 })
 
 describe('connectivity device updates', () => {
@@ -169,17 +193,56 @@ describe('connectivity device updates', () => {
     await service.onApplicationShutdown()
   })
 
-  it('keeps lifecycle facts available when a device is disabled and re-enabled', async () => {
+  it('keeps disabled facts stable, rejects reconnect, and re-enables through a fresh lifecycle', async () => {
     probeSshIdentity.mockResolvedValue({ ok: true, diagnostic: 'ok' })
     const { service } = await serviceFor([remote('a', 0)])
 
-    await service.updateDevice('a', { enabled: true })
-    expect(service.statuses()[0]?.enabled).toBe(true)
-    await service.updateDevice('a', { enabled: false })
-    expect(service.statuses()[0]?.enabled).toBe(false)
-    await service.updateDevice('a', { enabled: true })
-    expect(service.statuses()[0]?.enabled).toBe(true)
+    expect(service.statuses()[0]).toEqual(expect.objectContaining({
+      enabled: false,
+      state: 'DISABLED',
+      runningSessionCount: 0,
+      pendingInteractionCount: 0,
+      sessionStatuses: [],
+    }))
+    expect(service.statuses()[0]).not.toHaveProperty('endpoint')
+    await expect(service.refreshDevice('a')).rejects.toThrow('device a is disabled')
+    await expect(service.reconnectDevice('a')).rejects.toThrow('device a is disabled')
 
+    await service.updateDevice('a', { enabled: true })
+    expect(service.statuses()[0]).toEqual(expect.objectContaining({ enabled: true, state: 'CONNECTING' }))
+    await service.updateDevice('a', { enabled: false })
+    expect(service.statuses()[0]).toEqual(expect.objectContaining({ enabled: false, state: 'DISABLED' }))
+    expect(service.statuses()[0]).not.toHaveProperty('endpoint')
+    expect(service.statuses()[0]).not.toHaveProperty('bridgeSeenAt')
+    await service.updateDevice('a', { enabled: true })
+    expect(service.statuses()[0]).toEqual(expect.objectContaining({ enabled: true, state: 'CONNECTING' }))
+    expect(service.statuses()[0]).not.toHaveProperty('endpoint')
+    expect(service.statuses()[0]).not.toHaveProperty('bridgeSeenAt')
+
+    await service.onApplicationShutdown()
+  })
+
+  it('clears live endpoint and bridge presence when an enabled local device is disabled', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const before = service.statuses()[0]!
+    expect(before).toEqual(expect.objectContaining({ enabled: true, state: 'READY' }))
+    expect(before.endpoint).toBe('http://127.0.0.1:3080/')
+    service.bridgeHello(new URL(before.endpoint!).origin, 'test')
+    expect(service.statuses()[0]).toHaveProperty('bridgeSeenAt')
+    const activeStream = streamInstances.at(-1)!
+
+    await service.updateDevice('local', { enabled: false })
+
+    expect(activeStream.disposed).toBe(true)
+    expect(service.statuses()[0]).toEqual(expect.objectContaining({ enabled: false, state: 'DISABLED' }))
+    expect(service.statuses()[0]).not.toHaveProperty('endpoint')
+    expect(service.statuses()[0]).not.toHaveProperty('bridgeSeenAt')
+    await expect(() => service.bridgeHello(new URL(before.endpoint!).origin, 'test')).toThrow('no cockpit device matches origin')
     await service.onApplicationShutdown()
   })
 

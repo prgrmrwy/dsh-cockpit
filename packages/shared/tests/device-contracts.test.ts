@@ -1,4 +1,4 @@
-import type { DeviceStatusFacts, UpdateDeviceRequest } from '../src/index.js'
+import type { DeviceState, DeviceStatusFacts, UpdateDeviceRequest } from '../src/index.js'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -12,6 +12,10 @@ type _DeviceConfigurationFacts = Expect<Equal<
 type _OptionalUpdateOrder = Expect<Equal<
   Pick<UpdateDeviceRequest, 'order'>,
   { readonly order?: number }
+>>
+type _DisabledIsStableDeviceState = Expect<Equal<
+  Extract<DeviceState, 'DISABLED'>,
+  'DISABLED'
 >>
 // The cockpit never proxies remote writes, so outcome-unknown bookkeeping can
 // never exist; the field must be gone from the facts contract entirely.
@@ -51,6 +55,13 @@ const localFacts = {
   lastUpdatedAt: 1,
 } satisfies DeviceStatusFacts
 
+const disabledFacts = {
+  ...remoteFacts,
+  enabled: false,
+  state: 'DISABLED',
+  compatibility: 'INCOMPATIBLE',
+} satisfies DeviceStatusFacts
+
 const reorder = { order: 2 } satisfies UpdateDeviceRequest
 const renameOnly = { displayName: 'Renamed' } satisfies UpdateDeviceRequest
 
@@ -58,4 +69,8 @@ if (remoteFacts.sshAlias !== 'remote-alias' || remoteFacts.remoteDshPort !== 308
   throw new Error('remote device configuration facts are not preserved')
 }
 if ('sshAlias' in localFacts) throw new Error('local facts unexpectedly require an SSH alias')
+const serializedDisabled = JSON.parse(JSON.stringify(disabledFacts)) as DeviceStatusFacts
+if (serializedDisabled.enabled || serializedDisabled.state !== 'DISABLED') {
+  throw new Error('disabled facts are not serialized with the stable DISABLED state')
+}
 if (reorder.order !== 2 || 'order' in renameOnly) throw new Error('update order is not optional')

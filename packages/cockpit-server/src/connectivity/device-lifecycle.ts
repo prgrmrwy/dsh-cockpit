@@ -65,7 +65,7 @@ export class DeviceLifecycle {
   /** Sessions that finished running — the official green "done" reminder
    * (completedNotifications); cleared on re-run and session-removed. */
   #completed = new Set<string>()
-  #stateExplicit: DeviceState = 'CONNECTING'
+  #stateExplicit: DeviceState
   #diagnostic = ''
   #endpoint: URL | undefined
   #stream: Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
@@ -76,6 +76,8 @@ export class DeviceLifecycle {
   constructor(options: DeviceLifecycleOptions) {
     this.deviceId = options.record.deviceId
     this.#record = options.record
+    this.#stateExplicit = options.record.enabled ? 'CONNECTING' : 'DISABLED'
+    this.#diagnostic = options.record.enabled ? '' : 'device disabled'
     this.#tunnels = options.tunnels
     this.#onFacts = options.onFacts
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
@@ -232,7 +234,7 @@ export class DeviceLifecycle {
   }
 
   start(): void {
-    if (this.#task !== undefined) return
+    if (!this.#record.enabled || this.#stopped || this.#task !== undefined) return
     this.#task = this.#run()
   }
 
@@ -245,12 +247,21 @@ export class DeviceLifecycle {
     this.#abort.abort(new Error('device stopped'))
     await this.#stream?.dispose()
     await this.#tunnels.disposeNode(this.deviceId)
+    this.#stream = undefined
+    this.#client = undefined
+    this.#endpoint = undefined
+    this.#running.clear()
+    this.#subagents.clear()
+    this.#pendingBySession.clear()
+    this.#prevRunning.clear()
+    this.#completed.clear()
+    if (!this.#record.enabled) this.#setState('DISABLED', 'device disabled')
   }
 
   /** Force a reconnect of this single device: tear down the current attempt and
    * restart the connect loop. Connected devices are untouched. */
   async reconnect(): Promise<void> {
-    if (this.#stopped) return
+    if (this.#stopped || !this.#record.enabled) return
     await this.#stream?.dispose()
     await this.#tunnels.disposeNode(this.deviceId)
     this.#stream = undefined
@@ -269,10 +280,8 @@ export class DeviceLifecycle {
     let attempt = 0
     while (!this.#abort.signal.aborted && !this.#stopped) {
       if (!this.#record.enabled) {
-        this.#setState('CONNECTING', 'device disabled')
-        attempt = 0
-        await this.#delay(500)
-        continue
+        this.#setState('DISABLED', 'device disabled')
+        return
       }
       try {
         const connected = await this.#connectOnce()
@@ -392,7 +401,7 @@ export class DeviceLifecycle {
   }
 
   async refresh(): Promise<void> {
-    if (this.#client === undefined) return
+    if (!this.#record.enabled || this.#stopped || this.#client === undefined) return
     try {
       const sessions = await this.#client.listSessions()
       this.#refreshRunning(sessions)

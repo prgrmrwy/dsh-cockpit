@@ -22,14 +22,17 @@ const record = (overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
   ...overrides,
 })
 
-function device(sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string }[]) {
+function device(
+  sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string }[],
+  overrides: Partial<DeviceRecord> = {},
+) {
   const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
   const tunnel = new TunnelManager({
     spawn: () => new FakeProcess() as never,
     readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
   })
   const lifecycle = new DeviceLifecycle({
-    record: record(),
+    record: record(overrides),
     tunnels: tunnel,
     createClient: async () => ({
       probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
@@ -55,6 +58,32 @@ describe('device lifecycle', () => {
     const { lifecycle } = device()
     expect(lifecycle.current().state).toBe('CONNECTING')
     void lifecycle.stop()
+  })
+
+  it('keeps a disabled instance inert with stable DISABLED facts', async () => {
+    const { lifecycle, tunnel } = device(undefined, { enabled: false })
+    let tunnelConnectCalled = false
+    const original = tunnel.connect.bind(tunnel)
+    tunnel.connect = (request => {
+      tunnelConnectCalled = true
+      return original(request)
+    }) as typeof tunnel.connect
+
+    lifecycle.start()
+    await lifecycle.refresh()
+    await lifecycle.reconnect()
+
+    expect(lifecycle.current()).toEqual(expect.objectContaining({
+      enabled: false,
+      state: 'DISABLED',
+      runningSessionCount: 0,
+      pendingInteractionCount: 0,
+      sessionStatuses: [],
+    }))
+    expect(lifecycle.current().endpoint).toBeUndefined()
+    expect(tunnelConnectCalled).toBe(false)
+    await lifecycle.stop()
+    await tunnel.disposeAll()
   })
 
   it('aggregates baseline and events once connected', async () => {
@@ -240,10 +269,22 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
-  it('stop() reports CONNECTING afterwards', async () => {
-    const { lifecycle } = device()
+  it('stop() clears live connection and aggregate facts', async () => {
+    const { lifecycle, emit } = device()
+    lifecycle.start()
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'interaction', deviceId: 'd1', sessionId: 's1', kind: 'approval', rpcId: 'a-1', resolved: false })
+    expect(lifecycle.current().endpoint).toBeDefined()
+    expect(lifecycle.current().runningSessionCount).toBe(1)
+
     await lifecycle.stop()
-    expect(lifecycle.current().state).toBe('CONNECTING')
+
+    expect(lifecycle.current().endpoint).toBeUndefined()
+    expect(lifecycle.current().runningSessionCount).toBe(0)
+    expect(lifecycle.current().pendingInteractionCount).toBe(0)
+    expect(lifecycle.current().sessionStatuses).toEqual([])
   })
 })
 describe('local device lifecycle', () => {

@@ -75,7 +75,7 @@ describe('DevicePanel', () => {
       }),
       device({
         deviceId: 'broken-1', displayName: '测试机', order: 2, enabled: false,
-        state: 'SSH_UNREACHABLE', diagnostic: 'SSH 免密连接失败', sshAlias: 'broken-vm',
+        state: 'DISABLED', diagnostic: 'device disabled', sshAlias: 'broken-vm',
       }),
     ])
 
@@ -98,8 +98,8 @@ describe('DevicePanel', () => {
     expect(within(localRow).getByText('正在探测服务')).toBeTruthy()
 
     const brokenRow = screen.getByRole('listitem', { name: /测试机/ })
-    expect(within(brokenRow).getByText('SSH 不可达')).toBeTruthy()
-    expect(within(brokenRow).getByText('SSH 免密连接失败')).toBeTruthy()
+    expect(within(brokenRow).getByText('已禁用')).toBeTruthy()
+    expect(within(brokenRow).getByText('device disabled')).toBeTruthy()
   })
 
   it('shows an empty state that points to the add form', () => {

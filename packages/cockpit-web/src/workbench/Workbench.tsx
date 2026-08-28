@@ -3,9 +3,13 @@ import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 
 export interface WorkbenchProps {
   readonly device: DeviceStatusFacts | undefined
+  /** All records that are currently allowed to own a workbench iframe. */
+  readonly enabledDeviceIds?: readonly string[]
   /** Reconnects this single device; provided by the shell so the offline
    * overlay offers an explicit recovery action. */
   readonly onReconnect?: () => void
+  /** Recovery path when every registered device is disabled. */
+  readonly onManageDevices?: () => void
 }
 
 const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
@@ -24,7 +28,7 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device, onReconnect }: WorkbenchProps) {
+export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices }: WorkbenchProps) {
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
@@ -42,7 +46,20 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
   }
 
   useEffect(() => {
-    if (device === undefined) return
+    if (enabledDeviceIds === undefined) return
+    const enabled = new Set(enabledDeviceIds)
+    let changed = false
+    for (const deviceId of registryRef.current.keys()) {
+      if (enabled.has(deviceId)) continue
+      registryRef.current.delete(deviceId)
+      iframeRefs.current.delete(deviceId)
+      changed = true
+    }
+    if (changed) setFrames([...registryRef.current.values()])
+  }, [enabledDeviceIds])
+
+  useEffect(() => {
+    if (device === undefined || !device.enabled) return
     if (!registryRef.current.has(device.deviceId)) {
       registryRef.current.set(device.deviceId, {
         deviceId: device.deviceId,
@@ -81,9 +98,17 @@ export function Workbench({ device, onReconnect }: WorkbenchProps) {
   }, [device?.deviceId])
 
   if (device === undefined || frames.length === 0) {
+    const noEnabledDevices = enabledDeviceIds !== undefined && enabledDeviceIds.length === 0
     return (
       <section className="workbench" data-cockpit-workbench="true">
-        <div className="workbench-empty"><p>选择一台设备开始使用</p></div>
+        <div className="workbench-empty" data-cockpit-no-enabled={String(noEnabledDevices)}>
+          <div>
+            <p>{noEnabledDevices ? '没有已启用设备' : '选择一台设备开始使用'}</p>
+            {noEnabledDevices && onManageDevices !== undefined && (
+              <button className="overlay-action" onClick={onManageDevices}>打开设备管理</button>
+            )}
+          </div>
+        </div>
       </section>
     )
   }

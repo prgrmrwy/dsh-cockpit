@@ -167,8 +167,11 @@ export class ConnectivityService implements OnApplicationShutdown {
     const next = normalized.find(record => record.deviceId === deviceId)!
     if (update.enabled !== undefined && update.enabled !== current.enabled) {
       // stop() is terminal. Replace the lifecycle when the enabled bit flips;
-      // reusing an aborted instance would make a later enable a no-op.
+      // reusing an aborted instance would make a later enable a no-op. A
+      // disable also invalidates bridge presence: it describes a live page,
+      // not a durable device capability.
       await this.#detach(deviceId)
+      this.#bridgeSeenAt.delete(deviceId)
       this.#attach(next)
     }
     for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
@@ -186,13 +189,17 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   async refreshDevice(deviceId: string): Promise<void> {
-    await this.#lifecycles.get(deviceId)?.refresh()
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    if (!lifecycle.current().enabled) throw new Error(`device ${deviceId} is disabled`)
+    await lifecycle.refresh()
   }
 
-  /** Force reconnect of one device only. */
+  /** Force reconnect of one enabled device only. */
   async reconnectDevice(deviceId: string): Promise<void> {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    if (!lifecycle.current().enabled) throw new Error(`device ${deviceId} is disabled`)
     await lifecycle.reconnect()
   }
 
@@ -224,7 +231,9 @@ export class ConnectivityService implements OnApplicationShutdown {
       throw new Error(`invalid origin ${origin}`)
     }
     for (const lifecycle of this.#lifecycles.values()) {
-      const endpoint = lifecycle.current().endpoint
+      const facts = lifecycle.current()
+      if (!facts.enabled) continue
+      const endpoint = facts.endpoint
       if (endpoint === undefined) continue
       const endpointUrl = new URL(endpoint)
       if (endpointUrl.origin === originUrl.origin) return lifecycle

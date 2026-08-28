@@ -34,6 +34,18 @@ describe('top bar', () => {
     expect(selected).toEqual(['d2'])
   })
 
+  it('does not render disabled device tabs', () => {
+    const devices = [
+      device({ deviceId: 'd1', displayName: 'Enabled' }),
+      device({ deviceId: 'd2', displayName: 'Disabled', enabled: false, state: 'DISABLED' }),
+    ]
+    const { getAllByRole, queryByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    expect(getAllByRole('tab')).toHaveLength(1)
+    expect(queryByRole('tab', { name: /Disabled/ })).toBeNull()
+  })
+
   it('renders official StateDot icons (no text labels) with "×N" counts', () => {
     const devices = [
       device({

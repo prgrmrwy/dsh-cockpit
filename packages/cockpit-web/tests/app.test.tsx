@@ -1,4 +1,4 @@
-import { act, cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { App } from '../src/main.jsx'
@@ -36,6 +36,8 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
 describe('app live status', () => {
   beforeEach(() => {
     FakeEventSource.instances = []
+    fetchMock.mockClear()
+    window.localStorage.clear()
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('EventSource', FakeEventSource)
   })
@@ -66,6 +68,47 @@ describe('app live status', () => {
       expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
     })
     expect(container.querySelector('[data-federation-node="d1"]')?.getAttribute('data-state')).toBe('READY')
+  })
+
+  it('ignores a disabled last-used device and falls back when the current device is disabled live', async () => {
+    window.localStorage.setItem('cockpit:last-device', 'disabled')
+    const { container } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    const enabledA = device({ deviceId: 'enabled-a', displayName: 'Enabled A', order: 0 })
+    const enabledB = device({ deviceId: 'enabled-b', displayName: 'Enabled B', order: 1, endpoint: 'http://127.0.0.1:51689/' })
+    const disabled = device({ deviceId: 'disabled', displayName: 'Disabled', enabled: false, state: 'DISABLED', order: 2, endpoint: undefined })
+
+    act(() => { stream.emit({ device: [enabledA, enabledB, disabled] }) })
+    await waitFor(() => {
+      expect(container.querySelector('[data-federation-node="enabled-a"]')?.getAttribute('aria-selected')).toBe('true')
+    })
+    expect(container.querySelector('[data-federation-node="disabled"]')).toBeNull()
+    expect(window.localStorage.getItem('cockpit:last-device')).toBe('disabled')
+
+    fireEvent.click(container.querySelector('[data-federation-node="enabled-b"]')!)
+    expect(window.localStorage.getItem('cockpit:last-device')).toBe('enabled-b')
+    act(() => { stream.emit({ device: [enabledA, { ...enabledB, enabled: false, state: 'DISABLED', endpoint: undefined }, disabled] }) })
+    await waitFor(() => {
+      expect(container.querySelector('[data-federation-node="enabled-a"]')?.getAttribute('aria-selected')).toBe('true')
+    })
+    expect(container.querySelector('[data-federation-node="enabled-b"]')).toBeNull()
+  })
+
+  it('shows a management recovery action when every registered device is disabled', async () => {
+    const { container, getByRole } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    act(() => {
+      FakeEventSource.instances[0]!.emit({
+        device: [device({ enabled: false, state: 'DISABLED', endpoint: undefined })],
+      })
+    })
+
+    await waitFor(() => expect(container.querySelector('[data-cockpit-no-enabled="true"]')).not.toBeNull())
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0)
+    expect(container.textContent).toContain('没有已启用设备')
+    fireEvent.click(getByRole('button', { name: '打开设备管理' }))
+    expect(container.querySelector('[data-cockpit-panel="devices"]')).not.toBeNull()
   })
 
   it('tolerates malformed stream frames', async () => {

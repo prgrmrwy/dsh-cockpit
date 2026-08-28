@@ -27,7 +27,7 @@ describe('workbench', () => {
   it('keeps the iframe alive across device switches', () => {
     const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
     const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/' })
-    const { container, rerender } = render(<StrictMode><Workbench device={a} /></StrictMode>)
+    const { container, rerender } = render(<StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} /></StrictMode>)
     expect(container.querySelector('iframe[data-workbench-device="d1"]')).not.toBeNull()
 
     rerender(<StrictMode><Workbench device={b} /></StrictMode>)
@@ -39,10 +39,63 @@ describe('workbench', () => {
     expect(container.querySelectorAll('iframe')).toHaveLength(2)
   })
 
+  it('unmounts a disabled iframe, retains transient disconnects, and recreates it after re-enable', () => {
+    const ready = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+    const disconnected = device({ deviceId: 'd1', state: 'CONNECTING', diagnostic: 'reconnecting', endpoint: undefined })
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={ready} enabledDeviceIds={['d1']} /></StrictMode>,
+    )
+    const original = container.querySelector('iframe[data-workbench-device="d1"]')
+    expect(original).not.toBeNull()
+
+    rerender(<StrictMode><Workbench device={disconnected} enabledDeviceIds={['d1']} /></StrictMode>)
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(original)
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).not.toBeNull()
+
+    rerender(<StrictMode><Workbench device={undefined} enabledDeviceIds={[]} /></StrictMode>)
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBeNull()
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
+
+    const reenabled = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:53000/' })
+    rerender(<StrictMode><Workbench device={reenabled} enabledDeviceIds={['d1']} /></StrictMode>)
+    const recreated = container.querySelector('iframe[data-workbench-device="d1"]')
+    expect(recreated).not.toBeNull()
+    expect(recreated).not.toBe(original)
+    expect(recreated!.getAttribute('src')).toBe('http://127.0.0.1:53000/')
+  })
+
+  it('removes an unselected iframe when its device is deleted', () => {
+    const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+    const b = device({ deviceId: 'd2', endpoint: 'http://127.0.0.1:52000/' })
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} /></StrictMode>,
+    )
+    rerender(<StrictMode><Workbench device={b} enabledDeviceIds={['d1', 'd2']} /></StrictMode>)
+    expect(container.querySelectorAll('iframe')).toHaveLength(2)
+
+    rerender(<StrictMode><Workbench device={b} enabledDeviceIds={['d2']} /></StrictMode>)
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBeNull()
+    expect(container.querySelector('iframe[data-workbench-device="d2"]')).not.toBeNull()
+  })
+
+  it('shows a management action instead of a disabled reconnect overlay', () => {
+    const onManageDevices = vi.fn()
+    const { container } = render(
+      <StrictMode><Workbench device={undefined} enabledDeviceIds={[]} onReconnect={vi.fn()} onManageDevices={onManageDevices} /></StrictMode>,
+    )
+    expect(container.querySelector('[data-cockpit-no-enabled="true"]')).not.toBeNull()
+    expect(container.querySelector('[data-cockpit-offline]')).toBeNull()
+    expect(container.textContent).toContain('没有已启用设备')
+    const button = container.querySelector('button')!
+    expect(button.textContent).toBe('打开设备管理')
+    button.click()
+    expect(onManageDevices).toHaveBeenCalledTimes(1)
+  })
+
   it('notifies the active iframe when it loads and whenever its device tab is reactivated', () => {
     const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
     const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/' })
-    const { container, rerender } = render(<StrictMode><Workbench device={a} /></StrictMode>)
+    const { container, rerender } = render(<StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} /></StrictMode>)
     const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
 

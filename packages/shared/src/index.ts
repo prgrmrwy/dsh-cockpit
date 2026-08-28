@@ -4,6 +4,7 @@ export type DeviceKind = 'local' | 'remote'
 
 /** Connection-layer states, driven by the connectivity layer only. */
 export type DeviceState =
+  | 'DISABLED'
   | 'SSH_UNREACHABLE'
   | 'TUNNEL_ERROR'
   | 'DSH_UNAVAILABLE'

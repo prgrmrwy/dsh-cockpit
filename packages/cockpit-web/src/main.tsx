@@ -40,18 +40,30 @@ export function App() {
   // CONNECTING → READY transition would be invisible ("刷新了才出来").
   useEffect(() => subscribeDevices(setDevices), [])
 
-  // Startup behavior: enter the last used device; first run shows overview.
+  // The registry snapshot includes disabled devices for management, but only
+  // enabled records are valid workbench navigation targets.
+  const enabledDevices = useMemo(
+    () => devices.filter(device => device.enabled).sort((left, right) => left.order - right.order),
+    [devices],
+  )
+
+  // Startup behavior: enter the last used enabled device. If the current
+  // device is disabled/deleted later, deterministically fall back to the first
+  // enabled record without overwriting the user's last-used preference.
   const lastUsed = useMemo(() => {
     try { return window.localStorage.getItem('cockpit:last-device') ?? undefined } catch { return undefined }
   }, [])
   useEffect(() => {
-    if (devices.length === 0) return
-    const target = lastUsed !== undefined && devices.some(d => d.deviceId === lastUsed)
+    const target = lastUsed !== undefined && enabledDevices.some(device => device.deviceId === lastUsed)
       ? lastUsed
-      : devices.some(d => d.kind === 'local') ? devices.find(d => d.kind === 'local')!.deviceId : devices[0]?.deviceId
-    setCurrentId(prev => prev ?? target)
-    if (lastUsed === undefined) setPanel('overview')
-  }, [devices, lastUsed])
+      : enabledDevices[0]?.deviceId
+    setCurrentId(previous => (
+      previous !== undefined && enabledDevices.some(device => device.deviceId === previous)
+        ? previous
+        : target
+    ))
+    if (devices.length > 0 && lastUsed === undefined) setPanel('overview')
+  }, [devices.length, enabledDevices, lastUsed])
 
   const select = useCallback((deviceId: string) => {
     setCurrentId(deviceId)
@@ -67,12 +79,12 @@ export function App() {
     }
   }, [currentId])
 
-  const current = devices.find(d => d.deviceId === currentId)
+  const current = enabledDevices.find(device => device.deviceId === currentId)
 
   return (
     <div className="cockpit">
       <TopBar
-        devices={devices}
+        devices={enabledDevices}
         currentId={currentId}
         onSelect={select}
         onOpenPanel={setPanel}
@@ -81,7 +93,12 @@ export function App() {
       />
       <main className="cockpit-main">
         {error !== undefined && <div className="cockpit-error" role="alert">{error}</div>}
-        <Workbench device={current} onReconnect={reconnectCurrent} />
+        <Workbench
+          device={current}
+          enabledDeviceIds={enabledDevices.map(device => device.deviceId)}
+          onReconnect={reconnectCurrent}
+          onManageDevices={() => setPanel('devices')}
+        />
       </main>
       {panel === 'devices' && (
         <DevicePanel devices={devices} onClose={() => setPanel(undefined)} onChanged={() => void refresh()} />
