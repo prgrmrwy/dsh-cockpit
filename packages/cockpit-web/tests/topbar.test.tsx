@@ -8,7 +8,7 @@ afterEach(cleanup)
 
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
-  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, outcomeUnknownCount: 0,
+  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0,
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0,
   ...overrides,
 })
@@ -149,6 +149,44 @@ describe('top bar', () => {
     expect(hint.title).toContain('桥接插件')
     // Not connected: no hint — plugin status is unknown, don't guess.
     expect(getByRole('tab', { name: /C/ }).querySelector('.bridge-hint')).toBeNull()
+  })
+
+  it('distinguishes the two bridge states by icon shape, not only by color', () => {
+    const devices = [
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
+      device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
+      device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
+    ]
+    const { container, getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+
+    const tabA = getByRole('tab', { name: /A/ })
+    const tabB = getByRole('tab', { name: /B/ })
+
+    // A closed chain for the linked device, a broken one for the unlinked device.
+    expect(tabA.querySelector('svg[data-bridge-icon="connected"]')).not.toBeNull()
+    expect(tabA.querySelector('svg[data-bridge-icon="disconnected"]')).toBeNull()
+    expect(tabB.querySelector('svg[data-bridge-icon="disconnected"]')).not.toBeNull()
+    expect(tabB.querySelector('svg[data-bridge-icon="connected"]')).toBeNull()
+
+    // The emoji glyph that used to read as a pause sign is gone.
+    expect(container.textContent).not.toContain('⛓')
+
+    // Unknown plugin state renders no icon at all.
+    expect(getByRole('tab', { name: /C/ }).querySelector('svg[data-bridge-icon]')).toBeNull()
+
+    // Both variants share one box, so switching states cannot shift the tab.
+    const a = tabA.querySelector('svg[data-bridge-icon]') as SVGSVGElement
+    const b = tabB.querySelector('svg[data-bridge-icon]') as SVGSVGElement
+    expect(b.getAttribute('viewBox')).toBe(a.getAttribute('viewBox'))
+    expect(b.getAttribute('width')).toBe(a.getAttribute('width'))
+    expect(b.getAttribute('height')).toBe(a.getAttribute('height'))
+
+    // The labelled wrapper keeps owning the accessible name.
+    expect(tabA.querySelector('.bridge-mark')?.getAttribute('aria-label')).toBe('桥接已连接')
+    expect(tabB.querySelector('.bridge-hint')?.getAttribute('aria-label')).toBe('未检测到桥接插件')
+    expect(tabB.querySelector('.bridge-hint')?.getAttribute('data-bridge-hint')).toBe('missing')
   })
 
   it('renders the completed chip like the other statuses (no click-to-clear)', () => {

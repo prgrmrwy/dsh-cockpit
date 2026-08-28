@@ -1,0 +1,89 @@
+id: T4
+name: 顶栏 active 无 border 与键盘 focus
+description: 切换顶栏设备 tab，验证 active 选中态无 border，并用键盘检查独立 focus-visible。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T5, T6, T7]
+precondition: "真实顶栏包含 host(device-cuabymib) 与 lumevm(device-wr3r7ako)，两者 READY/enabled。仅切换选中设备，不修改注册表。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: live-two-ready
+  surface: topbar-tabs
+  data_source: /api/devices
+  evidence:
+    - 用户提供的真实 3090 live-two-ready 数据事实
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 导航到真实 cockpit 顶栏
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击当前未选中的另一台设备 tab
+    action: click
+    target: "[role='tab'][data-federation-node]:not([aria-selected='true'])"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T4-S2-C1
+        description: 点击后的 tab 变为 active/aria-selected=true，以主题前景背景区分但 active border 为 none，尺寸不跳变
+        focus: visual
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: topbar-tabs
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果包含选中态更新、computed border 无 active 描边以及切换前后 bounding box 稳定。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击 tab、未读取 computed style 或尺寸，未产生 PASS。"
+        selector: "[role='tab'][aria-selected='true']"
+        expected_text: "点击后的设备名称保持不变"
+        expected_attrs:
+          aria-selected: "true"
+          active_border: "none"
+          size_stable: "true"
+        expected_visible: true
+  - seq: 3
+    description: 按 Tab 键把键盘焦点移动到设备 tab
+    action: press_key
+    target: "[role='tab'][data-federation-node]"
+    value: Tab
+    url_needs_input: false
+    checkpoints:
+      - id: T4-S3-C1
+        description: 按键后 tab 出现清晰 focus-visible，焦点提示独立于 active 无 border 选中态且不造成尺寸跳变
+        focus: visual
+        verify: visual_inspect
+        automation: manual
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: topbar-tabs
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "press_key 的后果是焦点环出现；不得把 active 主题背景当作键盘焦点提示。"
+        result: skipped
+        result_detail: "视觉检查被跳过：agent-browser exit 127; Chrome DevTools MCP unavailable。无法发送 Tab 或生成 focus 截图，未执行人工观察，未产生 PASS。"
+        target_area: "[role='tab'][data-federation-node]:focus-visible"
+        inspect_notes: "检查焦点环清晰、独立于 active 无 border 样式，并且焦点出现时无布局跳动。"

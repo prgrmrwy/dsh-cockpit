@@ -55,12 +55,13 @@ export interface DeviceStatusFacts {
   readonly deviceId: string
   readonly displayName: string
   readonly kind: DeviceKind
+  readonly sshAlias?: string
+  readonly remoteDshPort: number
   readonly enabled: boolean
   readonly order: number
   readonly state: DeviceState
   readonly runningSessionCount: number
   readonly pendingInteractionCount: number
-  readonly outcomeUnknownCount: number
   /** Official session-row status groups, non-zero only, ordered by official
    * priority (pending warning first, then active work). */
   readonly sessionStatuses: readonly SessionActivitySummary[]
@@ -124,6 +125,7 @@ export interface UpdateDeviceRequest {
   readonly sshAlias?: string
   readonly remoteDshPort?: number
   readonly enabled?: boolean
+  readonly order?: number
 }
 
 export interface RemoveDeviceRequest {

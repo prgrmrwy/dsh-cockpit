@@ -171,6 +171,10 @@ function requireUpdate(body: UpdateDeviceRequest): UpdateDeviceRequest {
     if (typeof body.enabled !== 'boolean') throw new HttpException(toError('bad-request', 'enabled must be boolean'), HttpStatus.BAD_REQUEST)
     update.enabled = body.enabled
   }
+  if (body.order !== undefined) {
+    if (!Number.isInteger(body.order)) throw new HttpException(toError('bad-request', 'order must be an integer'), HttpStatus.BAD_REQUEST)
+    update.order = body.order
+  }
   return update as UpdateDeviceRequest
 }
 

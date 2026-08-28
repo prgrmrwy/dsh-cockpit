@@ -8,7 +8,7 @@ afterEach(cleanup)
 
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
-  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, outcomeUnknownCount: 0,
+  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0,
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
   ...overrides,
 })

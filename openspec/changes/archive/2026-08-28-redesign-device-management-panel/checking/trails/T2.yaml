@@ -1,0 +1,58 @@
+id: T2
+name: 宽屏深色主题
+description: 在 1280x800 深色主题下打开设备管理面板，检查宽屏层级与主题视觉。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T5, T6, T7]
+precondition: "视口 1280x800，系统 prefers-color-scheme=dark；真实数据为 host 与 lumevm 两台 READY/enabled 设备。禁止改名或删除。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: live-two-ready
+  surface: device-management-panel
+  data_source: /api/devices
+  evidence:
+    - 用户提供的真实 3090 live-two-ready 数据事实
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 以 1280x800 深色主题导航到真实 cockpit
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击设备管理按钮并等待宽屏面板稳定
+    action: click
+    target: "button[title='设备管理']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T2-S2-C1
+        description: 点击后宽屏面板形成清晰双栏，深色主题令牌覆盖背景、表面、边框、文字、READY 状态及危险/常规操作区分
+        focus: visual
+        verify: visual_inspect
+        automation: manual
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: device-management-panel
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "原分类保持 manual visual_inspect；应截图后检查双栏、标题摘要、卡片和表单层级。删除对所有设备均需确认，但本 trail 只检查危险语义视觉，不点击删除。"
+        result: skipped
+        result_detail: "视觉检查被跳过：agent-browser exit 127; Chrome DevTools MCP unavailable。无法打开页面或生成截图，未执行人工观察，未产生 PASS。"
+        target_area: "[data-cockpit-panel='devices']"
+        inspect_notes: "检查 1280x800 双栏、标题摘要、列表主层级、表单次层级、深色对比；删除危险操作与编辑/排序等常规操作明确区分。"

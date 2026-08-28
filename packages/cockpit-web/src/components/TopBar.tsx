@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from 'react'
 import type { DeviceStatusFacts, DeviceState, SessionActivityKind, SessionActivityState } from '@dsh-cockpit/shared'
 import type { PanelName } from '../panels/Panels.jsx'
 import { StateDot } from './StateDot.jsx'
+import { BridgeIcon } from './BridgeIcon.jsx'
 
 /** Status dot semantics: direct mapping of the connectivity state to the
  * official stoplight vocabulary. No new states; CONNECTING additionally
@@ -77,7 +78,6 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
               onContextMenu={event => openContextMenu(event, device.deviceId)}
               data-federation-node={device.deviceId}
               data-state={device.state}
-              data-outcome-unknown={device.outcomeUnknownCount}
             >
               <span className={`dot ${DOT[device.state]}`} aria-hidden="true" />
               <span className="topbar-device-name">{device.displayName}</span>
@@ -86,14 +86,14 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
                   className="bridge-mark"
                   title={`桥接已连接 @ ${new Date(device.bridgeSeenAt).toLocaleTimeString()}`}
                   aria-label="桥接已连接"
-                >⛓</span>
+                ><BridgeIcon variant="connected" /></span>
               ) : (device.state === 'READY' || device.state === 'DEGRADED') && (
                 <span
                   className="bridge-hint"
                   data-bridge-hint="missing"
                   title={`未检测到桥接插件（完成绿点不会按会话清除）。安装介绍：${BRIDGE_DOC_URL}`}
                   aria-label="未检测到桥接插件"
-                >⛓</span>
+                ><BridgeIcon variant="disconnected" /></span>
               )}
               {device.sessionStatuses.length > 0 && (
                 <span className="topbar-sessions" data-cockpit-session-statuses={device.deviceId}>

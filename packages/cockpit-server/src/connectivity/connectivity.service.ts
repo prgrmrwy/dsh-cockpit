@@ -63,12 +63,13 @@ export class ConnectivityService implements OnApplicationShutdown {
           deviceId: facts.deviceId,
           displayName: facts.displayName,
           kind: facts.kind,
+          ...(facts.sshAlias === undefined ? {} : { sshAlias: facts.sshAlias }),
+          remoteDshPort: facts.remoteDshPort,
           enabled: facts.enabled,
           order: facts.order,
           state: facts.state,
           runningSessionCount: facts.runningSessionCount,
           pendingInteractionCount: facts.pendingInteractionCount,
-          outcomeUnknownCount: 0,
           sessionStatuses: facts.sessionStatuses,
           ...(this.#bridgeSeenAt.has(facts.deviceId)
             ? { bridgeSeenAt: this.#bridgeSeenAt.get(facts.deviceId)! }
@@ -131,28 +132,47 @@ export class ConnectivityService implements OnApplicationShutdown {
     sshAlias?: string
     remoteDshPort?: number
     enabled?: boolean
+    order?: number
   }): Promise<DeviceRecord> {
     const records = await this.#registry.load()
     const index = records.findIndex(r => r.deviceId === deviceId)
     if (index < 0) throw new Error(`unknown device ${deviceId}`)
     const current = records[index]!
-    if (update.sshAlias !== undefined && update.sshAlias !== current.sshAlias) {
-      validateSshAlias(update.sshAlias)
-      const identity = await probeSshIdentity(update.sshAlias)
+    if (current.kind === 'local' && update.sshAlias !== undefined) {
+      throw new Error(`local device ${deviceId} does not accept sshAlias`)
+    }
+    const editsConnection = update.displayName !== undefined || update.sshAlias !== undefined || update.remoteDshPort !== undefined
+    if (current.kind === 'remote' && editsConnection) {
+      const effectiveAlias = update.sshAlias ?? current.sshAlias
+      if (effectiveAlias === undefined || effectiveAlias === '') throw new Error('SSH alias is required for a remote device')
+      validateSshAlias(effectiveAlias)
+      const identity = await probeSshIdentity(effectiveAlias)
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
-    const next: DeviceRecord = {
+    const updated: DeviceRecord = {
       ...current,
       displayName: update.displayName ?? current.displayName,
       ...(update.sshAlias === undefined ? {} : { sshAlias: update.sshAlias }),
       ...(update.remoteDshPort === undefined ? {} : { remoteDshPort: update.remoteDshPort }),
       ...(update.enabled === undefined ? {} : { enabled: update.enabled }),
     }
-    await this.#registry.save(records.map((r, i) => i === index ? next : r))
-    const lifecycle = this.#lifecycles.get(deviceId)
-    lifecycle?.updateRecord(next)
-    if (update.enabled === true) lifecycle?.start()
-    if (update.enabled === false) void lifecycle?.stop()
+    const withoutUpdated = records.filter(record => record.deviceId !== deviceId)
+    const targetIndex = update.order === undefined
+      ? index
+      : Math.max(0, Math.min(update.order, withoutUpdated.length))
+    const reordered = [...withoutUpdated]
+    reordered.splice(targetIndex, 0, updated)
+    const normalized = reordered.map((record, order): DeviceRecord => ({ ...record, order }))
+    await this.#registry.save(normalized)
+    const next = normalized.find(record => record.deviceId === deviceId)!
+    if (update.enabled !== undefined && update.enabled !== current.enabled) {
+      // stop() is terminal. Replace the lifecycle when the enabled bit flips;
+      // reusing an aborted instance would make a later enable a no-op.
+      await this.#detach(deviceId)
+      this.#attach(next)
+    }
+    for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
+    this.events.publish(this.statuses())
     return next
   }
 

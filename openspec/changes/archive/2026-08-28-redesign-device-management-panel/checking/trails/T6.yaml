@@ -1,0 +1,99 @@
+id: T6
+name: 排序上移、下移并恢复
+description: 在真实两台设备上串行验证排序上移与下移，并在 finally 中恢复 host order 0、lumevm order 1。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T1, T2, T3, T4, T5, T7]
+precondition: "必须 single agent 串行。执行前确认 host(device-cuabymib) order 0、lumevm(device-wr3r7ako) order 1，均 READY/enabled。禁止改名或删除。未来不论动作或断言在哪一步失败，都必须在 finally 恢复 host order 0、lumevm order 1，并刷新与 GET /api/devices 回读确认。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: reorder-restore
+  surface: device-list-and-topbar-order
+  data_source: /api/devices
+  evidence:
+    - 用户提供的真实顺序 host order 0、lumevm order 1
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock；未来执行必须 finally 恢复原序
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 导航到真实 cockpit 并打开设备管理面板
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击 lumevm 上移按钮，使 lumevm 临时排在 host 前
+    action: click
+    target: "[data-device='device-wr3r7ako'] [aria-label='上移lumevm']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T6-S2-C1
+        description: 点击上移后只发送排序更新，列表与顶栏同步变为 lumevm、host，刷新后仍保持该临时顺序
+        focus: integration
+        verify: assert_network
+        automation: full
+        data_scenario_required: true
+        data_scenario: reorder-restore
+        surface: device-list-and-topbar-order
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果包含 PUT、两处 UI 顺序同步与刷新持久化；之后仍必须继续下移或 finally 恢复。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击上移、未发送 PUT、未改变真实顺序，未产生 PASS。"
+        expected_url: /api/devices/device-wr3r7ako
+        expected_method: PUT
+        expected_params:
+          order: 0
+        expected_status: 200
+        expected_response:
+          list_order: "lumevm,host"
+          topbar_order: "lumevm,host"
+          persisted_after_refresh: true
+  - seq: 3
+    description: 点击 lumevm 下移按钮恢复原始顺序，并在 finally 强制回读 host order 0、lumevm order 1
+    action: click
+    target: "[data-device='device-wr3r7ako'] [aria-label='下移lumevm']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T6-S3-C1
+        description: 点击下移后列表与顶栏恢复 host、lumevm；finally 刷新并回读确认 host order 0、lumevm order 1
+        focus: integration
+        verify: assert_network
+        automation: full
+        data_scenario_required: true
+        data_scenario: reorder-restore
+        surface: device-list-and-topbar-order
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "下移点击后果及 finally 恢复为强制安全条件；即使前一 checkpoint 失败也必须执行恢复和 GET 回读。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击下移且此前未改变顺序；没有真实写操作。未来执行仍必须 finally 回读原序，当前不产生 PASS。"
+        expected_url: /api/devices/device-wr3r7ako
+        expected_method: PUT
+        expected_params:
+          order: 1
+        expected_status: 200
+        expected_response:
+          list_order: "host,lumevm"
+          topbar_order: "host,lumevm"
+          finally_restored: "host=0,lumevm=1"
+          restoration_get_asserted: true

@@ -1,0 +1,214 @@
+meta:
+  feature: redesign-device-management-panel
+  base_branch: main
+  base_commit: 4ffe12d075d461822a4c78c213d482c1df4d45e9
+  created: "2026-08-28T05:23:14Z"
+  device: both
+  device_profile: "pc 1280x800; iphone-14 390x844"
+  sources:
+    git_diff: false
+    openspec: true
+    prd: false
+    ui_specs: false
+    figma: false
+  mock:
+    status: no-native-mock
+    evidence_count: 1
+    user_decision_required: false
+    isolated_setup_status: available_setup_execution_blocked_by_browser_engine
+    isolated_setup_executed: false
+    isolated_setup_blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable；没有浏览器观察收益，因此本轮未执行 stop/start 隔离步骤，也未中断 managed 服务"
+    isolated_setup:
+      home: /tmp/cockpit-verify-home
+      port: 3090
+      steps:
+        - stop managed cockpit service
+        - "以 DSH_COCKPIT_HOME=/tmp/cockpit-verify-home 在 3090 启动 built server，验证 isolated-empty"
+        - "在隔离 home 中新增指向本机端口 39999 的设备，验证 isolated-abnormal"
+        - kill isolated built server
+        - rm -rf /tmp/cockpit-verify-home
+        - restart managed cockpit service
+        - "确认 host 与 lumevm 两台设备均恢复为 READY"
+      provenance: user-provided
+      rollback_required: true
+    surface_scenario_matrix:
+      - surface: device-management-panel-and-topbar
+        data_source: /api/devices
+        scenarios: [live-two-ready]
+        covered: false
+        trail_ids: [T1, T2, T3, T4]
+        status: blocked
+      - surface: device-edit-and-add-form
+        data_source: /api/devices
+        scenarios: [invalid-ssh]
+        covered: false
+        trail_ids: [T5]
+        status: blocked
+      - surface: device-list-and-topbar-order
+        data_source: /api/devices
+        scenarios: [reorder-restore]
+        covered: false
+        trail_ids: [T6]
+        status: blocked
+      - surface: delete-confirm-dialog-and-device-list
+        data_source: /api/devices
+        scenarios: [delete-cancel]
+        covered: false
+        trail_ids: [T7]
+        status: blocked
+      - surface: device-management-panel-and-topbar
+        data_source: /api/devices
+        scenarios: [isolated-empty]
+        covered: false
+        trail_ids: []
+        scope_mapping: additional-blocked-scope-not-T6
+        status: planned-but-execution-blocked
+        blocked_reason: "用户已提供隔离 setup，但 agent-browser exit 127 且 Chrome DevTools MCP unavailable；本轮未 stop managed、未启动 3090 isolated server"
+      - surface: device-management-panel-and-topbar
+        data_source: /api/devices
+        scenarios: [isolated-abnormal-local-port-39999]
+        covered: false
+        trail_ids: []
+        scope_mapping: additional-blocked-scope-not-T6
+        status: planned-but-execution-blocked
+        blocked_reason: "用户已提供隔离 setup，但 agent-browser exit 127 且 Chrome DevTools MCP unavailable；本轮未创建 local:39999 异常设备"
+  execution_strategy:
+    recommendation: single_only
+    selected: single_agent
+    reason:
+      - 用户本轮明确要求直接执行，但真实 3090 共享同一设备注册表，只能单 agent 串行
+      - T6 排序会短暂写共享顺序，必须用 finally 恢复 host order 0、lumevm order 1
+      - T7 只允许取消确认，禁止并行执行任何设备写操作
+    risks:
+      - agent-browser exit 127; Chrome DevTools MCP unavailable，全部浏览器 trail 被阻塞
+      - 禁止改名或删除 host 与 lumevm；T7 不得确认删除
+      - 任一未来 T6 执行路径都必须在 finally 中恢复原始顺序并回读确认
+    agent_assignments:
+      - agent: verifying-acceptance
+        trails: [T1, T2, T3, T4, T5, T6, T7]
+        parallel_group: single-live-ui
+  stats:
+    total_trails: 7
+    total_checkpoints: 14
+    by_focus:
+      integration: 3
+      interaction: 7
+      visual: 4
+    by_automation:
+      full: 11
+      partial: 0
+      manual: 3
+  report_path: report.md
+  feishu_url: null
+
+manuals:
+  - id: M-ISOLATED-EMPTY
+    description: 使用隔离 DSH_COCKPIT_HOME 的空注册表检查设备管理面板空状态
+    reason: "available setup, execution blocked by browser engine；这是最新 7 trails 之外的额外 blocked scope，不占用或覆盖当前 T6 排序"
+    how: "stop managed；以 DSH_COCKPIT_HOME=/tmp/cockpit-verify-home 在 3090 启动 built server；浏览器检查 isolated-empty；cleanup 时 kill isolated、rm home、restart managed，并确认 host/lumevm 均 READY"
+    focus: interaction
+    related_trail: null
+    mock_related: true
+    status: planned-but-execution-blocked
+  - id: M-ISOLATED-ABNORMAL
+    description: 在隔离注册表新增指向本机端口 39999 的设备并检查异常状态
+    reason: "available setup, execution blocked by browser engine；仓库无原生 mock，不构造 fixture"
+    how: "在 isolated 3090 的 /tmp/cockpit-verify-home 中新增 local port 39999；浏览器检查异常态；cleanup 时 kill isolated、rm home、restart managed，并确认 host/lumevm 均 READY"
+    focus: integration
+    related_trail: null
+    mock_related: true
+    status: planned-but-execution-blocked
+  - id: M-SAVE-PREFLIGHT-NETWORK-FAILURE
+    description: 保存前网络失败时的 UI 反馈、草稿保留与零错误写入
+    reason: "blocked/uncovered；仓库无原生 mock，且本轮不构造 fixture；旧编号中的 T7 网络缺口不覆盖当前 T7 删除取消"
+    how: 引擎与可控网络失败方案可用后另行人工验证；当前只记录 gap
+    focus: integration
+    related_trail: null
+    mock_related: true
+    status: blocked-uncovered
+  - id: M-WIDE-DARK
+    description: 1280x800 深色主题下检查面板双栏层级、主题令牌、READY 状态和危险/常规操作区分
+    reason: 无像素基线，原计划分类为 manual visual_inspect；本轮浏览器引擎不可用，连截图也未生成
+    how: 引擎恢复后以 1280x800 深色主题截图，人工检查标题、摘要、设备卡片、表单、边框、文字和操作层级
+    focus: visual
+    related_trail: T2
+    mock_related: false
+  - id: M-NARROW-LIGHT
+    description: 390x844 浅色主题下检查单栏布局与视觉层级
+    reason: 无像素基线，原计划分类为 manual visual_inspect；本轮浏览器引擎不可用，连截图也未生成
+    how: 引擎恢复后以 iphone-14 视口和浅色主题截图，人工检查单栏重排、间距、文字与控件层级
+    focus: visual
+    related_trail: T3
+    mock_related: false
+  - id: M-KEYBOARD-FOCUS
+    description: 键盘 focus-visible 与 active 无 border 选中态相互独立
+    reason: 焦点清晰度需人工视觉判断；本轮浏览器引擎不可用，连截图也未生成
+    how: 引擎恢复后仅用 Tab 移动焦点，检查清晰焦点环不依赖 active border 且不导致尺寸跳变
+    focus: visual
+    related_trail: T4
+    mock_related: false
+
+trails:
+  - id: T1
+    name: 面板标题、摘要与设备行
+    file: trails/T1.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 1
+    summary: 打开设备管理面板，检查标题/摘要及 host、lumevm 两条 READY 设备行
+  - id: T2
+    name: 宽屏深色主题
+    file: trails/T2.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 1
+    summary: 在 1280x800 深色主题下人工检查双栏层级与主题视觉
+  - id: T3
+    name: 窄屏浅色无横向溢出
+    file: trails/T3.yaml
+    device: mobile
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 2
+    summary: 在 390x844 浅色主题下检查单栏重排与页面无横向溢出
+  - id: T4
+    name: 顶栏 active 无 border 与键盘 focus
+    file: trails/T4.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 2
+    summary: 切换设备 tab 后断言 active 无 border，并用键盘检查独立 focus-visible
+  - id: T5
+    name: 编辑预填与新增 invalid SSH 失败保留输入
+    file: trails/T5.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 4
+    summary: 检查 lumevm 编辑预填，取消后填写新增表单并验证 invalid SSH 失败保留输入
+  - id: T6
+    name: 排序上移、下移并恢复
+    file: trails/T6.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 2
+    summary: 串行验证 lumevm 上移、下移与持久化，finally 恢复 host order 0、lumevm order 1
+  - id: T7
+    name: 删除确认与取消无请求
+    file: trails/T7.yaml
+    device: pc
+    parallel_group: single-live-ui
+    status: blocked
+    blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+    checkpoint_count: 2
+    summary: 点击删除后对所有设备弹确认；一律取消，并断言不发请求且设备仍在列表

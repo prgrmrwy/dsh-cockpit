@@ -1,0 +1,82 @@
+id: T3
+name: 窄屏浅色无横向溢出
+description: 在 390x844 浅色主题下打开设备管理面板，检查单栏重排与页面无横向溢出。
+device: mobile
+parallel_group: single-live-ui
+conflicts_with: [T5, T6, T7]
+precondition: "视口 390x844，系统 prefers-color-scheme=light；真实数据为 host 与 lumevm 两台 READY/enabled 设备。禁止改名或删除。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: live-two-ready
+  surface: device-management-panel
+  data_source: /api/devices
+  evidence:
+    - 用户提供的真实 3090 live-two-ready 数据事实
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 以 390x844 浅色主题导航到真实 cockpit
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击设备管理按钮并等待窄屏面板稳定
+    action: click
+    target: "button[title='设备管理']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T3-S2-C1
+        description: 点击后列表、表单与设备操作重排为单栏，document scrollWidth 不大于 clientWidth
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: device-management-panel
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果为面板打开并完成单栏重排；必须用页面尺寸断言无横向溢出。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未读取 scrollWidth/clientWidth，未产生截图或 PASS 证据。"
+        selector: "[data-cockpit-panel='devices']"
+        expected_text: "设备列表、添加表单和操作均保持可达"
+        expected_attrs:
+          layout: single-column
+          horizontal_page_overflow: "false"
+          viewport: "390x844"
+        expected_visible: true
+      - id: T3-S2-C2
+        description: 点击后浅色主题下标题、摘要、设备卡片、表单和操作保持清晰视觉层级
+        focus: visual
+        verify: visual_inspect
+        automation: manual
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: device-management-panel
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "原分类保持 manual visual_inspect；需要窄屏浅色截图。"
+        result: skipped
+        result_detail: "视觉检查被跳过：agent-browser exit 127; Chrome DevTools MCP unavailable。无法打开页面或生成截图，未执行人工观察，未产生 PASS。"
+        target_area: "[data-cockpit-panel='devices']"
+        inspect_notes: "检查浅色主题令牌、间距、文字、卡片、表单与按钮层级，且没有被裁切的主要操作。"

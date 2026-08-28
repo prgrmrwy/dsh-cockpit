@@ -7,6 +7,8 @@ export interface LiveDeviceFacts {
   readonly deviceId: string
   readonly displayName: string
   readonly kind: DeviceRecord['kind']
+  readonly sshAlias?: string
+  readonly remoteDshPort: number
   readonly enabled: boolean
   readonly order: number
   readonly state: DeviceState
@@ -87,6 +89,8 @@ export class DeviceLifecycle {
       deviceId: this.deviceId,
       displayName: this.#record.displayName,
       kind: this.#record.kind,
+      ...(this.#record.sshAlias === undefined ? {} : { sshAlias: this.#record.sshAlias }),
+      remoteDshPort: this.#record.remoteDshPort,
       enabled: this.#record.enabled,
       order: this.#record.order,
       state: this.#stateExplicit,

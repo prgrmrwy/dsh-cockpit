@@ -1,0 +1,64 @@
+id: T1
+name: 面板标题、摘要与设备行
+description: 在真实 3090 的两台 READY 设备上打开设备管理面板，验证标题、状态摘要和设备行事实。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T5, T6, T7]
+precondition: "访问 http://127.0.0.1:3090/；live 数据固定为 host(device-cuabymib, local, order 0, READY, enabled) 与 lumevm(device-wr3r7ako, remote, sshAlias=lumevm, order 1, READY, enabled)。禁止改名或删除。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: live-two-ready
+  surface: device-management-panel
+  data_source: /api/devices
+  evidence:
+    - 用户提供的真实 3090 live-two-ready 数据事实
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 导航到真实 cockpit 入口
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击设备管理按钮打开面板
+    action: click
+    target: "button[title='设备管理']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T1-S2-C1
+        description: 点击后面板显示标题与两台 READY 摘要且无 outcomeUnknownCount，host/lumevm 行显示固定名称、类型、标识、READY 与 enabled 事实
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: device-management-panel-and-list
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果为面板打开并显示完整事实；DeviceStatusFacts 无 outcomeUnknownCount。断言两条设备行而非只检查容器存在，禁止改名或删除。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未观察 DOM、设备行或摘要，未产生截图或 PASS 证据。"
+        selector: "[data-cockpit-panel='devices']"
+        expected_text: "设备管理；2 台设备；2 台 READY；host 本机 READY enabled；lumevm SSH 远端 lumevm READY enabled；不含 outcomeUnknownCount"
+        expected_attrs:
+          open: "true"
+          device_count: "2"
+          host_order: "0"
+          lumevm_order: "1"
+        expected_visible: true

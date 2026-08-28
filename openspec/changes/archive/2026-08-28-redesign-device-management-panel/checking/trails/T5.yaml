@@ -1,0 +1,156 @@
+id: T5
+name: 编辑预填与新增 invalid SSH 失败保留输入
+description: 检查 lumevm 编辑表单预填，取消编辑后填写新增远端表单，并验证 invalid SSH 保存失败时输入保留。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T1, T2, T3, T4, T6, T7]
+precondition: "单 agent 串行；真实设备固定为 host(device-cuabymib) 与 lumevm(device-wr3r7ako, sshAlias=lumevm)，均 READY/enabled。禁止改名、禁止保存对现有设备的编辑；invalid alias 必须是 dsh-acceptance-invalid-alias。后端门禁已由用户在隔离实例验证，本 trail 只做 UI。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: invalid-ssh
+  surface: device-edit-and-add-form
+  data_source: /api/devices
+  evidence:
+    - 用户指定本轮 UI 使用真实 3090，不启用 mock
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock；仅提交新的无效 SSH 记录并期待失败，不修改现有设备
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 导航到真实 cockpit 并打开设备管理面板
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击 lumevm 设备行的编辑按钮
+    action: click
+    target: "[data-device='device-wr3r7ako'] [aria-label='编辑lumevm']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T5-S2-C1
+        description: 点击后表单切换为编辑状态并按当前记录预填 lumevm、remote、sshAlias=lumevm、order 1 与 enabled=true
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: edit-form
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果不是仅显示表单，而是各字段值与当前 lumevm 记录一致；不提交编辑。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击编辑、未读取预填值，未产生 PASS。"
+        selector: "#device-form"
+        expected_text: "编辑 lumevm"
+        expected_attrs:
+          displayName: lumevm
+          kind: remote
+          sshAlias: lumevm
+          order: "1"
+          enabled: "true"
+        expected_visible: true
+  - seq: 3
+    description: 点击取消编辑回到新增设备表单
+    action: click
+    target: "#device-form button[type='button'][data-action='cancel-edit']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T5-S3-C1
+        description: 点击取消后退出编辑状态并恢复新增设备表单，lumevm 记录与列表内容不变
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: live-two-ready
+        surface: edit-form
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "取消后果包含表单模式恢复及真实设备未改名。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未执行取消，未观察表单模式或列表，未产生 PASS。"
+        selector: "#device-form, [data-device='device-wr3r7ako']"
+        expected_text: "添加设备；lumevm"
+        expected_attrs:
+          edit_mode: "false"
+          lumevm_unchanged: "true"
+        expected_visible: true
+  - seq: 4
+    description: 在新增远端表单填写名称、invalid SSH alias 与端口
+    action: fill
+    target: "#device-form"
+    value: "displayName=acceptance-invalid-remote; kind=remote; sshAlias=dsh-acceptance-invalid-alias; dshPort=3080; enabled=true"
+    url_needs_input: false
+    checkpoints:
+      - id: T5-S4-C1
+        description: 填写后新增表单逐字段回显输入值，且当前设备列表仍只有 host 与 lumevm
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: invalid-ssh
+        surface: add-form
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "fill 的直接后果是全部值回显；提交前不得出现第三条设备记录。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未填写或读取表单值，未产生 PASS。"
+        selector: "#device-form"
+        expected_text: "acceptance-invalid-remote；dsh-acceptance-invalid-alias；3080"
+        expected_attrs:
+          enabled: "true"
+          device_count_before_submit: "2"
+        expected_visible: true
+  - seq: 5
+    description: 点击保存新增设备并等待 invalid SSH 失败
+    action: click
+    target: "#device-form button[type='submit']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T5-S5-C1
+        description: 点击保存后 UI 显示 invalid SSH 失败诊断并保留全部输入，列表仍为 host 与 lumevm 两项且没有第三条记录
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: invalid-ssh
+        surface: add-form
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "本轮只验证 UI 行为；后端门禁已由用户在隔离实例验证，不重复。保存失败后断言 role=alert、输入保留、列表不变。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未提交、未观察错误或输入保留，未产生 PASS；没有发生真实写操作。"
+        selector: "#device-form, [role='alert'], [data-device]"
+        expected_text: "invalid SSH 失败诊断；acceptance-invalid-remote；dsh-acceptance-invalid-alias；host；lumevm"
+        expected_attrs:
+          draft_preserved: "true"
+          device_count_after_failure: "2"
+          third_record_present: "false"
+        expected_visible: true

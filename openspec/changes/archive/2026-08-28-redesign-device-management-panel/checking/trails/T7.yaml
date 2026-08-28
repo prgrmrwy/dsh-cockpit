@@ -1,0 +1,97 @@
+id: T7
+name: 删除确认与取消无请求
+description: 对真实设备点击删除按钮，验证所有设备都无条件弹确认；一律取消并断言取消不发任何请求、设备仍在列表。
+device: pc
+parallel_group: single-live-ui
+conflicts_with: [T1, T2, T3, T4, T5, T6]
+precondition: "真实设备 host(device-cuabymib) 与 lumevm(device-wr3r7ako) 均禁止删除。删除对所有设备无条件确认；本 trail 一律点击取消，绝不点击确认。取消时前端不得发送任何请求；只有确认路径才允许 confirmed:true，但本 trail 不执行确认。"
+ask_user_if_blocked: false
+status: blocked
+blocked_reason: "agent-browser exit 127; Chrome DevTools MCP unavailable"
+mock_setup:
+  required: false
+  status: not_needed
+  scenario_id: delete-cancel
+  surface: delete-confirm-dialog-and-device-list
+  data_source: /api/devices
+  evidence:
+    - 用户给定最新删除语义：所有设备无条件确认；取消不发请求；确认才 confirmed:true
+  enable:
+    command: null
+    env: null
+    notes: 当前 UI scope 不使用 mock；真实设备上只允许取消
+  user_decision: null
+
+steps:
+  - seq: 1
+    description: 导航到真实 cockpit 并打开设备管理面板
+    action: navigate
+    target: http://127.0.0.1:3090/
+    value: null
+    url_needs_input: false
+    checkpoints: []
+  - seq: 2
+    description: 点击 lumevm 的删除按钮，但不确认
+    action: click
+    target: "[data-device='device-wr3r7ako'] [aria-label='删除lumevm']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T7-S2-C1
+        description: 点击删除后对 lumevm 无条件弹出确认对话框，确认动作才携带 confirmed:true，弹框阶段尚未发送删除请求
+        focus: interaction
+        verify: assert_dom
+        automation: full
+        data_scenario_required: true
+        data_scenario: delete-cancel
+        surface: delete-confirm-dialog
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "点击后果为确认框弹出；DeviceStatusFacts 不含 outcomeUnknownCount，确认门禁对所有设备一致。不得点击确认。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击删除、未弹确认框、未产生请求或 PASS。"
+        selector: "[role='dialog'][data-confirm='delete-device']"
+        expected_text: "确认删除 lumevm；取消；确认"
+        expected_attrs:
+          target_device: device-wr3r7ako
+          confirm_payload: "confirmed:true"
+          request_before_confirm: "none"
+        expected_visible: true
+  - seq: 3
+    description: 点击删除确认框中的取消按钮
+    action: click
+    target: "[role='dialog'][data-confirm='delete-device'] button[data-action='cancel']"
+    value: null
+    url_needs_input: false
+    checkpoints:
+      - id: T7-S3-C1
+        description: 点击取消后确认框关闭，前端不发送任何请求，host 与 lumevm 仍在列表且顺序不变
+        focus: integration
+        verify: assert_network
+        automation: full
+        data_scenario_required: true
+        data_scenario: delete-cancel
+        surface: delete-confirm-dialog-and-device-list
+        data_source: /api/devices
+        mock_scenario_id: null
+        expected_source: openspec
+        expected_unverified: false
+        input_method: default
+        class: deterministic
+        reviewer_notes: "取消点击的后果必须同时证明 dialog 关闭、network 事件为零、两设备仍存在。绝不发送 DELETE/PUT/POST，也不触发 confirmed:true。"
+        result: skipped
+        result_detail: "浏览器执行未开始：agent-browser exit 127; Chrome DevTools MCP unavailable。未点击取消、未监听网络或读取列表；本轮没有任何真实请求/写操作，未产生 PASS。"
+        expected_url: /api/devices/device-wr3r7ako
+        expected_method: NONE
+        expected_params: null
+        expected_status: null
+        expected_response:
+          dialog_closed: true
+          requests_after_cancel: "0"
+          device_names: "host,lumevm"
+          device_count: "2"
+          order: "host=0,lumevm=1"

@@ -17,6 +17,12 @@
 
 这些是全仓库最容易踩的坑，任何改动前先对照一遍：
 
+- **OpenSpec 路由门禁（先于通用 brainstorming / writing-plans / 实现流程）**
+  - 收到任何可能修改源码的需求，MUST 先运行 `openspec list --json`，检查是否已有相关 change；有相关 change 时读取其完整 artifacts，并按对应 OpenSpec skill 继续。
+  - 新功能、用户可观察行为变化、兼容性调整和架构决策 MUST 走 OpenSpec change。用户可观察行为包括 UI 视觉、布局、交互、响应式、可访问性、主题与文案语义；`bounded`、改动小、单文件或纯 CSS 均不是跳过理由。
+  - 没有相关 change 时，MUST 先使用 `openspec-propose` 生成 proposal/spec/design/tasks；propose 只授权规划，产物完成后必须停止，等待用户下一次明确请求，再使用 `openspec-apply-change` 实施。不得用聊天短设计、todo 或通用 bounded 流程替代，也不得把 propose 与 apply 合并在同一请求中。
+  - 仅以下工作可不新建 change：恢复现有 spec 已明确行为的明显 bug、无用户可观察行为变化的内部重构、纯测试补充、纯文档或注释修改。选择例外时 MUST 在回复中说明依据，并引用现有 spec 或明确说明为何无外部行为变化。
+  - 仓库级本门禁与通用 skill 的流程分类冲突时，以本门禁为准；已有 change 的实现必须及时更新 tasks，完成并验证后使用 OpenSpec archive 流程收口。
 - **PWA / Service Worker**
   - SSE 事件流（`text/event-stream`）**永不缓存**——缓存死流会静默杀死状态聚合；跨源请求（设备 iframe 所在的其他 `127.0.0.1:<port>`）SW 不得拦截。
   - 修改 `public/sw.js` 行为后必须 bump `CACHE_VERSION`，否则旧缓存残留；`/assets/*` 是带哈希的不可变文件，缓存优先按需填充，不要手工写死指纹清单。
@@ -55,8 +61,8 @@
 
 ### 规范驱动
 
-- 新功能、行为变化、兼容性调整或架构决策，优先走 OpenSpec change（`.agents/skills/` 下的 openspec-propose / openspec-apply-change / openspec-archive-change 流程）；实现前确认相关 spec 与 tasks，实现中保持任务状态与进度一致，完成后归档。
-- 修复明显的小缺陷也先搜索现有 spec，避免破坏已有场景与不变量。
+- 属于上述 OpenSpec 路由门禁的需求 MUST 先完成 change 规划，不得用聊天中的短设计、todo 列表或通用 bounded 流程替代；实现前确认相关 spec 与 tasks，实现中保持任务状态与进度一致，完成后归档。
+- 符合门禁窄例外的明显缺陷也必须先搜索现有 spec，避免破坏已有场景与不变量，并在回复中说明跳过新 change 的依据。
 - 构建与依赖：pnpm workspace（`pnpm-workspace.yaml`），根 `package.json` 提供 `build` / `dev` / `test` / `typecheck` / `lint`；要求 Node ≥22。
 
 ### 验证

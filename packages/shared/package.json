@@ -9,7 +9,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test --experimental-strip-types tests/**/*.test.ts",
+    "test": "tsc -p tsconfig.test.json && node --test --experimental-strip-types tests/*.test.ts",
     "lint": "eslint ."
   },
   "devDependencies": {
