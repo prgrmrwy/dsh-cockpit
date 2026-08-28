@@ -1,5 +1,7 @@
 # dsh-cockpit
 
+**简体中文** · [English](README.en.md)
+
 > 一个页面管理多台机器上的 DeepSeek Harness——选中设备，直接用它**原生**的
 > DSH 工作台。
 
@@ -75,7 +77,8 @@
 是**纯浏览器内存状态**，事件流上没有任何「选中」信号；驾驶舱按架构原则不读
 iframe DOM，也拿不到它。有了插件后：
 
-- 驾驶舱顶栏显示 ⛓ 桥接标记（`bridgeSeenAt`），一眼确认该设备连接层活着；
+- 驾驶舱顶栏显示链条图标（`bridgeSeenAt`）：闭合链条表示桥接已连接，断开链条
+  表示未检测到插件，一眼确认该设备连接层活着；
 - 完成提醒绿点按**官方 select 语义**精确清除——打开哪个会话就清除哪个会话的绿点。
   不装插件时行为仍然正确：绿点只能靠「重新运行 / 会话删除」清除。
 
@@ -83,7 +86,7 @@ iframe DOM，也拿不到它。有了插件后：
 
 | 信号 | 插件侧（设备 DSH 页面内） | 驾驶舱侧 |
 | --- | --- | --- |
-| **启动 hello** | 页面加载即 `POST /api/bridge/hello {version}` | 按请求 `Origin` 匹配设备 → 记 `bridgeSeenAt` → 顶栏 ⛓ |
+| **启动 hello** | 页面加载即 `POST /api/bridge/hello {version}` | 按请求 `Origin` 匹配设备 → 记 `bridgeSeenAt` → 顶栏闭合链条图标 |
 | **会话选择** | 订阅官方 `sessions.list` 的 `current`，用户点击会话（250ms 防抖）→ `POST /api/bridge/session-opened {sessionId}` | 按 `Origin` 匹配设备 → `clearCompletedSession(sessionId)`，只清该会话绿点 |
 
 - **设备识别不写死**：插件不需要、也不知道自己是哪台设备——驾驶舱拿请求的
@@ -147,8 +150,8 @@ node packages/cockpit-server/dist/main.js
 
 ## 验证（当前实现已通过的实测）
 
-- server vitest 20/20（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换、设备生命周期）
-- 三包 typecheck + build 全绿
+- server vitest 34/34（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换、设备生命周期、删除确认门禁、排序归一化）
+- 四包 typecheck + build 全绿；web vitest 42/42
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
 - 5 台 iframe 常驻内存基准：JS heap 增量 ≈ 13KB/台（浏览器原生隔离，驾驶舱机制开销可忽略）
