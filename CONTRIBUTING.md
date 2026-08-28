@@ -78,6 +78,9 @@ CI 跑的是同一组命令。有几点值得先知道，能省掉一轮排查�
   完整 DOM 快照）。
 - 提交信息推荐 [Conventional Commits](https://www.conventionalcommits.org/)
   风格，例如 `feat(web): ...`、`fix(server): ...`、`docs(openspec): ...`。
+- **README 是中英双语的**：`README.md`（简体中文，默认首页）与
+  `README.en.md`（English）章节一一对应。改动其一时请同步另一份，避免两版
+  内容漂移；只改单侧的 PR 会被要求补齐。
 
 ## 不会接受的改动
 
