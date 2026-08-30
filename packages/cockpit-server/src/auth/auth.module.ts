@@ -2,6 +2,7 @@ import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common
 import { TokenService } from './token.js'
 import { TokenMiddleware } from './token.middleware.js'
 import { BootstrapController } from './bootstrap.controller.js'
+import { resolveCockpitHome } from '../runtime/config.js'
 
 @Module({
   controllers: [BootstrapController],
@@ -9,8 +10,7 @@ import { BootstrapController } from './bootstrap.controller.js'
     {
       provide: TokenService,
       useFactory: () => {
-        const home = process.env.DSH_COCKPIT_HOME ?? `${process.env.HOME ?? ''}/.dsh-cockpit`
-        return new TokenService(home)
+        return new TokenService(resolveCockpitHome())
       },
     },
   ],

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
-import { Readable } from 'node:stream'
+import { PassThrough, Readable } from 'node:stream'
 
 /** A tracked child process. */
 export interface OwnedProcess {
@@ -13,12 +13,18 @@ export interface OwnedProcess {
 export type ProcessSpawner = (executable: string, argv: readonly string[]) => OwnedProcess
 
 export const defaultSpawner: ProcessSpawner = (executable, argv) => {
-  const child = spawn(executable, [...argv], { stdio: ['ignore', 'ignore', 'pipe'] })
+  const child = spawn(executable, [...argv], { shell: false, stdio: ['ignore', 'ignore', 'pipe'] })
+  const stderr = new PassThrough()
+  child.stderr.pipe(stderr, { end: false })
+  child.stderr.once('end', () => { if (!stderr.destroyed) stderr.end() })
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
     child.once('exit', (code, signal) => resolve({ code, signal }))
-    child.once('error', () => { child.kill() ; resolve({ code: null, signal: null }) })
+    child.once('error', error => {
+      if (!stderr.destroyed) stderr.end(`failed to start ${executable}: ${error.message}`)
+      resolve({ code: null, signal: null })
+    })
   })
-  return { exited, stderr: child.stderr, kill: (sig?: NodeJS.Signals) => child.kill(sig), pid: child.pid ?? 0 }
+  return { exited, stderr, kill: (sig?: NodeJS.Signals) => child.kill(sig), pid: child.pid ?? 0 }
 }
 
 export interface SshIdentityProbeOptions {
@@ -71,7 +77,7 @@ export async function probeSshIdentity(alias: string, options: SshIdentityProbeO
   const timeout = options.connectTimeoutSeconds ?? 5
   const stabilityMs = options.stabilityMs ?? 250
   const graceMs = options.terminateGraceMs ?? 1000
-  const spawned = (options.spawn ?? defaultSpawner)(options.sshExecutable ?? '/usr/bin/ssh', identityArgs(alias, timeout))
+  const spawned = (options.spawn ?? defaultSpawner)(options.sshExecutable ?? 'ssh', identityArgs(alias, timeout))
   const chunks: Buffer[] = []
   let bytes = 0
   spawned.stderr.on('data', (chunk: Buffer) => {

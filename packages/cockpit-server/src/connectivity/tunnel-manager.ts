@@ -51,7 +51,7 @@ export class TunnelManager {
   constructor(options: TunnelManagerOptions) {
     this.#options = {
       readinessProbe: options.readinessProbe,
-      sshExecutable: options.sshExecutable ?? '/usr/bin/ssh',
+      sshExecutable: options.sshExecutable ?? 'ssh',
       spawn: options.spawn ?? defaultSpawner,
       maxBindAttempts: options.maxBindAttempts ?? 3,
       maxStderrBytes: options.maxStderrBytes ?? 8192,

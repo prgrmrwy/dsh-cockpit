@@ -1,426 +1,645 @@
-#!/usr/bin/env bash
-# dsh-cockpit/bin/cockpit — 启动 / 管理 dsh-cockpit 驾驶舱(非阻塞)。
-#
-#   cockpit              启动:未运行 → build(如需要)→ 后台拉起 → 就绪后打开 UI;
-#                        已运行 → 直接打开 UI
-#   cockpit start        同上(显式子命令)
-#   cockpit build        只 build,不启动
-#   cockpit stop         停止 cockpit server(校验 3090 端口归属后才 kill)
-#   cockpit restart      重启:stop → 等端口释放 → start(避免竞态)
-#   cockpit bootstrap    初始化依赖(pnpm install,幂等;--force 强制重装)
-#   cockpit install      安装 cockpit 命令到 ~/.local/bin(相对符号链接,幂等)
-#   cockpit uninstall    卸载 ~/.local/bin/cockpit
-#   cockpit status       查看运行状态(PID / 端口 / 数据目录)
-#
-#   --foreground  前台运行(调试用,阻塞)
-#   --no-open     启动/检测时不自动打开 UI
-#   --dev         开发模式:pnpm -r --parallel dev(tsx watch + vite)
-#   -b, --build   强制重新 build 后再启动
-#
-# 环境变量:
-#   DSH_COCKPIT_HOME  数据目录(默认 ~/.dsh-cockpit;日志写 cockpit.log)
-#   COCKPIT_BIN_DIR   安装目录(默认 ~/.local/bin)
-#   COCKPIT_PORT      服务端口(默认 3090)
-#
-# 安装:仓库根先 ./bin/cockpit bootstrap,再 ./bin/cockpit install
-#      (装到 ~/.local/bin/cockpit,可重复执行 / 卸载)
-set -euo pipefail
+#!/usr/bin/env node
+import { spawn } from 'node:child_process'
+import { closeSync, existsSync, openSync, realpathSync, statSync } from 'node:fs'
+import { mkdir, readdir, readFile, rm, stat, symlink } from 'node:fs/promises'
+import { createConnection } from 'node:net'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { parseArgs } from 'node:util'
 
-# Resolve symlinks so the repo path is correct when invoked via ~/.local/bin
-SOURCE="${BASH_SOURCE[0]}"
-while [ -L "$SOURCE" ]; do
-  DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
-  SOURCE="$(readlink "$SOURCE")"
-  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
-done
-REPO="$(cd "$(dirname "$SOURCE")/.." && pwd)"
-cd "$REPO"
+const CLI_FILE = fileURLToPath(import.meta.url)
+export const REPO_ROOT = path.resolve(path.dirname(CLI_FILE), '..')
+const ACTIONS = new Set(['start', 'build', 'stop', 'restart', 'bootstrap', 'install', 'uninstall', 'status'])
 
-COCKPIT_HOME="${DSH_COCKPIT_HOME:-$HOME/.dsh-cockpit}"
-BIN_DIR="${COCKPIT_BIN_DIR:-$HOME/.local/bin}"
-PORT="${COCKPIT_PORT:-3090}"
-LINK="$BIN_DIR/cockpit"
-LOG="$COCKPIT_HOME/cockpit.log"
-URL="http://127.0.0.1:$PORT"
-
-ACTION=""            # start|build|stop|restart|bootstrap|install|uninstall|status
-FOREGROUND=0
-NO_OPEN=0
-DEV=0
-BUILD=0
-FORCE=0
-
-usage() {
-  sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-  exit "${1:-0}"
+export function parseCliArgs(args) {
+  const parsed = parseArgs({
+    args,
+    allowPositionals: true,
+    strict: true,
+    options: {
+      foreground: { type: 'boolean' },
+      'no-open': { type: 'boolean' },
+      dev: { type: 'boolean' },
+      build: { type: 'boolean', short: 'b' },
+      force: { type: 'boolean' },
+      help: { type: 'boolean', short: 'h' },
+    },
+  })
+  if (parsed.positionals.length > 1) throw new Error(`unexpected argument: ${parsed.positionals.slice(1).join(' ')}`)
+  const action = parsed.positionals[0] ?? 'start'
+  if (!ACTIONS.has(action)) throw new Error(`unknown command: ${action}`)
+  return {
+    action,
+    foreground: parsed.values.foreground ?? false,
+    noOpen: parsed.values['no-open'] ?? false,
+    dev: parsed.values.dev ?? false,
+    build: parsed.values.build ?? false,
+    force: parsed.values.force ?? false,
+    help: parsed.values.help ?? false,
+  }
 }
 
-# ---------- 基础工具检查 ----------
-version_lt() {
-  local a="${1%%-*}" b="${2%%-*}" i
-  local -a x y
-  IFS=. read -r -a x <<< "$a"
-  IFS=. read -r -a y <<< "$b"
-  for i in 0 1 2; do
-    local xi="${x[i]:-0}" yi="${y[i]:-0}"
-    xi="${xi//[!0-9]/}"; yi="${yi//[!0-9]/}"
-    (( 10#${xi:-0} < 10#${yi:-0} )) && return 0
-    (( 10#${xi:-0} > 10#${yi:-0} )) && return 1
-  done
-  return 1
+export function validateNodeVersion(version = process.versions.node) {
+  const major = Number(version.split('.')[0])
+  if (!Number.isInteger(major) || major < 22) throw new Error(`Node.js ${version} is unsupported; Node.js >= 22 is required`)
+  return version
 }
 
-check_environment() {
-  local need=0
-  if ! command -v node >/dev/null 2>&1; then
-    echo "error: 未找到 node,需要 Node.js >= 22(https://nodejs.org 或 nvm install && nvm use)" >&2
-    need=1
-  elif version_lt "$(node -v | sed 's/^v//')" "22.0.0"; then
-    echo "error: node 版本过低: $(node -v)(需要 >= 22)" >&2
-    need=1
-  fi
-  if ! command -v pnpm >/dev/null 2>&1; then
-    echo "error: 未找到 pnpm(本仓库用 pnpm 管理依赖)" >&2
-    echo "  安装: npm install -g pnpm  或  corepack enable && corepack prepare pnpm@latest --activate" >&2
-    need=1
-  fi
-  if [[ $need -eq 1 ]]; then
-    exit 1
-  fi
+export function resolveCliHome(env = process.env, homedir = os.homedir) {
+  const configured = env.DSH_COCKPIT_HOME
+  return configured !== undefined && configured.trim() !== ''
+    ? path.resolve(configured)
+    : path.join(homedir(), '.dsh-cockpit')
 }
 
-# ---------- bootstrap / install ----------
-do_bootstrap() {
-  check_environment
-  mkdir -p "$COCKPIT_HOME"
-  if [[ $FORCE -eq 1 ]]; then
-    echo "bootstrap: 强制重新安装依赖(pnpm install --force)..."
-    pnpm install --force
-  else
-    echo "bootstrap: 安装依赖(已装则跳过)..."
-    pnpm install
-  fi
-  echo "bootstrap 完成。下一步: ./bin/cockpit install"
+export function resolveCliPort(env = process.env) {
+  const configured = env.COCKPIT_PORT
+  if (configured === undefined || configured.trim() === '') return 3090
+  if (!/^\d+$/.test(configured.trim())) throw new Error(`invalid COCKPIT_PORT: ${configured}`)
+  const port = Number(configured)
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new Error(`invalid COCKPIT_PORT: ${configured}`)
+  return port
 }
 
-# 从目录 $1 到路径 $2(均须绝对路径)的相对路径,纯 bash 实现
-relpath() {
-  local from="$1" to="$2"
-  local -a f t up
-  local i j out=""
-  IFS='/' read -r -a f <<< "${from#/}"
-  IFS='/' read -r -a t <<< "${to#/}"
-  i=0
-  while [ "$i" -lt "${#f[@]}" ] && [ "$i" -lt "${#t[@]}" ] && [ "${f[$i]}" = "${t[$i]}" ]; do
-    i=$((i + 1))
-  done
-  for ((j = i; j < ${#f[@]}; j++)); do up+=(".."); done
-  if [ "${#up[@]}" -gt 0 ]; then
-    out="$(IFS='/'; printf '%s' "${up[*]}")"
-  fi
-  for ((j = i; j < ${#t[@]}; j++)); do
-    out="${out:+$out/}${t[$j]}"
-  done
-  printf '%s' "${out:-.}"
+function environmentPath(env) {
+  return env.PATH ?? env.Path ?? env.path ?? ''
 }
 
-do_install() {
-  mkdir -p "$BIN_DIR"
-  # 物理解析两侧路径再算相对路径:macOS 上 /var → /private/var 这类符号链接
-  # 前缀会让纯字符串 relpath 算错(安装到 /var/folders/... 时会坏)。
-  local bin_phys target_phys
-  bin_phys="$(cd "$BIN_DIR" && pwd -P)"
-  target_phys="$(cd "$REPO/bin" && pwd -P)"
-  REL="$(relpath "$bin_phys" "$target_phys/cockpit")"
-  ln -sfn "$REL" "$LINK"
-  echo "OK  已安装: $LINK -> $REL"
-  echo "    (相对符号链接,仓库整体移动后仍可用;重复执行可覆盖更新)"
-  if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
-    echo
-    echo "WARN $BIN_DIR 不在当前 PATH,按你的 shell 配置一行(重开终端生效):"
-    echo "  bash:     echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
-    echo "  zsh:      echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
-  fi
-  echo
-  echo "完成。新终端里执行 cockpit 即可。"
+function executableExtensions(platform, env, command) {
+  if (platform !== 'win32' || path.win32.extname(command) !== '') return ['']
+  const pathext = env.PATHEXT ?? env.PathExt ?? '.COM;.EXE;.BAT;.CMD'
+  return pathext.split(';').filter(Boolean).map(value => value.toLowerCase())
 }
 
-do_uninstall() {
-  if [ -L "$LINK" ] || [ -e "$LINK" ]; then
-    rm -f "$LINK"
-    echo "OK  已卸载: $LINK"
-  else
-    echo "未安装($LINK 不存在),无需处理"
-  fi
+function isExecutable(file, platform) {
+  try {
+    if (!statSync(file).isFile()) return false
+    if (platform !== 'win32') {
+      const mode = statSync(file).mode
+      return (mode & 0o111) !== 0
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
-# ---------- build ----------
-# 需要 build 当且仅当:任一包产物缺失,或任一 src 比 server dist 产物新。
-needs_build() {
-  [[ -f packages/cockpit-server/dist/main.js ]] || return 0
-  [[ -f packages/cockpit-web/dist/index.html ]] || return 0
-  [[ -f packages/shared/dist/index.js ]] || return 0
-  find packages/cockpit-server/src packages/cockpit-web/src packages/shared/src \
-    -type f -newer packages/cockpit-server/dist/main.js -print -quit 2>/dev/null | grep -q .
+export function findExecutable(command, { env = process.env, platform = process.platform } = {}) {
+  if (typeof command !== 'string' || command.trim() === '' || /[\0\r\n]/.test(command)) return undefined
+  const pathApi = platform === 'win32' ? path.win32 : path.posix
+  const pathLike = pathApi.isAbsolute(command) || command.includes('/') || command.includes('\\')
+  const directories = pathLike
+    ? ['']
+    : environmentPath(env).split(platform === 'win32' ? ';' : ':').map(value => value.replace(/^"|"$/g, '')).filter(Boolean)
+  for (const directory of directories) {
+    const base = pathLike ? command : pathApi.join(directory, command)
+    for (const extension of executableExtensions(platform, env, command)) {
+      const candidate = `${base}${extension}`
+      if (isExecutable(candidate, platform)) return pathApi.resolve(candidate)
+      if (platform === 'win32' && extension !== '' && isExecutable(`${base}${extension.toUpperCase()}`, platform)) {
+        return pathApi.resolve(`${base}${extension.toUpperCase()}`)
+      }
+    }
+  }
+  return undefined
 }
 
-do_build() {
-  check_environment
-  echo "build: pnpm -r build ..."
-  pnpm -r build
-  echo "build 完成。"
+export function resolvePnpmExecutable(env = process.env, platform = process.platform) {
+  const configured = env.DSH_COCKPIT_PNPM_EXECUTABLE
+  const requested = configured !== undefined && configured.trim() !== '' ? configured : 'pnpm'
+  const resolved = findExecutable(requested, { env, platform })
+  if (resolved === undefined) {
+    throw new Error(`pnpm executable not found: ${requested} (set DSH_COCKPIT_PNPM_EXECUTABLE or update PATH)`)
+  }
+  return resolved
 }
 
-# ---------- server 进程 / 端口 ----------
-server_pids() {
-  command -v lsof >/dev/null 2>&1 || return 3
-  lsof -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u
+export function resolvePnpmCommand(env = process.env, platform = process.platform) {
+  const configured = env.DSH_COCKPIT_PNPM_EXECUTABLE
+  if (configured !== undefined && configured.trim() !== '') {
+    return { executable: resolvePnpmExecutable(env, platform), prefixArgs: [] }
+  }
+  const corepack = findExecutable('corepack', { env, platform })
+  if (corepack !== undefined) return { executable: corepack, prefixArgs: ['pnpm'] }
+  return { executable: resolvePnpmExecutable(env, platform), prefixArgs: [] }
 }
 
-is_server_up() {
-  [[ -n "$(server_pids 2>/dev/null || true)" ]]
+function quoteCmdToken(value) {
+  if (/[\0\r\n]/.test(value)) throw new Error('Windows command shim arguments cannot contain line breaks')
+  return `"${value.replaceAll('"', '""').replaceAll('%', '%%')}"`
 }
 
-# 只接受 cockpit server 的 argv 形态:
-#   prod:  node packages/cockpit-server/dist/main.js
-#   dev:   tsx watch src/main.ts(父进程)
-#          node --require ...tsx/... src/main.ts(tsx 拉起的实际监听进程)
-is_cockpit_pid() {
-  local pid="$1" command
-  command="$(ps -o command= -p "$pid" 2>/dev/null)" || return 1
-  case "$command" in
-    *"cockpit-server/dist/main.js"*) return 0 ;;
-    *"cockpit-server/src/main.ts"*) return 0 ;;
-    *"dsh-cockpit"*"src/main.ts"*) return 0 ;;
-    *"tsx watch"*) return 0 ;;
-    *) return 1 ;;
-  esac
+export function buildCommandInvocation(executable, args, { env = process.env, platform = process.platform } = {}) {
+  const extension = platform === 'win32' ? path.win32.extname(executable).toLowerCase() : path.extname(executable).toLowerCase()
+  if (platform !== 'win32' || (extension !== '.cmd' && extension !== '.bat')) {
+    return { executable, args: [...args], windowsVerbatimArguments: false }
+  }
+  const comspec = env.ComSpec ?? env.COMSPEC ?? findExecutable('cmd.exe', { env, platform })
+  if (comspec === undefined || comspec.trim() === '') throw new Error('ComSpec is required to run a Windows command shim')
+  const commandLine = [executable, ...args].map(quoteCmdToken).join(' ')
+  return { executable: comspec, args: ['/d', '/s', '/c', `"${commandLine}"`], windowsVerbatimArguments: true }
 }
 
-# 收集一个 listener 需要连带终止的 dev 链路进程:
-#   prod: node packages/cockpit-server/dist/main.js(无父链)
-#   dev:  pnpm -r --parallel dev → tsx watch → node src/main.ts → 连坐 vite dev server
-# 沿父链向上追(最多 3 层),只认已知 dev 形态的 argv,否则停止(fail-closed)。
-collect_stop_set() {
-  local pid="$1" parent parent_cmd child children ccmd depth=0
-  echo "$pid"
-  while [[ $depth -lt 3 ]]; do
-    parent="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"
-    [[ -n "$parent" ]] || break
-    parent_cmd="$(ps -o command= -p "$parent" 2>/dev/null || true)"
-    case "$parent_cmd" in
-      *"tsx"*"watch"*|*"parallel dev"*)
-        echo "$parent"
-        # pnpm 常同时拉起 vite dev(5173);不监听 3090,但同属 dev 环境,一起收
-        children="$(pgrep -P "$parent" 2>/dev/null || true)"
-        for child in $children; do
-          [[ "$child" == "$pid" || "$child" == "$parent" ]] && continue
-          ccmd="$(ps -o command= -p "$child" 2>/dev/null || true)"
-          case "$ccmd" in
-            *"dsh-cockpit"*"vite"*|*"tsx"*"watch"*) echo "$child" ;;
-          esac
-        done
-        pid="$parent"
-        depth=$((depth + 1))
-        ;;
-      *) break ;;
-    esac
-  done
+function spawnCommand(executable, args, options = {}) {
+  const invocation = buildCommandInvocation(executable, args, options)
+  return spawn(invocation.executable, invocation.args, {
+    cwd: options.cwd ?? REPO_ROOT,
+    env: options.env ?? process.env,
+    stdio: options.stdio ?? 'inherit',
+    shell: false,
+    windowsHide: options.windowsHide ?? true,
+    windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+  })
 }
 
-# 停止占用端口的 cockpit server。返回码:
-#   0 已停止;1 无监听;2 监听者非 cockpit 拒绝杀;3 缺 lsof;4 TERM/KILL 后仍未退出
-stop_server_on_port() {
-  local pids pid stop_set still="" attempts="${1:-40}"
-  command -v lsof >/dev/null 2>&1 || return 3
-  pids="$(server_pids || true)"
-  [[ -n "$pids" ]] || return 1
-
-  # 先全部校验归属,再发信号(fail-closed)
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] || continue
-    is_cockpit_pid "$pid" || return 2
-  done <<< "$pids"
-
-  # 收集整条可证明的 dev/prod 进程集合,先 TERM 外层再 TERM listener
-  stop_set="$(while IFS= read -r pid; do
-    [[ -n "$pid" ]] || continue
-    collect_stop_set "$pid"
-  done <<< "$pids" | sort -u)"
-
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] || continue
-    kill -TERM "$pid" 2>/dev/null || true
-  done <<< "$stop_set"
-
-  for _ in $(seq 1 "$attempts"); do
-    still="$(server_pids || true)"
-    [[ -z "$still" ]] && return 0
-    sleep 0.25
-  done
-
-  # 强制前重新校验归属:等待期间端口可能被别的进程抢占
-  while IFS= read -r pid; do
-    [[ -n "$pid" ]] || continue
-    is_cockpit_pid "$pid" || return 2
-    kill -KILL "$pid" 2>/dev/null || true
-  done <<< "$still"
-  sleep 0.1
-  [[ -z "$(server_pids || true)" ]] || return 4
-  return 0
+function waitForExit(child) {
+  return new Promise((resolve, reject) => {
+    child.once('error', reject)
+    child.once('exit', (code, signal) => resolve({ code, signal }))
+  })
 }
 
-do_stop() {
-  local rc=0
-  if stop_server_on_port; then
-    echo "cockpit stopped (port $PORT)"
-  else
-    rc=$?
-    case "$rc" in
-      1) echo "no cockpit server found on port $PORT" ;;
-      2) echo "error: port $PORT listener is not provably cockpit; refusing to kill" >&2 ;;
-      3) echo "error: lsof is required to stop cockpit safely" >&2 ;;
-      4) echo "error: cockpit server on port $PORT did not stop" >&2 ;;
-      *) echo "error: failed to stop cockpit server on port $PORT(rc=$rc)" >&2 ;;
-    esac
-  fi
-  [[ $rc -eq 0 || $rc -eq 1 ]]
+async function runCommand(executable, args, options = {}) {
+  const outcome = await waitForExit(spawnCommand(executable, args, options))
+  if (outcome.code !== 0) throw new Error(`${path.basename(executable)} exited with ${outcome.code ?? outcome.signal ?? 'unknown status'}`)
 }
 
-# ---------- start ----------
-wait_for_port() {
-  local tries="$1"
-  for _ in $(seq 1 "$tries"); do
-    if is_server_up; then return 0; fi
-    sleep 0.5
-  done
-  return 1
+async function runPnpm(args, context, options = {}) {
+  const command = resolvePnpmCommand(context.env, context.platform)
+  await runCommand(command.executable, [...command.prefixArgs, ...args], {
+    ...options, cwd: REPO_ROOT, env: context.env, platform: context.platform,
+  })
 }
 
-open_ui() {
-  [[ $NO_OPEN -eq 1 ]] && return 0
-  if command -v open >/dev/null 2>&1; then
-    open "$URL"
-    echo "UI: 已打开浏览器 $URL"
-  elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "$URL" >/dev/null 2>&1 || true
-    echo "UI: 已打开浏览器 $URL"
-  else
-    echo "cockpit started — open $URL"
-  fi
+async function newestMtime(directory) {
+  let newest = 0
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const file = path.join(directory, entry.name)
+    if (entry.isDirectory()) newest = Math.max(newest, await newestMtime(file))
+    else if (entry.isFile()) newest = Math.max(newest, (await stat(file)).mtimeMs)
+  }
+  return newest
 }
 
-start_server() {
-  local pid
-  mkdir -p "$COCKPIT_HOME"
-  if [[ $FOREGROUND -eq 1 ]]; then
-    node packages/cockpit-server/dist/main.js &
-    pid=$!
-    trap 'kill -TERM "${pid:-}" 2>/dev/null || true' INT TERM
-    if ! wait_for_port 60; then
-      echo "warn: server did not answer on port $PORT within 30s" >&2
-    fi
-    open_ui
-    echo "cockpit 已启动: $URL"
-    wait "$pid" || echo "cockpit stopped"
-  else
-    nohup node packages/cockpit-server/dist/main.js >>"$LOG" 2>&1 &
-    pid=$!
-    disown 2>/dev/null || true
-    if wait_for_port 60; then
-      open_ui
-      echo "cockpit 已启动: $URL (PID $pid,日志 $LOG)"
-    elif kill -0 "$pid" 2>/dev/null; then
-      echo "warn: server did not answer on port $PORT within 30s — see $LOG" >&2
-    else
-      echo "error: server exited early — see $LOG" >&2
-    fi
-  fi
+export async function needsBuild(repoRoot = REPO_ROOT) {
+  const outputs = [
+    path.join(repoRoot, 'packages/cockpit-server/dist/main.js'),
+    path.join(repoRoot, 'packages/cockpit-web/dist/index.html'),
+    path.join(repoRoot, 'packages/shared/dist/index.js'),
+  ]
+  if (outputs.some(output => !existsSync(output))) return true
+  const oldestOutput = Math.min(...await Promise.all(outputs.map(async output => (await stat(output)).mtimeMs)))
+  const sources = [
+    path.join(repoRoot, 'packages/cockpit-server/src'),
+    path.join(repoRoot, 'packages/cockpit-web/src'),
+    path.join(repoRoot, 'packages/shared/src'),
+  ]
+  return Math.max(...await Promise.all(sources.map(newestMtime))) > oldestOutput
 }
 
-do_start() {
-  # 幂等:已在运行则只打开 UI(或提示)
-  if is_server_up; then
-    if [[ $NO_OPEN -eq 1 ]]; then
-      echo "cockpit 已在运行: $URL"
-    else
-      open_ui
-      echo "cockpit 已在运行,已为你打开 UI: $URL"
-    fi
-    exit 0
-  fi
-
-  check_environment
-  if [[ $BUILD -eq 1 ]] || needs_build; then
-    do_build
-  fi
-  start_server
+function isRuntimeRecord(value) {
+  return typeof value === 'object' && value !== null
+    && value.version === 1 && value.app === 'dsh-cockpit'
+    && typeof value.instanceId === 'string' && value.instanceId !== ''
+    && Number.isInteger(value.pid) && value.pid > 0
+    && Number.isInteger(value.port) && value.port >= 1 && value.port <= 65_535
+    && typeof value.repoRoot === 'string' && value.repoRoot !== ''
+    && Number.isFinite(value.startedAt) && value.startedAt > 0
 }
 
-do_restart() {
-  do_stop || return 1
-  if is_server_up; then
-    echo "error: port $PORT still busy after stopping cockpit" >&2
-    return 1
-  fi
-  echo "port $PORT released"
-  do_start
+async function readRuntimeRecord(cockpitHome) {
+  const file = path.join(cockpitHome, 'runtime.json')
+  try {
+    const parsed = JSON.parse(await readFile(file, 'utf8'))
+    if (!isRuntimeRecord(parsed)) throw new Error('runtime record has invalid fields')
+    return parsed
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined
+    throw new Error(`runtime record is corrupt: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    })
+  }
 }
 
-do_status() {
-  local pids
-  pids="$(server_pids 2>/dev/null || true)"
-  if [[ -n "$pids" ]]; then
-    echo "cockpit 运行中:"
-    echo "  URL:      $URL"
-    echo "  PID:      $(echo "$pids" | tr '\n' ' ')"
-    echo "  数据目录: $COCKPIT_HOME"
-    echo "  日志:     $LOG"
-  else
-    echo "cockpit 未运行(端口 $PORT 无监听)"
-    echo "  数据目录: $COCKPIT_HOME"
-  fi
+async function readToken(cockpitHome) {
+  try {
+    const token = (await readFile(path.join(cockpitHome, 'token'), 'utf8')).trim()
+    return token === '' ? undefined : token
+  } catch (error) {
+    if (error?.code === 'ENOENT') return undefined
+    throw error
+  }
 }
 
-# ---------- 参数解析 ----------
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    start) ACTION=start; shift ;;
-    build) ACTION=build; shift ;;
-    stop) ACTION=stop; shift ;;
-    restart) ACTION=restart; shift ;;
-    bootstrap) ACTION=bootstrap; shift ;;
-    install) ACTION=install; shift ;;
-    uninstall) ACTION=uninstall; shift ;;
-    status) ACTION=status; shift ;;
-    --foreground) FOREGROUND=1; shift ;;
-    --no-open) NO_OPEN=1; shift ;;
-    --dev) DEV=1; shift ;;
-    -b|--build) BUILD=1; shift ;;
-    --force) FORCE=1; shift ;;
-    -h|--help) usage ;;
-    *)
-      echo "error: 未知参数 $1" >&2
-      usage 2
-      ;;
-  esac
-done
-ACTION="${ACTION:-start}"
+function normalizedIdentity(value, platform = process.platform) {
+  const normalized = path.resolve(value)
+  return platform === 'win32' ? normalized.toLowerCase() : normalized
+}
 
-case "$ACTION" in
-  bootstrap) do_bootstrap ;;
-  install) do_install ;;
-  uninstall) do_uninstall ;;
-  build) do_build ;;
-  stop) do_stop ;;
-  restart) do_restart ;;
-  status) do_status ;;
-  start)
-    if [[ $DEV -eq 1 ]]; then
-      check_environment
-      echo "dev: pnpm -r --parallel dev(tsx watch + vite,Ctrl+C 退出)..."
-      exec pnpm -r --parallel dev
-    fi
-    do_start
-    ;;
-esac
+export function validateRuntimeStatus(record, status, repoRoot = REPO_ROOT, platform = process.platform) {
+  return isRuntimeRecord(status)
+    && status.instanceId === record.instanceId
+    && status.pid === record.pid
+    && status.port === record.port
+    && normalizedIdentity(status.repoRoot, platform) === normalizedIdentity(repoRoot, platform)
+}
+
+async function fetchWithTimeout(url, init = {}, timeoutMs = 1500) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function fetchRuntimeStatus(record, cockpitHome, repoRoot, platform) {
+  const token = await readToken(cockpitHome)
+  if (token === undefined) return undefined
+  try {
+    const response = await fetchWithTimeout(`http://127.0.0.1:${record.port}/api/runtime/status`, {
+      headers: { Cookie: `cockpit_token=${token}` },
+    })
+    if (!response.ok) return undefined
+    const status = await response.json()
+    return validateRuntimeStatus(record, status, repoRoot, platform) ? status : undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function probePort(port, timeoutMs = 350) {
+  return new Promise(resolve => {
+    const socket = createConnection({ host: '127.0.0.1', port })
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolve(value)
+    }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => finish(true))
+    socket.once('timeout', () => finish(false))
+    socket.once('error', () => finish(false))
+  })
+}
+
+async function inspectRuntime(context) {
+  let record
+  try {
+    record = await readRuntimeRecord(context.cockpitHome)
+  } catch (error) {
+    return { kind: 'corrupt', diagnostic: error.message }
+  }
+  if (record !== undefined) {
+    const status = await fetchRuntimeStatus(record, context.cockpitHome, context.repoRoot, context.platform)
+    if (status !== undefined) return { kind: 'running', record, status }
+    if (await probePort(record.port)) return { kind: 'mismatch', record, diagnostic: `port ${record.port} did not return the expected authenticated runtime identity` }
+    return { kind: 'stale', record, diagnostic: `runtime record ${record.instanceId.slice(0, 8)} has no listener on port ${record.port}` }
+  }
+  if (await probePort(context.port)) return { kind: 'unknown-listener', diagnostic: `port ${context.port} is occupied by an unknown process` }
+  return { kind: 'stopped' }
+}
+
+async function waitForRunning(context, child, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const state = await inspectRuntime(context)
+    if (state.kind === 'running') return state
+    if (child?.exitCode !== null && child?.exitCode !== undefined) throw new Error(`cockpit server exited early with code ${child.exitCode}`)
+    await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  throw new Error(`cockpit did not become ready on port ${context.port} within ${Math.round(timeoutMs / 1000)}s`)
+}
+
+async function waitForPortRelease(port, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!await probePort(port)) return true
+    await new Promise(resolve => setTimeout(resolve, 200))
+  }
+  return false
+}
+
+function captureInteractiveSignals(child, platform, confirmBatchTermination = false) {
+  const state = { signal: undefined }
+  const handle = signal => {
+    state.signal ??= signal
+    if (platform === 'win32' && confirmBatchTermination) child.stdin?.write('Y\r\n')
+    if (platform !== 'win32' && child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill(signal)
+      } catch {
+        // The child may have exited between the state check and kill().
+      }
+    }
+  }
+  const onSigint = () => handle('SIGINT')
+  const onSigterm = () => handle('SIGTERM')
+  process.on('SIGINT', onSigint)
+  process.on('SIGTERM', onSigterm)
+  return {
+    state,
+    dispose() {
+      process.off('SIGINT', onSigint)
+      process.off('SIGTERM', onSigterm)
+    },
+  }
+}
+
+async function removeExitedRuntime(context, instanceId) {
+  if (instanceId === undefined) return
+  let record
+  try {
+    record = await readRuntimeRecord(context.cockpitHome)
+  } catch {
+    return
+  }
+  if (record?.instanceId !== instanceId || await probePort(record.port)) return
+  await rm(path.join(context.cockpitHome, 'runtime.json'), { force: true })
+}
+
+function openBrowser(url, context) {
+  const command = context.platform === 'win32' ? 'explorer.exe' : context.platform === 'darwin' ? 'open' : 'xdg-open'
+  const windowsExplorer = context.platform === 'win32'
+    ? path.join(context.env.SystemRoot ?? context.env.SYSTEMROOT ?? 'C:\\Windows', 'explorer.exe')
+    : undefined
+  const executable = windowsExplorer !== undefined && existsSync(windowsExplorer)
+    ? windowsExplorer
+    : findExecutable(command, { env: context.env, platform: context.platform })
+  if (executable === undefined) {
+    process.stdout.write(`cockpit started — open ${url}\n`)
+    return
+  }
+  const child = spawn(executable, [url], { detached: true, stdio: 'ignore', shell: false, windowsHide: true })
+  child.once('error', () => {})
+  child.unref()
+  process.stdout.write(`UI: ${url}\n`)
+}
+
+async function build(context) {
+  process.stdout.write('build: pnpm -r build ...\n')
+  await runPnpm(['-r', 'build'], context)
+  process.stdout.write('build complete\n')
+}
+
+async function bootstrapDependencies(options, context) {
+  await mkdir(context.cockpitHome, { recursive: true })
+  process.stdout.write(`bootstrap: pnpm install${options.force ? ' --force' : ''} ...\n`)
+  await runPnpm(['install', ...(options.force ? ['--force'] : [])], context)
+  process.stdout.write('bootstrap complete\n')
+}
+
+async function startForeground(options, context) {
+  const serverEntry = path.join(context.repoRoot, 'packages/cockpit-server/dist/main.js')
+  const child = spawn(process.execPath, [serverEntry], {
+    cwd: context.repoRoot,
+    env: context.env,
+    stdio: 'inherit',
+    shell: false,
+    windowsHide: true,
+  })
+  const signals = captureInteractiveSignals(child, context.platform)
+  const exit = waitForExit(child)
+  let running
+  let outcome
+  try {
+    running = await waitForRunning(context, child)
+    const url = `http://127.0.0.1:${running.record.port}`
+    if (!options.noOpen) openBrowser(url, context)
+    process.stdout.write(`cockpit started in foreground: ${url}\n`)
+    outcome = await exit
+  } catch (error) {
+    if (signals.state.signal === undefined) throw error
+    outcome = await exit
+  } finally {
+    signals.dispose()
+    await removeExitedRuntime(context, running?.record.instanceId)
+  }
+  if (signals.state.signal !== undefined) return
+  if (outcome.code !== 0 && outcome.signal === null) throw new Error(`cockpit server exited with code ${outcome.code}`)
+}
+
+async function startBackground(options, context) {
+  await mkdir(context.cockpitHome, { recursive: true })
+  const logFile = path.join(context.cockpitHome, 'cockpit.log')
+  const descriptor = openSync(logFile, 'a')
+  let child
+  let exit
+  try {
+    child = spawn(process.execPath, [path.join(context.repoRoot, 'packages/cockpit-server/dist/main.js')], {
+      cwd: context.repoRoot,
+      env: context.env,
+      detached: true,
+      windowsHide: true,
+      shell: false,
+      stdio: ['ignore', descriptor, descriptor],
+    })
+    exit = waitForExit(child)
+    void exit.catch(() => {})
+    child.unref()
+  } finally {
+    closeSync(descriptor)
+  }
+  let running
+  try {
+    running = await waitForRunning(context, child)
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+    await Promise.race([
+      exit.catch(() => undefined),
+      new Promise(resolve => setTimeout(resolve, 1000)),
+    ])
+    throw error
+  }
+  const url = `http://127.0.0.1:${running.record.port}`
+  if (!options.noOpen) openBrowser(url, context)
+  process.stdout.write(`cockpit started: ${url} (PID ${running.record.pid}, log ${logFile})\n`)
+}
+
+async function start(options, context) {
+  const current = await inspectRuntime(context)
+  if (current.kind === 'running') {
+    const url = `http://127.0.0.1:${current.record.port}`
+    if (!options.noOpen) openBrowser(url, context)
+    process.stdout.write(`cockpit is already running: ${url}\n`)
+    return
+  }
+  if (current.kind === 'mismatch' || current.kind === 'unknown-listener' || current.kind === 'corrupt') {
+    throw new Error(current.diagnostic)
+  }
+  if (current.kind === 'stale') {
+    if (current.record.port !== context.port && await probePort(context.port)) {
+      throw new Error(`port ${context.port} is occupied by an unknown process`)
+    }
+    process.stderr.write(`warning: ${current.diagnostic}; the new instance will replace it\n`)
+  }
+  if (options.build || await needsBuild(context.repoRoot)) await build(context)
+  if (options.foreground) await startForeground(options, context)
+  else await startBackground(options, context)
+}
+
+async function stop(context) {
+  const current = await inspectRuntime(context)
+  if (current.kind === 'stopped') {
+    process.stdout.write(`no cockpit server found (port ${context.port})\n`)
+    return
+  }
+  if (current.kind !== 'running') throw new Error(current.diagnostic)
+  const token = await readToken(context.cockpitHome)
+  if (token === undefined) throw new Error('cockpit token is unavailable; refusing to stop an unverified process')
+  const response = await fetchWithTimeout(`http://127.0.0.1:${current.record.port}/api/runtime/shutdown`, {
+    method: 'POST',
+    headers: {
+      Cookie: `cockpit_token=${token}`,
+      'X-Cockpit-Instance': current.record.instanceId,
+    },
+  }, 3_000)
+  if (!response.ok) throw new Error(`cockpit refused shutdown with HTTP ${response.status}`)
+  if (!await waitForPortRelease(current.record.port)) throw new Error(`cockpit did not release port ${current.record.port}`)
+  process.stdout.write(`cockpit stopped (port ${current.record.port})\n`)
+}
+
+async function status(context) {
+  const current = await inspectRuntime(context)
+  if (current.kind === 'running') {
+    process.stdout.write([
+      'cockpit is running:',
+      `  URL:      http://127.0.0.1:${current.record.port}`,
+      `  PID:      ${current.record.pid}`,
+      `  instance: ${current.record.instanceId.slice(0, 8)}`,
+      `  data:     ${context.cockpitHome}`,
+      `  log:      ${path.join(context.cockpitHome, 'cockpit.log')}`,
+      '',
+    ].join('\n'))
+    return
+  }
+  if (current.kind === 'stopped') {
+    process.stdout.write(`cockpit is not running (port ${context.port})\n  data: ${context.cockpitHome}\n`)
+    return
+  }
+  process.stdout.write(`cockpit state: ${current.kind}\n  ${current.diagnostic}\n  data: ${context.cockpitHome}\n`)
+}
+
+async function runDevelopment(context) {
+  const current = await inspectRuntime(context)
+  if (current.kind === 'running') {
+    throw new Error(`cockpit is already running on port ${current.record.port}; stop it before starting development mode`)
+  }
+  if (current.kind === 'mismatch' || current.kind === 'unknown-listener' || current.kind === 'corrupt') {
+    throw new Error(current.diagnostic)
+  }
+  if (current.kind === 'stale') process.stderr.write(`warning: ${current.diagnostic}; development mode will replace it\n`)
+  const pnpm = resolvePnpmCommand(context.env, context.platform)
+  const extension = context.platform === 'win32' ? path.win32.extname(pnpm.executable).toLowerCase() : ''
+  const usesWindowsBatchShim = extension === '.cmd' || extension === '.bat'
+  process.stdout.write('dev: server watch + Vite (Ctrl+C to stop)\nUI: http://127.0.0.1:5173\n')
+  const child = spawnCommand(pnpm.executable, [...pnpm.prefixArgs, '-r', '--parallel', 'dev'], {
+    cwd: context.repoRoot,
+    env: context.env,
+    platform: context.platform,
+    stdio: usesWindowsBatchShim ? ['pipe', 'inherit', 'inherit'] : 'inherit',
+    windowsHide: false,
+  })
+  const signals = captureInteractiveSignals(child, context.platform, usesWindowsBatchShim)
+  const exit = waitForExit(child)
+  let running
+  let outcome
+  try {
+    running = await waitForRunning(context, child)
+    outcome = await exit
+  } catch (error) {
+    if (signals.state.signal === undefined) throw error
+    outcome = await exit
+  } finally {
+    signals.dispose()
+    await removeExitedRuntime(context, running?.record.instanceId)
+  }
+  if (signals.state.signal !== undefined) return
+  if (outcome.code !== 0 && outcome.signal === null) throw new Error(`development processes exited with code ${outcome.code}`)
+}
+
+async function installCommand(context) {
+  if (context.platform === 'win32') {
+    await runPnpm(['link', '--global'], context)
+    process.stdout.write('cockpit command installed through pnpm global bin\n')
+    return
+  }
+  const binDir = context.env.COCKPIT_BIN_DIR?.trim() || path.join(os.homedir(), '.local', 'bin')
+  const link = path.join(binDir, 'cockpit')
+  await mkdir(binDir, { recursive: true })
+  await rm(link, { force: true })
+  await symlink(path.relative(binDir, CLI_FILE), link)
+  process.stdout.write(`cockpit command installed: ${link}\n`)
+}
+
+async function uninstallCommand(context) {
+  if (context.platform === 'win32') {
+    await runPnpm(['unlink', '--global', 'dsh-cockpit'], context)
+    process.stdout.write('cockpit command removed from pnpm global bin\n')
+    return
+  }
+  const binDir = context.env.COCKPIT_BIN_DIR?.trim() || path.join(os.homedir(), '.local', 'bin')
+  const link = path.join(binDir, 'cockpit')
+  await rm(link, { force: true })
+  process.stdout.write(`cockpit command removed: ${link}\n`)
+}
+
+function usage() {
+  return `dsh-cockpit cross-platform launcher\n\nUsage:\n  cockpit [start] [--foreground] [--no-open] [--dev] [-b|--build]\n  cockpit bootstrap [--force]\n  cockpit build|stop|restart|status|install|uninstall\n\nWindows without a global shim:\n  node .\\bin\\cockpit start\n\nEnvironment:\n  DSH_COCKPIT_HOME             data and log directory\n  DSH_COCKPIT_PNPM_EXECUTABLE  pnpm executable override\n  DSH_COCKPIT_SSH_EXECUTABLE   OpenSSH executable override (used by server)\n  COCKPIT_PORT                 server port (default 3090)\n  COCKPIT_BIN_DIR              Unix command installation directory\n`
+}
+
+export async function main(args = process.argv.slice(2), overrides = {}) {
+  validateNodeVersion(overrides.nodeVersion ?? process.versions.node)
+  let options
+  try {
+    options = parseCliArgs(args)
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? error.message : String(error)}\n\n${usage()}`, {
+      cause: error,
+    })
+  }
+  if (options.help) {
+    process.stdout.write(usage())
+    return
+  }
+  const env = overrides.env ?? process.env
+  const context = {
+    env,
+    platform: overrides.platform ?? process.platform,
+    repoRoot: overrides.repoRoot ?? REPO_ROOT,
+    cockpitHome: resolveCliHome(env),
+    port: resolveCliPort(env),
+  }
+  if (options.action === 'bootstrap') return bootstrapDependencies(options, context)
+  if (options.action === 'build') return build(context)
+  if (options.action === 'stop') return stop(context)
+  if (options.action === 'status') return status(context)
+  if (options.action === 'install') return installCommand(context)
+  if (options.action === 'uninstall') return uninstallCommand(context)
+  if (options.action === 'restart') {
+    await stop(context)
+    return start(options, context)
+  }
+  if (options.dev) return runDevelopment(context)
+  return start(options, context)
+}
+
+function invokedDirectly() {
+  if (process.argv[1] === undefined) return false
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(CLI_FILE)
+  } catch {
+    return path.resolve(process.argv[1]) === path.resolve(CLI_FILE)
+  }
+}
+
+if (invokedDirectly()) {
+  main().catch(error => {
+    process.stderr.write(`error: ${error instanceof Error ? error.message : String(error)}\n`)
+    process.exitCode = 1
+  })
+}

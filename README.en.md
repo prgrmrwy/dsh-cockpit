@@ -132,27 +132,55 @@ device's `~/.dsh/profiles/web`, then restart that device's DSH web. See
 
 ## Running it
 
+`bin/cockpit` is a dependency-free Node.js cross-platform command. It does not
+require Bash, a PowerShell script, or WSL. The repository pins pnpm 10.23.0 via
+`packageManager`; the command prefers Corepack and falls back to pnpm on PATH.
+
 ```bash
-# Option 1: the bin command (recommended, installable into ~/.local/bin)
+# Linux / macOS
 ./bin/cockpit bootstrap      # initialise dependencies (idempotent)
-./bin/cockpit install        # install the cockpit command into ~/.local/bin (optional)
+./bin/cockpit install        # install into ~/.local/bin (optional)
 cockpit start                # build if needed + start in background + open the UI
 cockpit restart              # restart
-cockpit stop                 # stop (kills only after strictly verifying port 3090 ownership)
+cockpit stop                 # authenticate the instance, then shut down gracefully
 cockpit status               # show running status
 cockpit build                # build only
 cockpit start --dev          # dev mode (tsx watch + vite, foreground)
 # Others: --no-open skips the browser; --foreground for debugging; -b forces a rebuild
+```
 
-# Option 2: manual (equivalent to the first half of cockpit start)
+```text
+# Windows (CMD and PowerShell both invoke the same Node CLI)
+node .\bin\cockpit bootstrap
+node .\bin\cockpit start
+node .\bin\cockpit status
+node .\bin\cockpit stop
+node .\bin\cockpit start --dev
+```
+
+The root `package.json` declares a `cockpit` bin. To install a short global
+command on Windows, run `node .\bin\cockpit install`; pnpm's standard global-bin
+mechanism creates the platform shim.
+
+Manual startup remains available:
+
+```bash
 pnpm install
 pnpm build
 node packages/cockpit-server/dist/main.js
 ```
 
-Open `http://127.0.0.1:3090/`. The first visit completes local token
+The default URL is `http://127.0.0.1:3090/`. The first visit completes local token
 authentication through an HttpOnly cookie (the token is persisted in the data
 directory and only guards against other local processes and malicious pages).
+
+| Environment variable | Purpose |
+| --- | --- |
+| `DSH_COCKPIT_HOME` | Data, runtime identity and log directory |
+| `COCKPIT_PORT` | Server port, default `3090`; the Vite API proxy follows it in dev mode |
+| `DSH_COCKPIT_PNPM_EXECUTABLE` | pnpm override; defaults to Corepack, then PATH |
+| `DSH_COCKPIT_SSH_EXECUTABLE` | OpenSSH override; defaults to `ssh`/`ssh.exe` on PATH |
+| `COCKPIT_BIN_DIR` | Unix install target, default `~/.local/bin` |
 
 ## Data directory
 
@@ -162,9 +190,16 @@ directory and only guards against other local processes and malicious pages).
 | --- | --- |
 | `devices.json` | Device registry (0600, atomic writes, fail-closed on corruption — never overwritten) |
 | `token` | The cockpit's local token (0600) |
+| `runtime.json` | Minimal current-instance identity; removed on clean shutdown and never trusted as a PID kill authority by itself |
+| `cockpit.log` | Background server log |
 
 The cockpit **never reads or writes** `~/.dsh`; your local DSH is completely
 unaffected.
+
+`status` cross-checks `runtime.json`, the local token and the server's
+authenticated response. If it reports a stale record and the port is closed,
+the next `start` safely replaces it. If an unknown listener owns the port, the
+command fails closed and refuses to stop or overwrite that process.
 
 ## Security and boundaries
 

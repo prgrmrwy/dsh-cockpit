@@ -6,11 +6,13 @@ import { DeviceEventsService } from './device-events.service.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { Rc2Client } from './rc2-client.js'
+import { resolveSshExecutable } from '../runtime/config.js'
 
 @Injectable()
 export class ConnectivityService implements OnApplicationShutdown {
   readonly #registry: DeviceRegistry
   readonly #tunnels: TunnelManager
+  readonly #sshExecutable: string
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
@@ -20,7 +22,9 @@ export class ConnectivityService implements OnApplicationShutdown {
     @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
   ) {
     this.#registry = registry
+    this.#sshExecutable = resolveSshExecutable()
     this.#tunnels = new TunnelManager({
+      sshExecutable: this.#sshExecutable,
       readinessProbe: async (endpoint, _signal) => {
         const client = new Rc2Client({ endpoint })
         return client.probe()
@@ -108,7 +112,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     const kind = input.kind ?? 'remote'
     if (kind === 'remote') {
       if (input.sshAlias === undefined || input.sshAlias === '') throw new Error('SSH alias is required for a remote device')
-      const identity = await probeSshIdentity(input.sshAlias)
+      const identity = await probeSshIdentity(input.sshAlias, { sshExecutable: this.#sshExecutable })
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
     const records = await this.#registry.load()
@@ -146,7 +150,7 @@ export class ConnectivityService implements OnApplicationShutdown {
       const effectiveAlias = update.sshAlias ?? current.sshAlias
       if (effectiveAlias === undefined || effectiveAlias === '') throw new Error('SSH alias is required for a remote device')
       validateSshAlias(effectiveAlias)
-      const identity = await probeSshIdentity(effectiveAlias)
+      const identity = await probeSshIdentity(effectiveAlias, { sshExecutable: this.#sshExecutable })
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
     const updated: DeviceRecord = {

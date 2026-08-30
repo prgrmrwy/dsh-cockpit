@@ -12,17 +12,29 @@
 ## 快速开始
 
 ```bash
-pnpm install
-pnpm build
+corepack pnpm install
+node bin/cockpit build
 
+# Linux / macOS
 ./bin/cockpit start        # 构建（如需要）+ 后台启动 + 打开 UI
 ./bin/cockpit start --dev  # 前台开发模式（tsx watch + vite）
 ./bin/cockpit status       # 查看运行状态
-./bin/cockpit stop         # 停止（严格校验 3090 端口归属后才 kill）
+./bin/cockpit stop         # 认证实例身份后优雅停止
 ```
 
-驾驶舱固定监听 `http://127.0.0.1:3090`。数据目录是 `~/.dsh-cockpit/`（可用
-`DSH_COCKPIT_HOME` 覆盖），与 `~/.dsh` 严格隔离。
+Windows 使用同一份 Node CLI：
+
+```text
+node .\bin\cockpit start
+node .\bin\cockpit start --dev
+node .\bin\cockpit status
+node .\bin\cockpit stop
+```
+
+驾驶舱默认监听 `http://127.0.0.1:3090`，可用 `COCKPIT_PORT` 覆盖。数据目录是
+操作系统用户目录下的 `.dsh-cockpit/`（可用 `DSH_COCKPIT_HOME` 覆盖），与
+`~/.dsh` 严格隔离。OpenSSH 默认通过 PATH 发现 `ssh`/`ssh.exe`，也可用
+`DSH_COCKPIT_SSH_EXECUTABLE` 覆盖。
 
 > 想在不碰自己真实设备注册表的前提下试验，用一个独立的 `DSH_COCKPIT_HOME`
 > 启动即可，用完删掉那个目录。
@@ -40,8 +52,8 @@ CI 跑的是同一组命令。有几点值得先知道，能省掉一轮排查�
 
 - 改了 `packages/shared` 的类型后，**先 `pnpm --filter @dsh-cockpit/shared build`
   再 typecheck**。server/web 通过 `dist/*.d.ts` 解析共享类型，不重建会看到过期报错。
-- 前端产物改动**不需要重启服务**——3090 的静态托管按请求读盘，刷新页面即可；
-  但改了服务端就要 `./bin/cockpit restart`。
+- 前端产物改动**不需要重启服务**——静态托管按请求读盘，刷新页面即可；但改了
+  服务端就要通过当前平台的 Node CLI 执行 `restart`。
 - 请不要声称未实际执行的验证已经通过。
 
 ## 规范驱动开发

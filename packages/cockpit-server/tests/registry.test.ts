@@ -35,8 +35,10 @@ describe('device registry', () => {
     await registry.save([remote()])
     const entries = await import('node:fs/promises').then(fs => fs.readdir(dir))
     expect(entries.filter(e => e.endsWith('.tmp'))).toEqual([])
-    const stat = await import('node:fs/promises').then(fs => fs.stat(path.join(dir, 'devices.json')))
-    expect(stat.mode & 0o777).toBe(0o600)
+    if (process.platform !== 'win32') {
+      const stat = await import('node:fs/promises').then(fs => fs.stat(path.join(dir, 'devices.json')))
+      expect(stat.mode & 0o777).toBe(0o600)
+    }
   })
 
   it('fails closed on corrupt or invalid content and never overwrites', async () => {

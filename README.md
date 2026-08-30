@@ -108,26 +108,53 @@ iframe DOM，也拿不到它。有了插件后：
 
 ## 运行
 
+`bin/cockpit` 是零第三方运行时依赖的 Node.js 跨平台命令，不需要 Bash、
+PowerShell 脚本或 WSL。仓库通过 `packageManager` 锁定 pnpm 10.23.0；命令会优先
+使用 Corepack，找不到时再使用 PATH 中的 pnpm。
+
 ```bash
-# 方式一:bin 命令(推荐,可装到 ~/.local/bin)
-./bin/cockpit bootstrap      # 初始化依赖(幂等)
-./bin/cockpit install        # 安装 cockpit 命令到 ~/.local/bin(可选)
+# Linux / macOS
+./bin/cockpit bootstrap      # 初始化依赖（幂等）
+./bin/cockpit install        # 安装到 ~/.local/bin（可选）
 cockpit start                # 构建(如需要)+ 后台启动 + 打开 UI
 cockpit restart              # 重启
-cockpit stop                 # 停止(严格校验 3090 端口归属后才 kill)
+cockpit stop                 # 认证实例身份后由服务端优雅关闭
 cockpit status               # 查看运行状态
 cockpit build                # 只构建
 cockpit start --dev          # 开发模式(tsx watch + vite,前台)
 # 其他:--no-open 不自动开浏览器;--foreground 前台调试;-b 强制重新 build
+```
 
-# 方式二:手动(等价于 cockpit start 的前半段)
+```text
+# Windows（CMD 或 PowerShell 均可，调用的是同一份 Node CLI）
+node .\bin\cockpit bootstrap
+node .\bin\cockpit start
+node .\bin\cockpit status
+node .\bin\cockpit stop
+node .\bin\cockpit start --dev
+```
+
+根 `package.json` 已声明 `cockpit` bin；需要 Windows 全局短命令时可运行
+`node .\bin\cockpit install`，由 pnpm 的标准 global-bin 机制生成平台 shim。
+
+手动启动仍然可用：
+
+```bash
 pnpm install
 pnpm build
 node packages/cockpit-server/dist/main.js
 ```
 
-打开 `http://127.0.0.1:3090/`。首次访问经 HttpOnly cookie 完成本机 token
+默认打开 `http://127.0.0.1:3090/`。首次访问经 HttpOnly cookie 完成本机 token
 认证（token 持久化在数据目录，仅供本机防其他本地进程/恶意网页）。
+
+| 环境变量 | 用途 |
+| --- | --- |
+| `DSH_COCKPIT_HOME` | 数据、运行实例和日志目录 |
+| `COCKPIT_PORT` | 服务端口，默认 `3090`；开发模式的 Vite API 代理同步跟随 |
+| `DSH_COCKPIT_PNPM_EXECUTABLE` | pnpm 可执行文件覆盖；默认 Corepack → PATH |
+| `DSH_COCKPIT_SSH_EXECUTABLE` | OpenSSH 可执行文件覆盖；默认直接从 PATH 查找 `ssh`/`ssh.exe` |
+| `COCKPIT_BIN_DIR` | Unix `install` 目标目录，默认 `~/.local/bin` |
 
 ## 数据目录
 
@@ -137,8 +164,14 @@ node packages/cockpit-server/dist/main.js
 | --- | --- |
 | `devices.json` | 设备注册表（0600，原子写，损坏 fail-closed 不覆盖） |
 | `token` | 驾驶舱本机 token（0600） |
+| `runtime.json` | 当前实例的最小身份记录；正常关闭后删除，陈旧记录不会被当作 PID 杀进程依据 |
+| `cockpit.log` | 后台服务日志 |
 
 驾驶舱**不读取、不写入** `~/.dsh`；本机 DSH 完全无感。
+
+`status` 会交叉验证 `runtime.json`、本机 token 与服务端认证响应。若报告陈旧记录，
+且对应端口确实没有监听，下一次 `start` 会安全覆盖；若端口存在未知监听者，命令
+fail-closed 拒绝停止或覆盖该进程。
 
 ## 安全与边界
 

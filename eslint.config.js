@@ -18,6 +18,18 @@ export default tseslint.config(
     },
   },
   {
+    files: ['bin/cockpit', 'tests/**/*.mjs'],
+    languageOptions: {
+      globals: {
+        AbortController: 'readonly',
+        clearTimeout: 'readonly',
+        fetch: 'readonly',
+        process: 'readonly',
+        setTimeout: 'readonly',
+      },
+    },
+  },
+  {
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
       '@typescript-eslint/no-explicit-any': 'off',

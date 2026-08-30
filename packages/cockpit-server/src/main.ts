@@ -4,6 +4,8 @@ import path from 'node:path'
 import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
 import { AppModule } from './app.module.js'
+import { resolveCockpitPort } from './runtime/config.js'
+import { RuntimeControlService } from './runtime/runtime-control.service.js'
 
 export async function bootstrap(): Promise<void> {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log'] })
@@ -31,13 +33,23 @@ export async function bootstrap(): Promise<void> {
   const webDist = path.join(repoRoot, 'packages/cockpit-web/dist')
   app.useStaticAssets(webDist)
 
-  await app.listen(3090, '127.0.0.1')
+  const port = resolveCockpitPort()
+  await app.listen(port, '127.0.0.1')
 
   // The browser keeps one SSE connection open forever (EventSource). Node's
   // server.close() waits for every HTTP connection to end, so Ctrl-C would
   // hang until the browser tab closes. Force-drop all connections on signal so
   // shutdown is immediate; the SSE client reconnects on the next launch.
   const server = app.getHttpServer() as import('node:http').Server
+  const runtime = app.get(RuntimeControlService)
+  await runtime.activate({
+    port,
+    repoRoot,
+    shutdown: async () => {
+      server.closeAllConnections?.()
+      await app.close()
+    },
+  })
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => {
       server.closeAllConnections?.()

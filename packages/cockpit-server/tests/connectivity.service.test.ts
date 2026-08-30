@@ -162,7 +162,7 @@ describe('connectivity device updates', () => {
       sshAlias: 'a-alias',
       remoteDshPort: 4090,
     })).rejects.toThrow('SSH identity verification failed: host offline')
-    expect(probeSshIdentity).toHaveBeenCalledWith('a-alias')
+    expect(probeSshIdentity).toHaveBeenCalledWith('a-alias', { sshExecutable: 'ssh' })
     expect(registry.saves).toHaveLength(0)
     expect(registry.records).toEqual([original])
     expect(service.statuses()[0]).toEqual(expect.objectContaining({
@@ -190,6 +190,22 @@ describe('connectivity device updates', () => {
     expect(registry.saves).toHaveLength(0)
     expect(registry.records).toEqual([original])
     expect(service.statuses()[0]).not.toHaveProperty('sshAlias')
+    await service.onApplicationShutdown()
+  })
+
+  it('adds a local device without requiring an ssh executable', async () => {
+    const { service, registry } = await serviceFor([])
+
+    const added = await service.addDevice({
+      displayName: 'This PC',
+      kind: 'local',
+      remoteDshPort: 3080,
+      enabled: false,
+    })
+
+    expect(added.kind).toBe('local')
+    expect(probeSshIdentity).not.toHaveBeenCalled()
+    expect(registry.saves).toHaveLength(1)
     await service.onApplicationShutdown()
   })
 

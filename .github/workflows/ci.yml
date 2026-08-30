@@ -24,3 +24,56 @@ jobs:
       - run: pnpm run typecheck
       - run: pnpm run lint
       - run: pnpm test
+      - run: pnpm build
+      - name: Start, inspect and stop through the Node CLI
+        env:
+          DSH_COCKPIT_HOME: ${{ runner.temp }}/dsh-cockpit-ci
+          COCKPIT_PORT: "43989"
+        run: |
+          node bin/cockpit start --no-open
+          node bin/cockpit status
+          node --input-type=module -e "const response=await fetch('http://127.0.0.1:43989/'); if(response.status!==200) throw new Error('unexpected HTTP status '+response.status)"
+          node bin/cockpit stop
+          node bin/cockpit status
+          node --input-type=module -e "import { createConnection } from 'node:net'; import { existsSync } from 'node:fs'; import path from 'node:path'; const socket=createConnection({host:'127.0.0.1',port:43989}); socket.once('connect',()=>{console.error('port still open');process.exit(1)}); socket.once('error',()=>{if(existsSync(path.join(process.env.DSH_COCKPIT_HOME,'runtime.json'))) process.exit(1)}); setTimeout(()=>process.exit(0),500).unref()"
+      - name: Stop cockpit after a failed smoke step
+        if: always()
+        continue-on-error: true
+        env:
+          DSH_COCKPIT_HOME: ${{ runner.temp }}/dsh-cockpit-ci
+          COCKPIT_PORT: "43989"
+        run: node bin/cockpit stop
+
+  windows-lifecycle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.23.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node bin/cockpit build
+      - name: Verify PATH OpenSSH through Node
+        run: node --input-type=module -e "import { spawn } from 'node:child_process'; const child = spawn('ssh', ['-V'], { shell:false, stdio:'inherit' }); child.once('error', error => { throw error }); child.once('exit', code => { process.exitCode = code ?? 1 })"
+      - name: Start, inspect and stop through the Node CLI
+        env:
+          DSH_COCKPIT_HOME: ${{ runner.temp }}\dsh-cockpit-ci
+          COCKPIT_PORT: "43990"
+        run: |
+          node bin/cockpit start --no-open
+          node bin/cockpit status
+          node --input-type=module -e "const response=await fetch('http://127.0.0.1:43990/'); if(response.status!==200) throw new Error('unexpected HTTP status '+response.status)"
+          node bin/cockpit stop
+          node bin/cockpit status
+          node --input-type=module -e "import { createConnection } from 'node:net'; import { existsSync } from 'node:fs'; import path from 'node:path'; const socket=createConnection({host:'127.0.0.1',port:43990}); socket.once('connect',()=>{console.error('port still open');process.exit(1)}); socket.once('error',()=>{if(existsSync(path.join(process.env.DSH_COCKPIT_HOME,'runtime.json'))) process.exit(1)}); setTimeout(()=>process.exit(0),500).unref()"
+      - name: Stop cockpit after a failed smoke step
+        if: always()
+        continue-on-error: true
+        env:
+          DSH_COCKPIT_HOME: ${{ runner.temp }}\dsh-cockpit-ci
+          COCKPIT_PORT: "43990"
+        run: node bin/cockpit stop
