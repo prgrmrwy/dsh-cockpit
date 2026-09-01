@@ -138,6 +138,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
               src={frame.url}
               title={frame.deviceId}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              allow="clipboard-read; clipboard-write"
               className="workbench-iframe"
               data-workbench-device={frame.deviceId}
               onLoad={() => { if (active) notifyActivated(frame.deviceId) }}

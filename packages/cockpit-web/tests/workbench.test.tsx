@@ -22,6 +22,9 @@ describe('workbench', () => {
     const frame = container.querySelector('iframe[data-workbench-device="d1"]')
     expect(frame).not.toBeNull()
     expect(frame!.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    // Chrome 136+ tightened the default allowlist of clipboard-read/write to
+    // `self`; the cross-origin workbench iframe must declare them explicitly.
+    expect(frame!.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
   })
 
   it('keeps the iframe alive across device switches', () => {
