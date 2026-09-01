@@ -48,6 +48,8 @@ export class DeviceLifecycle {
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #abort = new AbortController()
+  #runAbort: AbortController | undefined
+  #reconnectTask: Promise<void> | undefined
   /** Sessions whose current running bit is true (session.list baseline +
    * live session-status frames). Pending sessions stay in this set — the
    * official row shows them as warning (pending outranks running).
@@ -250,8 +252,10 @@ export class DeviceLifecycle {
   async stop(): Promise<void> {
     this.#stopped = true
     this.#abort.abort(new Error('device stopped'))
+    this.#runAbort?.abort(new Error('device stopped'))
     await this.#stream?.dispose()
     await this.#tunnels.disposeNode(this.deviceId)
+    await this.#task?.catch(() => {})
     this.#stream = undefined
     this.#client = undefined
     this.#endpoint = undefined
@@ -264,51 +268,66 @@ export class DeviceLifecycle {
   }
 
   /** Force a reconnect of this single device: tear down the current attempt and
-   * restart the connect loop. Connected devices are untouched. */
+   * replace the connect loop exactly once. Concurrent reconnect requests share
+   * the same replacement so stale loops cannot race for the tunnel generation. */
   async reconnect(): Promise<void> {
     if (this.#stopped || !this.#record.enabled) return
-    await this.#stream?.dispose()
-    await this.#tunnels.disposeNode(this.deviceId)
-    this.#stream = undefined
-    this.#endpoint = undefined
-    this.#setState('CONNECTING', 'manual reconnect')
-    this.#restartLoop()
+    if (this.#reconnectTask !== undefined) return this.#reconnectTask
+    this.#reconnectTask = this.#replaceLoop()
+    try {
+      await this.#reconnectTask
+    } finally {
+      this.#reconnectTask = undefined
+    }
   }
 
-  #restartLoop(): void {
-    const previous = this.#task
+  async #replaceLoop(): Promise<void> {
+    this.#runAbort?.abort(new Error('manual reconnect'))
+    await this.#stream?.dispose()
+    await this.#tunnels.disposeNode(this.deviceId)
+    await this.#task?.catch(() => {})
+    if (this.#stopped || !this.#record.enabled) return
+    this.#stream = undefined
+    this.#client = undefined
+    this.#endpoint = undefined
+    this.#setState('CONNECTING', 'manual reconnect')
     this.#task = this.#run()
-    void previous?.catch(() => {})
   }
 
   async #run(): Promise<void> {
+    const runAbort = new AbortController()
+    this.#runAbort = runAbort
     let attempt = 0
-    while (!this.#abort.signal.aborted && !this.#stopped) {
-      if (!this.#record.enabled) {
-        this.#setState('DISABLED', 'device disabled')
-        return
-      }
-      try {
-        const connected = await this.#connectOnce()
-        if (!connected) {
-          // Probe/baseline failed: the stream never opened, so waiting on a
-          // disconnect would hang forever. Retry with backoff immediately.
-          const delay = this.#reconnectDelay(attempt)
-          attempt += 1
-          this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
-          await this.#delay(delay)
-          continue
+    try {
+      while (!this.#abort.signal.aborted && !runAbort.signal.aborted && !this.#stopped) {
+        if (!this.#record.enabled) {
+          this.#setState('DISABLED', 'device disabled')
+          return
         }
-        attempt = 0
-        // Stay connected until the stream drops; then reconnect with backoff.
-        await this.#waitForDisconnect()
-      } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause)
-        this.#setState(message.includes('shut down') ? 'TUNNEL_ERROR' : 'SSH_UNREACHABLE', message)
+        try {
+          const connected = await this.#connectOnce()
+          if (!connected) {
+            // Probe/baseline failed: the stream never opened, so waiting on a
+            // disconnect would hang forever. Retry with backoff immediately.
+            const delay = this.#reconnectDelay(attempt)
+            attempt += 1
+            this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+            await this.#delay(delay, runAbort.signal)
+            continue
+          }
+          attempt = 0
+          // Stay connected until the stream drops; then reconnect with backoff.
+          await this.#waitForDisconnect(runAbort.signal)
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause)
+          this.#setState(message.includes('shut down') ? 'TUNNEL_ERROR' : 'SSH_UNREACHABLE', message)
+        }
+        const delay = this.#reconnectDelay(attempt)
+        attempt += 1
+        await this.#delay(delay, runAbort.signal)
       }
-      const delay = this.#reconnectDelay(attempt)
-      attempt += 1
-      await this.#delay(delay)
+    } finally {
+      if (this.#runAbort === runAbort) this.#runAbort = undefined
     }
   }
 
@@ -396,16 +415,24 @@ export class DeviceLifecycle {
     return true
   }
 
-  #waitForDisconnect(): Promise<void> {
+  #waitForDisconnect(signal: AbortSignal): Promise<void> {
     return new Promise(resolve => {
+      const stream = this.#stream
+      const done = () => {
+        stream?.off('disconnect', onDisconnect)
+        signal.removeEventListener('abort', onAbort)
+        resolve()
+      }
       const onDisconnect = () => {
-        this.#stream?.off('disconnect', onDisconnect)
         // The tunnel died: surface the transition immediately instead of
         // pretending the device is still live while reconnect runs.
         this.#setState('CONNECTING', 'event stream disconnected, reconnecting')
-        resolve()
+        done()
       }
-      this.#stream?.on('disconnect', onDisconnect)
+      const onAbort = () => { done() }
+      if (signal.aborted) return done()
+      stream?.on('disconnect', onDisconnect)
+      signal.addEventListener('abort', onAbort, { once: true })
     })
   }
 
@@ -432,15 +459,19 @@ export class DeviceLifecycle {
     this.#onFacts(this.current())
   }
 
-  #delay(ms: number): Promise<void> {
-    if (this.#abort.signal.aborted) return Promise.resolve()
+  #delay(ms: number, runSignal: AbortSignal): Promise<void> {
+    if (this.#abort.signal.aborted || runSignal.aborted) return Promise.resolve()
     return new Promise(resolve => {
       const timer = setTimeout(done, ms)
+      const lifecycleSignal = this.#abort.signal
       function done(): void {
         clearTimeout(timer)
+        lifecycleSignal.removeEventListener('abort', done)
+        runSignal.removeEventListener('abort', done)
         resolve()
       }
-      this.#abort.signal.addEventListener('abort', done, { once: true })
+      lifecycleSignal.addEventListener('abort', done, { once: true })
+      runSignal.addEventListener('abort', done, { once: true })
     })
   }
 }

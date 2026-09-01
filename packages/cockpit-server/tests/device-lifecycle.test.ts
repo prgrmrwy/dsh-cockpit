@@ -270,6 +270,65 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
+  it('coalesces concurrent manual reconnects into one replacement loop and tunnel', async () => {
+    let connectCount = 0
+    let activeTunnels = 0
+    let maxActiveTunnels = 0
+    let activeDispose: (() => Promise<void>) | undefined
+    const tunnels = {
+      connect: async () => {
+        connectCount += 1
+        activeTunnels += 1
+        maxActiveTunnels = Math.max(maxActiveTunnels, activeTunnels)
+        let disposed = false
+        const dispose = async () => {
+          if (disposed) return
+          disposed = true
+          activeTunnels -= 1
+          if (activeDispose === dispose) activeDispose = undefined
+        }
+        activeDispose = dispose
+        return {
+          deviceId: 'd1', generation: connectCount,
+          endpoint: new URL(`http://127.0.0.1:${40_000 + connectCount}`),
+          diagnostic: 'ok', dispose,
+        }
+      },
+      disposeNode: async () => { await activeDispose?.() },
+    } as unknown as TunnelManager
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => [],
+      }),
+      createStream: () => {
+        const handlers = new Map<string, (...args: unknown[]) => void>()
+        return {
+          on: (name: string, fn: (...args: unknown[]) => void) => { handlers.set(name, fn) },
+          off: (name: string) => { handlers.delete(name) },
+          open: async () => {},
+          dispose: () => { handlers.clear() },
+        }
+      },
+      onFacts: () => {},
+    })
+
+    lifecycle.start()
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    expect(connectCount).toBe(1)
+
+    await Promise.all([lifecycle.reconnect(), lifecycle.reconnect(), lifecycle.reconnect()])
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+
+    expect(connectCount).toBe(2)
+    expect(maxActiveTunnels).toBe(1)
+    expect(activeTunnels).toBe(1)
+    await lifecycle.stop()
+    expect(activeTunnels).toBe(0)
+  })
+
   it('stop() clears live connection and aggregate facts', async () => {
     const { lifecycle, emit } = device()
     lifecycle.start()
