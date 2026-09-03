@@ -482,7 +482,7 @@ describe('bridge capability and protocol', () => {
     await service.onApplicationShutdown()
   })
 
-  it('bridgeSessionOpened and bridgeHello record protocol version and last-success time, surfaced as bridgeHealth', async () => {
+  it('bridgeSessionOpened and bridgeHello stamp bridgeSeenAt, which reports plugin presence rather than a freshness window', async () => {
     const { service } = await serviceFor([remote('local', 0, {
       kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
     })])
@@ -491,19 +491,20 @@ describe('bridge capability and protocol', () => {
     }
     const origin = new URL(service.statuses()[0]!.endpoint!).origin
 
-    // No bridge contact yet: missing.
-    expect(service.statuses()[0]?.bridgeHealth).toBe('missing')
+    // No bridge contact yet: the plugin has not been seen on this device.
+    expect(service.statuses()[0]?.bridgeSeenAt).toBeUndefined()
 
-    // A legacy (protocol 1) hello reports connected but not reliable.
+    // A hello means "this device's DSH web client runs the plugin". The
+    // protocol version is accepted (the reliable-protocol plugin sends it) but
+    // is deliberately NOT projected as UI state: bridgeSeenAt answers only
+    // "is the plugin installed", never "is it still fresh".
     service.bridgeHello(origin, 'legacy-plugin', 1)
-    expect(service.statuses()[0]?.bridgeHealth).toBe('legacy')
-    expect(service.statuses()[0]?.bridgeProtocolVersion).toBe(1)
+    const afterHello = service.statuses()[0]?.bridgeSeenAt
+    expect(afterHello).toBeDefined()
 
-    // A reliable-protocol selection ack upgrades health to reliable.
+    // A selection ack refreshes the same stamp; nothing else is surfaced.
     service.bridgeSessionOpened(origin, 's1', 2)
-    expect(service.statuses()[0]?.bridgeHealth).toBe('reliable')
-    expect(service.statuses()[0]?.bridgeProtocolVersion).toBe(2)
-    expect(service.statuses()[0]?.bridgeLastSuccessAt).toBeDefined()
+    expect(service.statuses()[0]?.bridgeSeenAt).toBeGreaterThanOrEqual(afterHello!)
 
     await service.onApplicationShutdown()
   })

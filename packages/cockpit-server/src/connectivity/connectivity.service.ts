@@ -15,10 +15,8 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #tunnels: TunnelManager
   readonly #sshExecutable: string
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
-  /** Last successful bridge communication per device. */
+  /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
-  readonly #bridgeProtocolVersion = new Map<string, number>()
-  readonly #bridgeLastSuccessAt = new Map<string, number>()
   readonly #capabilities: BridgeCapabilityService
 
   constructor(
@@ -104,13 +102,6 @@ export class ConnectivityService implements OnApplicationShutdown {
           ...(this.#bridgeSeenAt.has(facts.deviceId)
             ? { bridgeSeenAt: this.#bridgeSeenAt.get(facts.deviceId)! }
             : {}),
-          ...(this.#bridgeProtocolVersion.has(facts.deviceId)
-            ? { bridgeProtocolVersion: this.#bridgeProtocolVersion.get(facts.deviceId)! }
-            : {}),
-          ...(this.#bridgeLastSuccessAt.has(facts.deviceId)
-            ? { bridgeLastSuccessAt: this.#bridgeLastSuccessAt.get(facts.deviceId)! }
-            : {}),
-          bridgeHealth: this.#bridgeHealth(facts.deviceId),
           compatibility: facts.compatibility,
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
@@ -209,9 +200,7 @@ export class ConnectivityService implements OnApplicationShutdown {
       // not a durable device capability.
       await this.#detach(deviceId)
       this.#bridgeSeenAt.delete(deviceId)
-       this.#bridgeProtocolVersion.delete(deviceId)
-       this.#bridgeLastSuccessAt.delete(deviceId)
-       this.#capabilities.revokeDevice(deviceId)
+      this.#capabilities.revokeDevice(deviceId)
       this.#attach(next)
     }
     for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
@@ -225,8 +214,6 @@ export class ConnectivityService implements OnApplicationShutdown {
     if (!confirmed) return { removed: false, requiresConfirmation: true }
     await this.#detach(deviceId)
     this.#bridgeSeenAt.delete(deviceId)
-    this.#bridgeProtocolVersion.delete(deviceId)
-    this.#bridgeLastSuccessAt.delete(deviceId)
     this.#capabilities.revokeDevice(deviceId)
     await this.#registry.save(records.filter(r => r.deviceId !== deviceId))
     return { removed: true, requiresConfirmation: false }
@@ -286,35 +273,30 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   /** Cross-origin bridge selection snapshot. `undefined` means the DSH page has
-   * no selected session (for example after archive). */
+   * no selected session (for example after archive). `protocolVersion` is
+   * accepted (and used by the lifecycle-level ack/edge convergence) but is
+   * deliberately not surfaced as top-bar UI state — see #bridgeSeenAt. */
   bridgeSessionOpened(origin: string, sessionId: string | undefined, protocolVersion = 1): void {
+    void protocolVersion
     const lifecycle = this.#lifecycleByOrigin(origin)
     lifecycle.setBridgeSelection(sessionId)
-    this.#recordBridgeSuccess(lifecycle.deviceId, protocolVersion)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
   }
 
-  /** Bridge plugin hello records a successful protocol handshake and selected
-   * snapshot. */
+  /** Bridge plugin hello: records that the device's DSH web client runs the
+   * plugin, and stamps the last-seen time (surfaces as bridgeSeenAt in the
+   * status pushed to the browser). */
   bridgeHello(origin: string, version: string, protocolVersion = 1, current?: string): void {
     void version
+    void protocolVersion
     const lifecycle = this.#lifecycleByOrigin(origin)
     lifecycle.setBridgeSelection(current)
-    this.#recordBridgeSuccess(lifecycle.deviceId, protocolVersion)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
   }
 
-  #recordBridgeSuccess(deviceId: string, protocolVersion: number): void {
-    const now = Date.now()
-    this.#bridgeSeenAt.set(deviceId, now)
-    this.#bridgeProtocolVersion.set(deviceId, protocolVersion)
-    this.#bridgeLastSuccessAt.set(deviceId, now)
+  #recordBridgeSuccess(deviceId: string): void {
+    this.#bridgeSeenAt.set(deviceId, Date.now())
     this.events.publish(this.statuses())
-  }
-
-  #bridgeHealth(deviceId: string): 'reliable' | 'legacy' | 'stale' | 'missing' {
-    const successAt = this.#bridgeLastSuccessAt.get(deviceId)
-    if (successAt === undefined) return 'missing'
-    if (Date.now() - successAt > 5 * 60_000) return 'stale'
-    return (this.#bridgeProtocolVersion.get(deviceId) ?? 0) >= 2 ? 'reliable' : 'legacy'
   }
 
   #lifecycleByOrigin(origin: string): DeviceLifecycle {

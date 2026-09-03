@@ -138,7 +138,7 @@
 
 ### Requirement: 桥接端口与认证配置一致且失败可见
 
-系统 SHALL 确保桥接请求的 Cockpit origin 与实际 Cockpit 页面 origin 一致，并使用浏览器可在跨设备端口请求中实际提供、且不向插件暴露持久 token 明文的认证机制。若运行配置无法支持桥接，系统 MUST 明确显示桥接未就绪或配置不兼容，MUST NOT 仅凭 hello 的历史时间戳持续表示精确清除能力可用。
+系统 SHALL 确保桥接请求的 Cockpit origin 与实际 Cockpit 页面 origin 一致，并使用浏览器可在跨设备端口请求中实际提供、且不向插件暴露持久 token 明文的认证机制。若运行配置无法支持桥接，系统 MUST 明确显示桥接未就绪或配置不兼容。
 
 #### Scenario: Cockpit 使用默认端口
 - **WHEN** Cockpit 页面运行在受支持的默认 origin
@@ -156,10 +156,6 @@
 - **WHEN** bridge 从设备 DSH origin 请求 Cockpit API
 - **THEN** 认证流程不依赖浏览器不会随该跨端口请求发送的 cookie 属性，也不要求插件读取 HttpOnly token
 
-#### Scenario: 桥接健康过期
-- **WHEN** 最近一次成功 hello 或确认超过定义的活跃期限，或连续确认失败
-- **THEN** 顶栏不再把该设备表示为具备当前可用的精确清除能力，并提示仍可使用人工清除兜底
-
 ### Requirement: 未安装桥接时核心工作台与人工兜底保持可用
 
 桥接 SHALL 继续是可选能力。设备未安装、安装旧版或 bridge 暂不可用时，系统 SHALL 保持原生 DSH 工作台、只读状态聚合和设备切换可用；完成提醒的精确按会话自动清除可以降级，但 Device Tab 的设备级人工清除 MUST 保持可用。
@@ -170,7 +166,7 @@
 
 #### Scenario: 设备运行旧版桥接
 - **WHEN** hello 报告的 bridge 版本不具备可靠确认协议
-- **THEN** 系统不宣称具备可靠自动清除能力，继续接受兼容上报并提供人工兜底
+- **THEN** 系统继续接受该兼容上报并按会话清除对应提醒，同时保持设备级人工清除兜底可用
 
 #### Scenario: 桥接故障不影响工作台
 - **WHEN** bridge 的 hello、确认或重试持续失败

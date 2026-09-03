@@ -143,7 +143,7 @@ describe('top bar', () => {
 
   it('shows the bridge mark when the device DSH runs dsh-cockpit-bridge, faint hint otherwise', () => {
     const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
       device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
     ]
@@ -166,60 +166,9 @@ describe('top bar', () => {
     expect(getByRole('tab', { name: /C/ }).querySelector('.bridge-hint')).toBeNull()
   })
 
-  it('shows a legacy bridge as connected but distinguishes it from the reliable protocol', () => {
-    const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
-      device({ deviceId: 'd2', displayName: 'B', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 1 }),
-    ]
-    const { getByRole } = render(
-      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
-    )
-    const tabA = getByRole('tab', { name: /A/ })
-    const tabB = getByRole('tab', { name: /B/ })
-    // Both show the connected mark (some acknowledgement path exists)...
-    expect(tabA.querySelector('.bridge-mark')?.getAttribute('data-bridge-health')).toBe('reliable')
-    expect(tabB.querySelector('.bridge-mark')?.getAttribute('data-bridge-health')).toBe('legacy')
-    // ...but only the legacy one's hover copy says clearing is not guaranteed.
-    expect(tabA.querySelector('.bridge-mark')?.getAttribute('title')).not.toContain('无法保证')
-    expect(tabB.querySelector('.bridge-mark')?.getAttribute('title')).toContain('无法保证')
-  })
-
-  it('shows a stale bridge (past the active window) with the disconnected icon and a distinct hint', () => {
-    const devices = [
-      device({
-        deviceId: 'd1', displayName: 'A', state: 'READY',
-        bridgeLastSuccessAt: Date.now() - 10 * 60_000, bridgeProtocolVersion: 2,
-      }),
-    ]
-    const { getByRole } = render(
-      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
-    )
-    const tabA = getByRole('tab', { name: /A/ })
-    expect(tabA.querySelector('.bridge-mark')).toBeNull()
-    const hint = tabA.querySelector('.bridge-hint') as HTMLElement
-    expect(hint.getAttribute('data-bridge-hint')).toBe('stale')
-    expect(hint.title).toContain('过期')
-    expect(hint.getAttribute('aria-label')).toBe('桥接连接已过期')
-  })
-
-  it('an explicit server-reported bridgeHealth always wins over the derived projection', () => {
-    const devices = [
-      device({
-        deviceId: 'd1', displayName: 'A', state: 'READY',
-        bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2, bridgeHealth: 'missing',
-      }),
-    ]
-    const { getByRole } = render(
-      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
-    )
-    const tabA = getByRole('tab', { name: /A/ })
-    expect(tabA.querySelector('.bridge-mark')).toBeNull()
-    expect(tabA.querySelector('.bridge-hint')?.getAttribute('data-bridge-hint')).toBe('missing')
-  })
-
   it('distinguishes the two bridge states by icon shape, not only by color', () => {
     const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
       device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
     ]

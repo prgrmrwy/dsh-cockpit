@@ -94,8 +94,8 @@ Device Tab 上的绿色「已完成」提醒由驾驶舱服务端按**每个根�
 是**纯浏览器内存状态**，事件流上没有任何「选中」信号；驾驶舱按架构原则不读
 iframe DOM，也拿不到它。有了插件后：
 
-- 驾驶舱顶栏显示链条图标：闭合链条表示检测到桥接且最近成功通信，断开链条
-  表示未检测到插件或桥接连接已过期，一眼确认该设备的精确清除能力是否可用；
+- 驾驶舱顶栏显示链条图标（`bridgeSeenAt`）：闭合链条表示该设备的 DSH 已装桥接
+  插件，断开链条表示未检测到插件——它回答「插件装了没有」，不表示连接新鲜度；
 - 完成提醒绿点按**官方 select 语义**精确清除——打开哪个会话就清除哪个会话的绿点，
   且**快速连续打开多个会话、打开后立即归档、网络瞬断**等情况下也不丢失确认。
   不装插件、装的是旧版本、或桥接暂不可达时，行为仍然正确：Device Tab 的人工
@@ -214,10 +214,10 @@ fail-closed 拒绝停止或覆盖该进程。
 ## 验证（当前实现已通过的实测）
 
 - server vitest 104/104（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
-- web vitest 59/59（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接可靠/legacy/过期/缺失状态呈现、Workbench 桥接握手与失败降级）
+- web vitest 57/57（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级）
 - bridge vitest 13/13（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、DSH 页面不受失败影响）
 - 五包 typecheck + build 全绿（含 bridge host/client 双入口与 source map）
-- 真实浏览器验收（agent-browser + 隔离 Cockpit 实例 + 真实本机 DSH + 可控 fake DSH）：非默认端口部署、桥接 capability 签发与 Origin 校验、可靠/legacy/过期桥接状态实时呈现、完成→打开、ack-before-edge、edge-before-ack、打开后立即归档、恢复不重新点亮、下一轮真正完成重新点亮、鼠标与键盘人工清除且不切换设备
+- 真实浏览器验收（agent-browser + 隔离 Cockpit 实例 + 真实本机 DSH + 可控 fake DSH）：非默认端口部署、桥接 capability 签发与 Origin 校验、完成→打开、ack-before-edge、edge-before-ack、打开后立即归档、恢复不重新点亮、下一轮真正完成重新点亮、鼠标与键盘人工清除且不切换设备
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
 - 5 台 iframe 常驻内存基准：JS heap 增量 ≈ 13KB/台（浏览器原生隔离，驾驶舱机制开销可忽略）

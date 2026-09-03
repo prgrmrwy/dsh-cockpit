@@ -121,10 +121,10 @@ state**; there is no "selected" signal on the event stream. The cockpit does
 not read iframe DOM by architectural principle, so it cannot observe it either.
 With the plugin installed:
 
-- The cockpit top bar shows a chain icon: a closed chain means the bridge was
-  detected and has recently communicated successfully, a broken chain means no
-  plugin was detected or the bridge connection has gone stale — so you can
-  confirm at a glance whether precise clearing is currently available.
+- The cockpit top bar shows a chain icon (`bridgeSeenAt`): a closed chain means
+  this device's DSH runs the bridge plugin, a broken chain means no plugin was
+  detected. It answers "is the plugin installed", not "how fresh is the
+  connection".
 - Green "completed" reminders clear with **official select semantics**: opening
   a session clears exactly that session's dot — and this now survives **rapid
   consecutive selections, archiving immediately after opening, and transient
@@ -288,9 +288,9 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
   authorization, delete confirmation gate, order normalisation, **a real
   NestJS+Express integration test confirming the auth middleware actually
   gates every `/api/*` route**)
-- web vitest 59/59 (mouse/keyboard/non-bubbling coverage for the Device Tab
-  completion clear control, reliable/legacy/stale/missing bridge health
-  presentation, Workbench bridge handshake and graceful degradation)
+- web vitest 57/57 (mouse/keyboard/non-bubbling coverage for the Device Tab
+  completion clear control, installed/not-installed bridge icon distinguished
+  by shape, Workbench bridge handshake and graceful degradation)
 - bridge vitest 13/13 (lossless rapid multi-select, archive-before-flush,
   failure retry, outbox capacity/TTL, activation re-assertion, DSH page
   unaffected by bridge failures)
@@ -298,8 +298,8 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
   host/client dual entry points and source maps)
 - Real browser acceptance (agent-browser + an isolated cockpit instance + a
   real local DSH + a controllable fake DSH): non-default port deployment,
-  bridge capability issuance and Origin binding, live reliable/legacy/stale
-  bridge health presentation, complete→open, ack-before-edge,
+  bridge capability issuance and Origin binding, complete→open,
+  ack-before-edge,
   edge-before-ack, archive immediately after completion, restore without
   re-arming, a genuinely new completion re-arming on the next generation, and
   mouse/keyboard manual clearing without switching the selected device
