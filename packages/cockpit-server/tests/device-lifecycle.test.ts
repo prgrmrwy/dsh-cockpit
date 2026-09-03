@@ -2,6 +2,7 @@ import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceLifecycle } from '../src/connectivity/device-lifecycle.js'
+import { reserveCandidatePort } from '../src/connectivity/ssh.js'
 import { TunnelManager } from '../src/connectivity/tunnel-manager.js'
 
 class FakeProcess {
@@ -322,5 +323,70 @@ describe('local device lifecycle', () => {
     await lifecycle.stop()
     expect(tunnelConnectCalled).toBe(false)
     expect(lifecycle.current().endpoint).toBeUndefined()
+  })
+
+  it('never reports a forward port to persist', async () => {
+    const reported: [string, number][] = []
+    const { lifecycle, tunnel } = portReportingDevice(reported, { kind: 'local', sshAlias: undefined })
+    lifecycle.start()
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    expect(lifecycle.current().endpoint).toBe('http://127.0.0.1:3080/')
+    expect(reported).toEqual([])
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+})
+
+/** Lifecycle wired with a port-reporting callback and a fake ssh spawner. */
+function portReportingDevice(reported: [string, number][], overrides: Partial<DeviceRecord> = {}) {
+  const tunnel = new TunnelManager({
+    spawn: () => new FakeProcess() as never,
+    readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+  })
+  const lifecycle = new DeviceLifecycle({
+    record: record(overrides),
+    tunnels: tunnel,
+    createClient: async () => ({
+      probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+      listSessions: async () => [],
+    }),
+    createStream: () => ({ on: () => {}, off: () => {}, open: async () => {}, dispose: () => {} }),
+    onFacts: () => {},
+    onLocalPort: (deviceId, localPort) => { reported.push([deviceId, localPort]) },
+  })
+  return { lifecycle, tunnel }
+}
+
+describe('device lifecycle local port persistence', () => {
+  it('reports the bound port on a first connection so it can be persisted', async () => {
+    const reported: [string, number][] = []
+    const { lifecycle, tunnel } = portReportingDevice(reported)
+    lifecycle.start()
+    for (let i = 0; i < 200 && reported.length === 0; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    expect(reported).toHaveLength(1)
+    expect(reported[0]![0]).toBe('d1')
+    expect(lifecycle.current().endpoint).toBe(`http://127.0.0.1:${reported[0]![1]}/`)
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+
+  it('passes the persisted port through and reports nothing when it is reused unchanged', async () => {
+    const persisted = await reserveCandidatePort()
+    const reported: [string, number][] = []
+    const { lifecycle, tunnel } = portReportingDevice(reported, { localPort: persisted })
+    lifecycle.start()
+    for (let i = 0; i < 200 && lifecycle.current().state !== 'READY'; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Origin matches the persisted port, so the device's DSH web storage carries over.
+    expect(lifecycle.current().endpoint).toBe(`http://127.0.0.1:${persisted}/`)
+    // Nothing changed, so no registry write is requested.
+    expect(reported).toEqual([])
+    await lifecycle.stop()
+    await tunnel.disposeAll()
   })
 })

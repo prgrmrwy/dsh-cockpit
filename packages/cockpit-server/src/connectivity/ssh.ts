@@ -96,16 +96,27 @@ export async function probeSshIdentity(alias: string, options: SshIdentityProbeO
   return { ok: true, exit: { code: 0, signal: null }, diagnostic }
 }
 
-/** Reserve an OS-assigned loopback port, then release it for the tunnel to bind. */
-export function reserveCandidatePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
+/** Reserve a loopback port, then release it for the tunnel to bind.
+ *
+ * With `preferredPort` the bind is attempted on that exact port first: an
+ * actual listen is the only check that cannot lie about availability, and it
+ * also covers a port still held by another live device's tunnel. Any listen
+ * error (EADDRINUSE, EACCES on a privileged port, anything else) falls back
+ * silently to an OS-assigned port — a stable origin is an optimization and
+ * must never be able to fail a reconnect. */
+export function reserveCandidatePort(preferredPort?: number): Promise<number> {
+  const attempt = (port: number): Promise<number> => new Promise((resolve, reject) => {
     const server = createServer()
     server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(port, '127.0.0.1', () => {
       const address = server.address()
-      if (address === null || typeof address === 'string') return reject(new Error('loopback candidate unavailable'))
-      const { port } = address
-      server.close(error => (error ? reject(error) : resolve(port)))
+      if (address === null || typeof address === 'string') {
+        return server.close(() => reject(new Error('loopback candidate unavailable')))
+      }
+      const assigned = address.port
+      server.close(error => (error ? reject(error) : resolve(assigned)))
     })
   })
+  if (preferredPort === undefined) return attempt(0)
+  return attempt(preferredPort).catch(() => attempt(0))
 }

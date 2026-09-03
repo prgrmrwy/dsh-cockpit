@@ -46,9 +46,29 @@ export class ConnectivityService implements OnApplicationShutdown {
       // Any lifecycle state change is pushed to the browser immediately; the
       // REST snapshot stays available for manual refresh.
       onFacts: () => { this.events.publish(this.statuses()) },
+      onLocalPort: (deviceId, localPort) => { void this.#persistLocalPort(deviceId, localPort) },
     })
     this.#lifecycles.set(record.deviceId, lifecycle)
     if (record.enabled) lifecycle.start()
+  }
+
+  /** Persist the port a device's tunnel actually bound so the next connection
+   * reuses it and the workbench origin stays stable. The live record is updated
+   * too, so a reconnect within this process benefits without a disk reload.
+   *
+   * Best effort by design: a stable origin is an optimization, and failing to
+   * record it must not disturb a tunnel that is already up. The next successful
+   * connection retries the write. */
+  async #persistLocalPort(deviceId: string, localPort: number): Promise<void> {
+    try {
+      await this.#registry.updateLocalPort(deviceId, localPort)
+      const records = await this.#registry.load()
+      const record = records.find(candidate => candidate.deviceId === deviceId)
+      if (record !== undefined) this.#lifecycles.get(deviceId)?.updateRecord(record)
+    } catch {
+      // Keep the live connection; the port simply stays unstable until a later
+      // connection manages to record it.
+    }
   }
 
   async #detach(deviceId: string): Promise<void> {

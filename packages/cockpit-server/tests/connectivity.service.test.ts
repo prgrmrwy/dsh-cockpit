@@ -33,6 +33,40 @@ vi.mock('../src/connectivity/rc2-client.js', () => ({
   DualEventStream: FakeDualEventStream,
 }))
 
+/** Tunnel stand-in: never spawns ssh. Off by default so tests that do not opt
+ * in keep the original "no tunnel is ever established" behaviour. When on, it
+ * honours a preferred port unless that port is in the "taken" set, mirroring
+ * the real manager's bind-then-fall-back. */
+const tunnel = { established: false }
+const takenPorts = new Set<number>()
+let nextFreshPort = 51000
+const tunnelConnects: { deviceId: string; preferredLocalPort?: number }[] = []
+
+class FakeTunnelManager {
+  constructor(readonly options: unknown) {}
+  async connect(request: { deviceId: string; preferredLocalPort?: number }) {
+    tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort })
+    if (!tunnel.established) throw new Error('no ssh in test environment')
+    const preferred = request.preferredLocalPort
+    const localPort = preferred !== undefined && !takenPorts.has(preferred) ? preferred : nextFreshPort++
+    return {
+      deviceId: request.deviceId,
+      generation: 1,
+      endpoint: new URL(`http://127.0.0.1:${localPort}`),
+      localPort,
+      diagnostic: 'ok',
+      dispose: async () => {},
+    }
+  }
+  async disposeNode() {}
+  async disposeAll() {}
+}
+
+vi.mock('../src/connectivity/tunnel-manager.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/connectivity/tunnel-manager.js')>()
+  return { ...actual, TunnelManager: FakeTunnelManager }
+})
+
 const { ConnectivityService } = await import('../src/connectivity/connectivity.service.js')
 
 const remote = (deviceId: string, order: number, overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
@@ -49,6 +83,7 @@ const remote = (deviceId: string, order: number, overrides: Partial<DeviceRecord
 class FakeRegistry {
   records: readonly DeviceRecord[]
   readonly saves: DeviceRecord[][] = []
+  readonly localPortWrites: [string, number][] = []
 
   constructor(records: readonly DeviceRecord[]) {
     this.records = records
@@ -63,6 +98,13 @@ class FakeRegistry {
     this.saves.push(snapshot)
     this.records = snapshot
     return snapshot
+  }
+
+  async updateLocalPort(deviceId: string, localPort: number): Promise<void> {
+    const target = this.records.find(record => record.deviceId === deviceId)
+    if (target === undefined || target.localPort === localPort) return
+    this.localPortWrites.push([deviceId, localPort])
+    this.records = this.records.map(record => (record.deviceId === deviceId ? { ...record, localPort } : record))
   }
 }
 
@@ -83,6 +125,10 @@ beforeEach(() => {
   probeSshIdentity.mockReset()
   validateSshAlias.mockClear()
   streamInstances.length = 0
+  takenPorts.clear()
+  tunnelConnects.length = 0
+  nextFreshPort = 51000
+  tunnel.established = false
 })
 
 describe('connectivity device updates', () => {
@@ -284,6 +330,70 @@ describe('connectivity device updates', () => {
       ['a', 2],
     ])
     expect(published.at(-1)).toEqual(['b:0', 'c:1', 'a:2'])
+
+    await service.onApplicationShutdown()
+  })
+
+  /** The workbench iframe is loaded from `http://127.0.0.1:<localPort>`, so a
+   * port that changes on every reconnect throws away the device's own DSH web
+   * localStorage. The port must become a durable device property. */
+  it('persists the bound forward port and reuses it on the next connection', async () => {
+    tunnel.established = true
+    const { service, registry } = await serviceFor([remote('a', 0, { enabled: true })])
+    for (let i = 0; i < 200 && registry.localPortWrites.length === 0; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    expect(registry.localPortWrites).toHaveLength(1)
+    const [deviceId, port] = registry.localPortWrites[0]!
+    expect(deviceId).toBe('a')
+    expect(registry.records[0]?.localPort).toBe(port)
+    // First connection had nothing to reuse.
+    expect(tunnelConnects[0]?.preferredLocalPort).toBeUndefined()
+
+    // Reconnect: the persisted port is offered, reused, and not rewritten.
+    await service.reconnectDevice('a')
+    for (let i = 0; i < 200 && tunnelConnects.length < 2; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(tunnelConnects[1]?.preferredLocalPort).toBe(port)
+    expect(registry.localPortWrites).toHaveLength(1)
+    expect(service.statuses()[0]?.endpoint).toBe(`http://127.0.0.1:${port}/`)
+
+    await service.onApplicationShutdown()
+  })
+
+  it('records a replacement port when the persisted one is no longer bindable', async () => {
+    tunnel.established = true
+    takenPorts.add(49999)
+    const { service, registry } = await serviceFor([remote('a', 0, { enabled: true, localPort: 49999 })])
+    for (let i = 0; i < 200 && registry.localPortWrites.length === 0; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    expect(tunnelConnects[0]?.preferredLocalPort).toBe(49999)
+    // Reconnect still succeeded on a different port.
+    expect(registry.localPortWrites).toHaveLength(1)
+    const port = registry.localPortWrites[0]![1]
+    expect(port).not.toBe(49999)
+    expect(registry.records[0]?.localPort).toBe(port)
+    expect(service.statuses()[0]?.state).toBe('READY')
+
+    await service.onApplicationShutdown()
+  })
+
+  it('does not persist a forward port for a local device', async () => {
+    tunnel.established = true
+    const { service, registry } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true,
+    })])
+    for (let i = 0; i < 100 && service.statuses()[0]?.state !== 'READY'; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+
+    expect(service.statuses()[0]?.endpoint).toBe('http://127.0.0.1:3080/')
+    expect(registry.localPortWrites).toEqual([])
+    expect(tunnelConnects).toEqual([])
 
     await service.onApplicationShutdown()
   })

@@ -21,6 +21,10 @@ export class DeviceRegistryError extends Error {
   }
 }
 
+function isValidLocalPort(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
+}
+
 function validateDevice(value: unknown): DeviceRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const row = value as Record<string, unknown>
@@ -40,7 +44,10 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     enabled: row.enabled,
     order: row.order,
     ...(typeof row.sshAlias === 'string' && row.sshAlias !== '' ? { sshAlias: row.sshAlias } : {}),
-    ...(typeof row.localPort === 'number' && Number.isInteger(row.localPort) ? { localPort: row.localPort } : {}),
+    // An out-of-range port is treated as absent, not as corruption: localPort
+    // is optional and a bad value simply means "no stable port yet", which the
+    // next connection overwrites.
+    ...(isValidLocalPort(row.localPort) ? { localPort: row.localPort } : {}),
   }
   if (record.kind === 'remote' && record.sshAlias === undefined) return undefined
   return record
@@ -88,23 +95,44 @@ export class DeviceRegistry {
       }
     }
     return this.#serialize(async () => {
-      await mkdir(this.directory, { recursive: true, mode: DIR_MODE })
-      const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`
-      try {
-        const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE)
-        try {
-          await handle.writeFile(`${JSON.stringify({ version: 1, devices }, null, 2)}\n`, 'utf8')
-          await handle.sync()
-        } finally {
-          await handle.close()
-        }
-        await rename(temp, this.file)
-      } catch (cause) {
-        await rm(temp, { force: true }).catch(() => {})
-        throw cause
-      }
+      await this.#writeFile(devices)
       return devices
     })
+  }
+
+  /** Record the local forward port a device's tunnel actually bound, so the
+   * next connection can reuse it and keep the workbench origin stable.
+   *
+   * The whole read-modify-write runs inside the same serialization queue as
+   * `save`, so it cannot interleave with a concurrent add/remove and clobber
+   * it. An unknown device is a no-op: it may have just been deleted while its
+   * tunnel was still coming up. */
+  async updateLocalPort(deviceId: string, localPort: number): Promise<void> {
+    if (!isValidLocalPort(localPort)) throw new DeviceRegistryError('INVALID', `invalid local port ${localPort}`)
+    await this.#serialize(async () => {
+      const devices = await this.load()
+      const target = devices.find(device => device.deviceId === deviceId)
+      if (target === undefined || target.localPort === localPort) return
+      await this.#writeFile(devices.map(device => (device.deviceId === deviceId ? { ...device, localPort } : device)))
+    })
+  }
+
+  async #writeFile(devices: readonly DeviceRecord[]): Promise<void> {
+    await mkdir(this.directory, { recursive: true, mode: DIR_MODE })
+    const temp = `${this.file}.${process.pid}.${randomUUID()}.tmp`
+    try {
+      const handle = await open(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, FILE_MODE)
+      try {
+        await handle.writeFile(`${JSON.stringify({ version: 1, devices }, null, 2)}\n`, 'utf8')
+        await handle.sync()
+      } finally {
+        await handle.close()
+      }
+      await rename(temp, this.file)
+    } catch (cause) {
+      await rm(temp, { force: true }).catch(() => {})
+      throw cause
+    }
   }
 
   #serialize<T>(action: () => Promise<T>): Promise<T> {

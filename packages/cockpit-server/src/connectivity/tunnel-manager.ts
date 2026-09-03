@@ -5,12 +5,20 @@ export interface TunnelRequest {
   readonly deviceId: string
   readonly sshAlias: string
   readonly remoteDshPort: number
+  /** Previously used local forward port for this device. Reusing it keeps the
+   * workbench iframe origin (`http://127.0.0.1:<localPort>`) stable, so the
+   * device's own DSH web client keeps its origin-scoped browser storage across
+   * reconnects. Advisory only: an unavailable port falls back to a fresh one. */
+  readonly preferredLocalPort?: number
 }
 
 export interface TunnelHandle {
   readonly deviceId: string
   readonly generation: number
   readonly endpoint: URL
+  /** Local forward port actually bound by this tunnel; persist it as the next
+   * connection's preferred port. */
+  readonly localPort: number
   readonly diagnostic: string
   dispose(): Promise<void>
 }
@@ -69,7 +77,13 @@ export class TunnelManager {
     this.#generations.set(request.deviceId, generation)
     let lastDiagnostic = ''
     for (let attempt = 1; attempt <= this.#options.maxBindAttempts; attempt += 1) {
-      const localPort = await reserveCandidatePort()
+      // The preferred port gets exactly one shot, on the first attempt. A
+      // reservation cannot be held until OpenSSH binds (the same port cannot
+      // be listened on twice), so a TOCTOU window is structural; forcing later
+      // attempts onto a fresh port keeps a port stolen inside that window from
+      // burning every retry on the same doomed number.
+      const preferred = attempt === 1 ? sanitizePort(request.preferredLocalPort) : undefined
+      const localPort = await reserveCandidatePort(preferred)
       if (this.#shutDown) throw new Error('tunnel manager is shut down')
       const process = this.#options.spawn(this.#options.sshExecutable, tunnelArgs(request, localPort, this.#options))
       const abort = new AbortController()
@@ -109,6 +123,7 @@ export class TunnelManager {
         deviceId: request.deviceId,
         generation,
         endpoint,
+        localPort,
         diagnostic: outcome.result.diagnostic,
         dispose: () => this.#disposeExact(request.deviceId, active),
       }
@@ -157,6 +172,13 @@ export class TunnelManager {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value
+}
+
+/** An out-of-range or non-integer preferred port degrades to OS assignment;
+ * it is never spliced into the `-L` argument. */
+function sanitizePort(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isInteger(value) || value < 1 || value > 65535) return undefined
+  return value
 }
 
 /** SDK-friendly helper for status mapping (kept separate for reuse in tests). */

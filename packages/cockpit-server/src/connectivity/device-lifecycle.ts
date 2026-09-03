@@ -29,6 +29,9 @@ export interface DeviceLifecycleOptions {
   readonly sshExecutable?: string
   readonly reconnectDelay?: (attempt: number) => number
   readonly onFacts: (facts: LiveDeviceFacts) => void
+  /** Reports the local forward port a remote tunnel actually bound, so the
+   * owner can persist it as this device's stable port. */
+  readonly onLocalPort?: (deviceId: string, localPort: number) => void
   /** Test seam for the rc.2 client (defaults to a real Rc2Client). */
   readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
   /** Test seam for the dual event stream (defaults to a real DualEventStream). */
@@ -40,6 +43,7 @@ export class DeviceLifecycle {
   #record: DeviceRecord
   readonly #tunnels: TunnelManager
   readonly #onFacts: (facts: LiveDeviceFacts) => void
+  readonly #onLocalPort: ((deviceId: string, localPort: number) => void) | undefined
   readonly #reconnectDelay: (attempt: number) => number
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
@@ -80,6 +84,7 @@ export class DeviceLifecycle {
     this.#diagnostic = options.record.enabled ? '' : 'device disabled'
     this.#tunnels = options.tunnels
     this.#onFacts = options.onFacts
+    this.#onLocalPort = options.onLocalPort
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
     this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
     this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
@@ -323,8 +328,12 @@ export class DeviceLifecycle {
       deviceId: this.deviceId,
       sshAlias: this.#record.sshAlias ?? '',
       remoteDshPort: this.#record.remoteDshPort,
+      // Reuse the last known port so the workbench iframe origin stays stable
+      // and the device's DSH web client keeps its origin-scoped storage.
+      ...(this.#record.localPort === undefined ? {} : { preferredLocalPort: this.#record.localPort }),
     })
     this.#endpoint = handle.endpoint
+    if (handle.localPort !== this.#record.localPort) this.#onLocalPort?.(this.deviceId, handle.localPort)
     return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() })
   }
 
