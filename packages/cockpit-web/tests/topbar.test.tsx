@@ -81,10 +81,13 @@ describe('top bar', () => {
     expect(approval.className).toContain('dsh-state-dot')
     expect(container.querySelector('[data-session-kind="approval"]')!.textContent).toBe('×2')
 
-    // done → green dot (official success-primary).
+    // done → green dot (official success-primary). The completed chip is the
+    // one interactive status control (clear this device's reminders), so its
+    // title communicates the action rather than the passive status label the
+    // other (decorative) chips use.
     const completed = container.querySelector('[data-session-kind="completed"] .dsh-state-dot')!
     expect(completed.getAttribute('data-state')).toBe('done')
-    expect(container.querySelector('[data-session-kind="completed"]')!.getAttribute('title')).toBe('已完成 ×1')
+    expect(container.querySelector('[data-session-kind="completed"]')!.getAttribute('title')).toBe('清除该设备完成提醒 ×1')
 
     // A device without live activity shows no chips at all.
     const quiet = getByRole('tab', { name: /B/ })
@@ -140,7 +143,7 @@ describe('top bar', () => {
 
   it('shows the bridge mark when the device DSH runs dsh-cockpit-bridge, faint hint otherwise', () => {
     const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
       device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
     ]
@@ -163,9 +166,60 @@ describe('top bar', () => {
     expect(getByRole('tab', { name: /C/ }).querySelector('.bridge-hint')).toBeNull()
   })
 
+  it('shows a legacy bridge as connected but distinguishes it from the reliable protocol', () => {
+    const devices = [
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
+      device({ deviceId: 'd2', displayName: 'B', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 1 }),
+    ]
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const tabA = getByRole('tab', { name: /A/ })
+    const tabB = getByRole('tab', { name: /B/ })
+    // Both show the connected mark (some acknowledgement path exists)...
+    expect(tabA.querySelector('.bridge-mark')?.getAttribute('data-bridge-health')).toBe('reliable')
+    expect(tabB.querySelector('.bridge-mark')?.getAttribute('data-bridge-health')).toBe('legacy')
+    // ...but only the legacy one's hover copy says clearing is not guaranteed.
+    expect(tabA.querySelector('.bridge-mark')?.getAttribute('title')).not.toContain('无法保证')
+    expect(tabB.querySelector('.bridge-mark')?.getAttribute('title')).toContain('无法保证')
+  })
+
+  it('shows a stale bridge (past the active window) with the disconnected icon and a distinct hint', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        bridgeLastSuccessAt: Date.now() - 10 * 60_000, bridgeProtocolVersion: 2,
+      }),
+    ]
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const tabA = getByRole('tab', { name: /A/ })
+    expect(tabA.querySelector('.bridge-mark')).toBeNull()
+    const hint = tabA.querySelector('.bridge-hint') as HTMLElement
+    expect(hint.getAttribute('data-bridge-hint')).toBe('stale')
+    expect(hint.title).toContain('过期')
+    expect(hint.getAttribute('aria-label')).toBe('桥接连接已过期')
+  })
+
+  it('an explicit server-reported bridgeHealth always wins over the derived projection', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2, bridgeHealth: 'missing',
+      }),
+    ]
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const tabA = getByRole('tab', { name: /A/ })
+    expect(tabA.querySelector('.bridge-mark')).toBeNull()
+    expect(tabA.querySelector('.bridge-hint')?.getAttribute('data-bridge-hint')).toBe('missing')
+  })
+
   it('distinguishes the two bridge states by icon shape, not only by color', () => {
     const devices = [
-      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeSeenAt: 1787849999000 }),
+      device({ deviceId: 'd1', displayName: 'A', state: 'READY', bridgeLastSuccessAt: Date.now(), bridgeProtocolVersion: 2 }),
       device({ deviceId: 'd2', displayName: 'B', state: 'READY' }),
       device({ deviceId: 'd3', displayName: 'C', state: 'SSH_UNREACHABLE' }),
     ]
@@ -201,26 +255,94 @@ describe('top bar', () => {
     expect(tabB.querySelector('.bridge-hint')?.getAttribute('data-bridge-hint')).toBe('missing')
   })
 
-  it('renders the completed chip like the other statuses (no click-to-clear)', () => {
+  it('gives the completed status its own accessible clear control, while other chips stay non-interactive', () => {
     const devices = [
       device({
         deviceId: 'd1', displayName: 'A', state: 'READY',
         sessionStatuses: [
           { state: 'warning', kind: 'approval', count: 1 },
+          { state: 'ongoing', kind: 'running', count: 1 },
           { state: 'done', kind: 'completed', count: 2 },
         ],
       }),
     ]
-    const { container } = render(
+    const { container, getByRole } = render(
       <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
     )
     const completed = container.querySelector('[data-session-kind="completed"]') as HTMLElement
     const approval = container.querySelector('[data-session-kind="approval"]') as HTMLElement
-    // Same static presentation as every other status chipline: no clickable
-    // affordance (mark-as-read removed), plain status title.
-    expect(completed.className).toBe(approval.className)
-    expect(completed.className).not.toContain('clickable')
-    expect(completed.title).toBe('已完成 ×2')
+    const running = container.querySelector('[data-session-kind="running"]') as HTMLElement
+    // Approval/question/running remain plain, non-interactive spans.
+    expect(approval.tagName).toBe('SPAN')
+    expect(running.tagName).toBe('SPAN')
+    // Completed is a real button with an accessible name naming the action —
+    // it must be independently reachable via getByRole, distinct from the tab.
+    expect(completed.tagName).toBe('BUTTON')
+    const clearButton = getByRole('button', { name: '清除 A 的完成提醒' })
+    expect(clearButton).toBe(completed)
+  })
+
+  it('activating the completed control clears via the ack callback without selecting the device', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        sessionStatuses: [{ state: 'done', kind: 'completed', count: 1 }],
+      }),
+    ]
+    const selected: string[] = []
+    const acked: string[] = []
+    const { getByRole } = render(
+      <StrictMode>
+        <TopBar
+          devices={devices} currentId="d2"
+          onSelect={id => selected.push(id)} onOpenPanel={() => {}} onRefresh={() => {}}
+          onAckCompleted={id => { acked.push(id) }}
+        />
+      </StrictMode>,
+    )
+    fireEvent.click(getByRole('button', { name: '清除 A 的完成提醒' }))
+    expect(acked).toEqual(['d1'])
+    // Clicking the nested clear button must not also select (switch to) the
+    // device tab it lives inside — mouse click does not bubble to the tab.
+    expect(selected).toEqual([])
+  })
+
+  it('the completed control is independently keyboard-operable and does not bubble to the tab', () => {
+    const devices = [
+      device({
+        deviceId: 'd1', displayName: 'A', state: 'READY',
+        sessionStatuses: [{ state: 'done', kind: 'completed', count: 1 }],
+      }),
+    ]
+    const selected: string[] = []
+    const acked: string[] = []
+    const { getByRole } = render(
+      <StrictMode>
+        <TopBar
+          devices={devices} currentId="d2"
+          onSelect={id => selected.push(id)} onOpenPanel={() => {}} onRefresh={() => {}}
+          onAckCompleted={id => { acked.push(id) }}
+        />
+      </StrictMode>,
+    )
+    const clearButton = getByRole('button', { name: '清除 A 的完成提醒' })
+    // A native <button> activates on Enter/Space by firing a click event; the
+    // handler stops propagation on that click regardless of input method.
+    fireEvent.click(clearButton)
+    expect(acked).toEqual(['d1'])
+    expect(selected).toEqual([])
+  })
+
+  it('pressing Enter/Space on the tab itself still selects the device', () => {
+    const devices = [device({ deviceId: 'd1', displayName: 'A', state: 'READY' })]
+    const selected: string[] = []
+    const { getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d2" onSelect={id => selected.push(id)} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    const tab = getByRole('tab', { name: /A/ })
+    fireEvent.keyDown(tab, { key: 'Enter' })
+    fireEvent.keyDown(tab, { key: ' ' })
+    expect(selected).toEqual(['d1', 'd1'])
   })
 
   it('opens the context menu on right click', () => {

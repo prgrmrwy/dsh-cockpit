@@ -50,12 +50,23 @@ export class DeviceLifecycle {
   readonly #abort = new AbortController()
   #runAbort: AbortController | undefined
   #reconnectTask: Promise<void> | undefined
-  /** Sessions whose current running bit is true (session.list baseline +
-   * live session-status frames). Pending sessions stay in this set — the
-   * official row shows them as warning (pending outranks running).
-   * Subagent sessions are excluded: official rows filter origin !== 'subagent'
-   * and fold their activity into the parent's subagent count. */
-  #running = new Set<string>()
+  /** Volatile completion coordination for one root-session generation. A
+   * false→true edge starts a generation; an acknowledgement belongs only to
+   * that generation, so it cannot suppress a later run. Unobserved entries are
+   * allowed when a bridge acknowledgement beats the first status frame. */
+  #sessions = new Map<string, {
+    observed: boolean
+    running: boolean
+    generation: number
+    acknowledgedGeneration: number | undefined
+    completedGeneration: number | undefined
+  }>()
+  /** Current bridge selection. Selection is independent from the event stream
+   * and therefore must participate in completion-edge convergence. */
+  #bridgeSelection: string | undefined
+  /** Latest complete archive snapshot. Archive is reversible and therefore
+   * never deletes generation state; session-removed is the deletion fact. */
+  #archivedSessions = new Set<string>()
   /** Subagent session ids learned from the baseline (session.list origin) and
    * session-added frames; host/session-status carries no origin field, so this
    * prior knowledge is what keeps subagents out of root-session counts. */
@@ -64,13 +75,6 @@ export class DeviceLifecycle {
    * key → status). A session's display status is a single value — pending
    * outranks running (official sessionStatuses). */
   #pendingBySession = new Map<string, Map<string, 'approval' | 'question'>>()
-  /** Last-observed running bit per session (official SessionManager
-   * prevRunning). First observation only records the bit; the true→false edge
-   * here arms the green "completed" reminder. */
-  #prevRunning = new Map<string, boolean>()
-  /** Sessions that finished running — the official green "done" reminder
-   * (completedNotifications); cleared on re-run and session-removed. */
-  #completed = new Set<string>()
   #stateExplicit: DeviceState
   #diagnostic = ''
   #endpoint: URL | undefined
@@ -103,7 +107,7 @@ export class DeviceLifecycle {
       enabled: this.#record.enabled,
       order: this.#record.order,
       state: this.#stateExplicit,
-      runningSessionCount: this.#running.size,
+      runningSessionCount: this.#runningSessionIds().size,
       pendingInteractionCount: this.#totalPendingKeys(),
       sessionStatuses: this.#sessionStatuses(),
       compatibility: this.#stateExplicit === 'READY' || this.#stateExplicit === 'DEGRADED' ? 'SUPPORTED' : 'INCOMPATIBLE',
@@ -139,74 +143,99 @@ export class DeviceLifecycle {
     }
     // Sessions whose session.list running bit is true but that are awaiting
     // human decision must NOT be counted as ongoing (official priority).
-    const runningNotPending = [...this.#running].filter(id => !pendingSessions.has(id)).length
+    const runningNotPending = [...this.#runningSessionIds()].filter(id => !pendingSessions.has(id)).length
     if (runningNotPending > 0) groups.push({ state: 'ongoing', kind: 'running', count: runningNotPending })
-    const completedNotPending = [...this.#completed].filter(id => !pendingSessions.has(id))
+    const completedNotPending = [...this.#completedSessionIds()].filter(id => !pendingSessions.has(id))
     if (completedNotPending.length > 0) groups.push({ state: 'done', kind: 'completed', count: completedNotPending.length })
     return groups
   }
 
-  /** Official completed-notification edge semantics over a full session list
-   * (baseline/refresh): first observation only records the running bit —
-   * sessions already idle at load get no reminder. A running→idle edge arms
-   * the reminder; running again disarms it; a session that disappeared drops
-   * both. */
-  #syncCompleted(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
-    const seen = new Set<string>()
-    for (const s of sessions) {
-      if (s.origin === 'subagent') {
-        // Subagents never contribute to root-session completion reminders.
-        this.#subagents.add(s.sessionId)
-        continue
-      }
-      seen.add(s.sessionId)
-      const prev = this.#prevRunning.get(s.sessionId)
-      if (prev === undefined) {
-        this.#prevRunning.set(s.sessionId, s.running)
-        continue
-      }
-      if (prev && !s.running) this.#completed.add(s.sessionId)
-      else if (s.running) this.#completed.delete(s.sessionId)
-      this.#prevRunning.set(s.sessionId, s.running)
+  #runningSessionIds(): Set<string> {
+    const ids = new Set<string>()
+    for (const [id, state] of this.#sessions) {
+      if (state.observed && state.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
     }
-    for (const id of this.#prevRunning.keys()) if (!seen.has(id)) this.#prevRunning.delete(id)
-    for (const id of this.#completed) if (!seen.has(id)) this.#completed.delete(id)
+    return ids
   }
 
-  /** Incremental edge from a single live session-status frame. */
+  #completedSessionIds(): Set<string> {
+    const ids = new Set<string>()
+    for (const [id, state] of this.#sessions) {
+      if (state.completedGeneration === state.generation && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+    }
+    return ids
+  }
+
+  #sessionState(sessionId: string): {
+    observed: boolean
+    running: boolean
+    generation: number
+    acknowledgedGeneration: number | undefined
+    completedGeneration: number | undefined
+  } {
+    let state = this.#sessions.get(sessionId)
+    if (state === undefined) {
+      state = { observed: false, running: false, generation: 0, acknowledgedGeneration: undefined, completedGeneration: undefined }
+      this.#sessions.set(sessionId, state)
+    }
+    return state
+  }
+
+  /** Apply a full baseline without treating absence as removal. Only an
+   * authoritative session-removed frame may erase generation/ack state. */
+  #syncSessions(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
+    for (const s of sessions) {
+      if (s.origin === 'subagent') {
+        this.#subagents.add(s.sessionId)
+        this.#pruneSubagent(s.sessionId)
+        continue
+      }
+      this.#observeRunning(s.sessionId, s.running)
+    }
+  }
+
+  /** Incremental or baseline running observation. First observation establishes
+   * a baseline only. A subsequent false→true edge starts a fresh generation;
+   * true→false completes it unless that generation was acknowledged or is
+   * currently selected. */
   #observeRunning(sessionId: string, running: boolean): void {
-    const prev = this.#prevRunning.get(sessionId)
-    if (prev === undefined) {
-      this.#prevRunning.set(sessionId, running)
+    const state = this.#sessionState(sessionId)
+    if (!state.observed) {
+      state.observed = true
+      state.running = running
       return
     }
-    if (prev && !running) this.#completed.add(sessionId)
-    else if (running) this.#completed.delete(sessionId)
-    this.#prevRunning.set(sessionId, running)
+    if (!state.running && running) {
+      state.generation += 1
+      state.running = true
+      state.acknowledgedGeneration = undefined
+      state.completedGeneration = undefined
+      return
+    }
+    if (state.running && !running) {
+      state.running = false
+      const acknowledged = state.acknowledgedGeneration === state.generation
+        || this.#bridgeSelection === sessionId
+        || this.#archivedSessions.has(sessionId)
+      state.completedGeneration = acknowledged ? undefined : state.generation
+    }
   }
 
-  /** Replace the running set from a full session list baseline; subagents are
-   * tracked separately and excluded from root-session counts. */
-  #refreshRunning(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
-    this.#running.clear()
-    this.#subagents.clear()
+  /** Replace subagent knowledge from a full list while preserving root-session
+   * generation state for entries temporarily absent from that list. */
+  #refreshSubagents(sessions: readonly { sessionId: string; origin?: string }[]): void {
     for (const s of sessions) {
-      if (s.origin === 'subagent') {
-        this.#subagents.add(s.sessionId)
-        continue
-      }
-      if (s.running) this.#running.add(s.sessionId)
+      if (s.origin !== 'subagent') continue
+      this.#subagents.add(s.sessionId)
+      this.#pruneSubagent(s.sessionId)
     }
   }
 
-  /** Exclude subagent sessions from root-session status sets. */
-  #pruneSubagents(): void {
-    for (const id of this.#subagents) {
-      this.#running.delete(id)
-      this.#completed.delete(id)
-      this.#prevRunning.delete(id)
-      this.#pendingBySession.delete(id)
-    }
+  #pruneSubagent(sessionId: string): void {
+    this.#sessions.delete(sessionId)
+    this.#pendingBySession.delete(sessionId)
+    if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
+    this.#archivedSessions.delete(sessionId)
   }
 
   /** Official trackPending/resolvePending semantics per session: add or settle
@@ -232,12 +261,52 @@ export class DeviceLifecycle {
     return total
   }
 
-  /** Clear exactly one session's completion reminder (the official select
-   * semantics: opening a session dismisses only that session's green dot).
-   * prevRunning is kept — the next true→false edge must still re-arm. */
+  /** Record the bridge's selected-session snapshot. Selecting a session also
+   * acknowledges its current generation, allowing ack-before-edge and
+   * edge-before-ack to converge. Passing undefined clears only the selected
+   * snapshot; it does not revoke an acknowledgement already made. */
+  setBridgeSelection(sessionId: string | undefined): void {
+    const selectionChanged = this.#bridgeSelection !== sessionId
+    this.#bridgeSelection = sessionId
+    if (sessionId === undefined || this.#subagents.has(sessionId)) {
+      if (selectionChanged) this.#emitFacts()
+      return
+    }
+    const state = this.#sessionState(sessionId)
+    const hadCompleted = state.completedGeneration === state.generation
+    state.acknowledgedGeneration = state.generation
+    state.completedGeneration = undefined
+    if (selectionChanged || hadCompleted) this.#emitFacts()
+  }
+
+  /** Acknowledge exactly one session's current generation without changing the
+   * selected snapshot. This is the per-session bridge ack API. */
+  clearCompleted(sessionId: string): void {
+    if (this.#subagents.has(sessionId)) return
+    const state = this.#sessionState(sessionId)
+    const hadCompleted = state.completedGeneration === state.generation
+    const newlyAcknowledged = state.acknowledgedGeneration !== state.generation
+    state.acknowledgedGeneration = state.generation
+    state.completedGeneration = undefined
+    if (hadCompleted || newlyAcknowledged) this.#emitFacts()
+  }
+
+  /** Acknowledge every known root-session generation, including generations
+   * whose completion edge is still in flight. */
+  clearAllCompleted(): void {
+    let changed = false
+    for (const [sessionId, state] of this.#sessions) {
+      if (this.#subagents.has(sessionId)) continue
+      if (state.acknowledgedGeneration !== state.generation || state.completedGeneration !== undefined) changed = true
+      state.acknowledgedGeneration = state.generation
+      state.completedGeneration = undefined
+    }
+    if (changed) this.#emitFacts()
+  }
+
+  /** Backward-compatible name used by the legacy bridge service. */
   clearCompletedSession(sessionId: string): void {
-    if (!this.#completed.delete(sessionId)) return
-    this.#emitFacts()
+    this.clearCompleted(sessionId)
   }
 
   start(): void {
@@ -259,11 +328,11 @@ export class DeviceLifecycle {
     this.#stream = undefined
     this.#client = undefined
     this.#endpoint = undefined
-    this.#running.clear()
+    this.#sessions.clear()
     this.#subagents.clear()
     this.#pendingBySession.clear()
-    this.#prevRunning.clear()
-    this.#completed.clear()
+    this.#archivedSessions.clear()
+    this.#bridgeSelection = undefined
     if (!this.#record.enabled) this.#setState('DISABLED', 'device disabled')
   }
 
@@ -371,9 +440,9 @@ export class DeviceLifecycle {
     // interaction state is event-driven only (official SessionManager keeps
     // pendingInteractions manager-owned exactly the same way), so clear it.
     const sessions = await this.#client.listSessions()
-    this.#refreshRunning(sessions)
+    this.#refreshSubagents(sessions)
     this.#pendingBySession.clear()
-    this.#syncCompleted(sessions)
+    this.#syncSessions(sessions)
 
     this.#stream = this.#createStream(endpoint)
     this.#stream.on('event', event => {
@@ -384,8 +453,6 @@ export class DeviceLifecycle {
           // root-session counts.
           if (this.#subagents.has(event.sessionId)) break
           this.#observeRunning(event.sessionId, event.running)
-          if (event.running) this.#running.add(event.sessionId)
-          else this.#running.delete(event.sessionId)
           break
         case 'interaction': {
           if (this.#subagents.has(event.sessionId)) break
@@ -395,17 +462,32 @@ export class DeviceLifecycle {
         case 'session-added':
           // session-added carries the origin marker; remember subagents so the
           // origin-less status frames stay excluded.
-          if (event.origin === 'subagent') {
+          if (event.origin === 'subagent' && event.sessionId !== undefined) {
             this.#subagents.add(event.sessionId)
-            this.#pruneSubagents()
+            this.#pruneSubagent(event.sessionId)
           }
           break
+        case 'archived-sessions-changed': {
+          const nextArchived = new Set<string>(event.archivedSessionIds)
+          for (const sessionId of nextArchived) {
+            if (this.#subagents.has(sessionId)) continue
+            const state = this.#sessions.get(sessionId)
+            if (state !== undefined) {
+              state.acknowledgedGeneration = state.generation
+              state.completedGeneration = undefined
+            }
+            this.#pendingBySession.delete(sessionId)
+            if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
+          }
+          this.#archivedSessions = nextArchived
+          break
+        }
         case 'session-removed':
-          this.#prevRunning.delete(event.sessionId)
-          this.#completed.delete(event.sessionId)
+          this.#sessions.delete(event.sessionId)
           this.#pendingBySession.delete(event.sessionId)
-          this.#running.delete(event.sessionId)
           this.#subagents.delete(event.sessionId)
+          this.#archivedSessions.delete(event.sessionId)
+          if (this.#bridgeSelection === event.sessionId) this.#bridgeSelection = undefined
           break
       }
       this.#emitFacts()
@@ -440,9 +522,9 @@ export class DeviceLifecycle {
     if (!this.#record.enabled || this.#stopped || this.#client === undefined) return
     try {
       const sessions = await this.#client.listSessions()
-      this.#refreshRunning(sessions)
+      this.#refreshSubagents(sessions)
       this.#pendingBySession.clear()
-      this.#syncCompleted(sessions)
+      this.#syncSessions(sessions)
       this.#emitFacts()
     } catch {
       // Keep last known facts; disconnect path will surface an error state.

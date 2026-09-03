@@ -79,6 +79,19 @@ export function App() {
     }
   }, [currentId])
 
+  // Clear completion reminders independently of device selection. The server
+  // publishes the accepted facts through the existing SSE stream, so the UI
+  // deliberately waits for that authoritative update instead of hiding the
+  // chip optimistically.
+  const ackCompleted = useCallback(async (deviceId: string) => {
+    try {
+      await api.ackCompleted(deviceId)
+      setError(undefined)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
+
   const current = enabledDevices.find(device => device.deviceId === currentId)
 
   return (
@@ -90,12 +103,14 @@ export function App() {
         onOpenPanel={setPanel}
         onRefresh={reconnectCurrent}
         onRefreshLabel="重连当前设备"
+        onAckCompleted={ackCompleted}
       />
       <main className="cockpit-main">
         {error !== undefined && <div className="cockpit-error" role="alert">{error}</div>}
         <Workbench
           device={current}
           enabledDeviceIds={enabledDevices.map(device => device.deviceId)}
+          requestBridgeCapability={api.bridgeCapability}
           onReconnect={reconnectCurrent}
           onManageDevices={() => setPanel('devices')}
         />

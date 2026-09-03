@@ -7,6 +7,7 @@ import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { Rc2Client } from './rc2-client.js'
 import { resolveSshExecutable } from '../runtime/config.js'
+import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
 
 @Injectable()
 export class ConnectivityService implements OnApplicationShutdown {
@@ -14,14 +15,19 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #tunnels: TunnelManager
   readonly #sshExecutable: string
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
-  /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
+  /** Last successful bridge communication per device. */
   readonly #bridgeSeenAt = new Map<string, number>()
+  readonly #bridgeProtocolVersion = new Map<string, number>()
+  readonly #bridgeLastSuccessAt = new Map<string, number>()
+  readonly #capabilities: BridgeCapabilityService
 
   constructor(
     @Inject(DeviceRegistry) registry: DeviceRegistry,
     @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
+    @Inject(BridgeCapabilityService) capabilities?: BridgeCapabilityService,
   ) {
     this.#registry = registry
+    this.#capabilities = capabilities ?? new BridgeCapabilityService()
     this.#sshExecutable = resolveSshExecutable()
     this.#tunnels = new TunnelManager({
       sshExecutable: this.#sshExecutable,
@@ -98,6 +104,13 @@ export class ConnectivityService implements OnApplicationShutdown {
           ...(this.#bridgeSeenAt.has(facts.deviceId)
             ? { bridgeSeenAt: this.#bridgeSeenAt.get(facts.deviceId)! }
             : {}),
+          ...(this.#bridgeProtocolVersion.has(facts.deviceId)
+            ? { bridgeProtocolVersion: this.#bridgeProtocolVersion.get(facts.deviceId)! }
+            : {}),
+          ...(this.#bridgeLastSuccessAt.has(facts.deviceId)
+            ? { bridgeLastSuccessAt: this.#bridgeLastSuccessAt.get(facts.deviceId)! }
+            : {}),
+          bridgeHealth: this.#bridgeHealth(facts.deviceId),
           compatibility: facts.compatibility,
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
@@ -196,6 +209,9 @@ export class ConnectivityService implements OnApplicationShutdown {
       // not a durable device capability.
       await this.#detach(deviceId)
       this.#bridgeSeenAt.delete(deviceId)
+       this.#bridgeProtocolVersion.delete(deviceId)
+       this.#bridgeLastSuccessAt.delete(deviceId)
+       this.#capabilities.revokeDevice(deviceId)
       this.#attach(next)
     }
     for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
@@ -208,6 +224,10 @@ export class ConnectivityService implements OnApplicationShutdown {
     if (!records.some(r => r.deviceId === deviceId)) throw new Error(`unknown device ${deviceId}`)
     if (!confirmed) return { removed: false, requiresConfirmation: true }
     await this.#detach(deviceId)
+    this.#bridgeSeenAt.delete(deviceId)
+    this.#bridgeProtocolVersion.delete(deviceId)
+    this.#bridgeLastSuccessAt.delete(deviceId)
+    this.#capabilities.revokeDevice(deviceId)
     await this.#registry.save(records.filter(r => r.deviceId !== deviceId))
     return { removed: true, requiresConfirmation: false }
   }
@@ -227,24 +247,74 @@ export class ConnectivityService implements OnApplicationShutdown {
     await lifecycle.reconnect()
   }
 
-  /** Cross-origin bridge from the device's own DSH web client (a cockpit
-   * plugin reports "the user just opened session X"). Matches the device by
-   * the request's Origin header against live endpoints, then clears exactly
-   * that session's completion reminder. */
-  bridgeSessionOpened(origin: string, sessionId: string): void {
-    const lifecycle = this.#lifecycleByOrigin(origin)
-    lifecycle.clearCompletedSession(sessionId)
+  /** Clears all currently-known completion generations on one device. */
+  ackCompleted(deviceId: string): void {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    if (!lifecycle.current().enabled) throw new Error(`device ${deviceId} is disabled`)
+    lifecycle.clearAllCompleted()
   }
 
-  /** Bridge plugin hello: records that the device's DSH web client runs the
-   * plugin, and stamps the last-seen time (surfaces as bridgeSeenAt in the
-   * status pushed to the browser). */
-  bridgeHello(origin: string, version: string): void {
+  /** Issues a short-lived bridge capability after the shell (same-origin,
+   * cookie-authenticated) has requested it for one of ITS devices. The
+   * capability must be bound to the DEVICE's own DSH origin — the origin the
+   * bridge plugin will actually present it from — not the caller's origin
+   * (the caller here is always the cockpit's own page). The caller's origin
+   * is deliberately unused for binding: the cookie/TokenMiddleware gate on
+   * this route is what authenticates the caller, exactly like every other
+   * device-scoped POST endpoint. */
+  issueBridgeCapability(deviceId: string): { capability: string; expiresAt: number; protocolVersion: number } {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    const facts = lifecycle.current()
+    if (!facts.enabled || facts.endpoint === undefined) throw new Error(`device ${deviceId} is not connected`)
+    const deviceOrigin = new URL(facts.endpoint).origin
+    const grant = this.#capabilities.issue({ deviceId, origin: deviceOrigin, purpose: BRIDGE_CAPABILITY_PURPOSE })
+    return { capability: grant.token, expiresAt: grant.expiresAt, protocolVersion: 2 }
+  }
+
+  /** Validate a bridge capability and return the bound lifecycle. */
+  validateBridgeCapability(origin: string, token: string | undefined): DeviceLifecycle {
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    const grant = this.#capabilities.validate(token, {
+      deviceId: lifecycle.deviceId,
+      origin,
+      purpose: BRIDGE_CAPABILITY_PURPOSE,
+    })
+    if (grant === undefined) throw new Error('invalid or expired bridge capability')
+    return lifecycle
+  }
+
+  /** Cross-origin bridge selection snapshot. `undefined` means the DSH page has
+   * no selected session (for example after archive). */
+  bridgeSessionOpened(origin: string, sessionId: string | undefined, protocolVersion = 1): void {
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    lifecycle.setBridgeSelection(sessionId)
+    this.#recordBridgeSuccess(lifecycle.deviceId, protocolVersion)
+  }
+
+  /** Bridge plugin hello records a successful protocol handshake and selected
+   * snapshot. */
+  bridgeHello(origin: string, version: string, protocolVersion = 1, current?: string): void {
     void version
     const lifecycle = this.#lifecycleByOrigin(origin)
-    const deviceId = lifecycle.deviceId
-    this.#bridgeSeenAt.set(deviceId, Date.now())
+    lifecycle.setBridgeSelection(current)
+    this.#recordBridgeSuccess(lifecycle.deviceId, protocolVersion)
+  }
+
+  #recordBridgeSuccess(deviceId: string, protocolVersion: number): void {
+    const now = Date.now()
+    this.#bridgeSeenAt.set(deviceId, now)
+    this.#bridgeProtocolVersion.set(deviceId, protocolVersion)
+    this.#bridgeLastSuccessAt.set(deviceId, now)
     this.events.publish(this.statuses())
+  }
+
+  #bridgeHealth(deviceId: string): 'reliable' | 'legacy' | 'stale' | 'missing' {
+    const successAt = this.#bridgeLastSuccessAt.get(deviceId)
+    if (successAt === undefined) return 'missing'
+    if (Date.now() - successAt > 5 * 60_000) return 'stale'
+    return (this.#bridgeProtocolVersion.get(deviceId) ?? 0) >= 2 ? 'reliable' : 'legacy'
   }
 
   #lifecycleByOrigin(origin: string): DeviceLifecycle {

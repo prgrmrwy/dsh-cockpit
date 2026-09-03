@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
+import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
 export class DevicesController {
@@ -87,47 +88,102 @@ export class DevicesController {
     }
   }
 
-  /** Bridge from the device's official DSH web client: its cockpit plugin
-   * reports that the user just opened a session. The device is identified by
-   * the request's Origin (the plugin is same-origin with its DSH web). */
-  @Post('bridge/session-opened')
-  async bridgeSessionOpened(
-    @Req() request: import('express').Request,
-    @Body() body: { sessionId?: unknown },
-  ): Promise<{ opened: boolean }> {
-    const origin = requireOrigin(request)
-    if (typeof body?.sessionId !== 'string' || body.sessionId === '') {
-      throw new HttpException(toError('bad-request', 'sessionId required'), HttpStatus.BAD_REQUEST)
-    }
+  @Post('devices/:deviceId/completed/ack')
+  async ackCompleted(@Param('deviceId') deviceId: string): Promise<{ acked: boolean }> {
     try {
-      this.connectivity.bridgeSessionOpened(origin, body.sessionId)
-      return { opened: true }
+      this.connectivity.ackCompleted(decodeDeviceId(deviceId))
+      return { acked: true }
     } catch (cause) {
       throw toHttp(cause)
     }
   }
 
-  /** Bridge plugin startup hello: stamps bridgeSeenAt on the matching device
-   * so the top bar can show the connection layer is alive. */
-  @Post('bridge/hello')
-  async bridgeHello(
-    @Req() request: import('express').Request,
-    @Body() body: { version?: unknown },
-  ): Promise<{ helloed: boolean }> {
-    const origin = requireOrigin(request)
-    const version = typeof body?.version === 'string' ? body.version : 'unknown'
+  /** Issues a short-lived bridge capability. This route is same-origin,
+   * cookie-gated by TokenMiddleware exactly like every other `/api/devices`
+   * endpoint — it is the cockpit's OWN page (not the device iframe) that
+   * calls it, to then relay the result into the device iframe via the
+   * postMessage handshake. The capability is bound to the target device's own
+   * DSH origin (see ConnectivityService#issueBridgeCapability), which has
+   * nothing to do with this caller's origin. */
+  @Post('devices/:deviceId/bridge/capability')
+  async bridgeCapability(@Param('deviceId') deviceId: string): Promise<{ capability: string; expiresAt: number; protocolVersion: number }> {
     try {
-      this.connectivity.bridgeHello(origin, version)
-      return { helloed: true }
+      return this.connectivity.issueBridgeCapability(decodeDeviceId(deviceId))
     } catch (cause) {
       throw toHttp(cause)
     }
+  }
+
+  /** Bridge from the device's official DSH web client: its cockpit plugin
+   * reports a selected-session snapshot. A request carrying the capability
+   * header is validated against it; a request with no header at all can only
+   * have reached this handler by already passing the global TokenMiddleware's
+   * persistent-cookie gate (bridge routes have no other bypass), so it is
+   * accepted as the legacy path and its protocol defaults to 1. */
+  @Post('bridge/session-opened')
+  async bridgeSessionOpened(
+    @Req() request: import('express').Request,
+    @Body() body: { sessionId?: unknown; current?: unknown; protocolVersion?: unknown },
+  ): Promise<{ opened: boolean; accepted: boolean }> {
+    const origin = requireOrigin(request)
+    const current = body?.current === null || body?.current === undefined
+      ? undefined
+      : typeof body.current === 'string' && body.current !== '' ? body.current : (() => { throw new HttpException(toError('bad-request', 'current invalid'), HttpStatus.BAD_REQUEST) })()
+    const sessionId = body?.sessionId === undefined ? current : body.sessionId
+    if (sessionId !== undefined && (typeof sessionId !== 'string' || sessionId === '')) {
+      throw new HttpException(toError('bad-request', 'sessionId invalid'), HttpStatus.BAD_REQUEST)
+    }
+    try {
+      this.authorizeBridge(request, origin)
+      this.connectivity.bridgeSessionOpened(origin, sessionId as string | undefined, protocolVersion(body?.protocolVersion))
+      return { opened: true, accepted: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Bridge plugin startup hello records the protocol and current selection. */
+  @Post('bridge/hello')
+  async bridgeHello(
+    @Req() request: import('express').Request,
+    @Body() body: { version?: unknown; protocolVersion?: unknown; current?: unknown },
+  ): Promise<{ helloed: boolean; accepted: boolean }> {
+    const origin = requireOrigin(request)
+    const current = body?.current === null || body?.current === undefined
+      ? undefined
+      : typeof body.current === 'string' && body.current !== '' ? body.current : (() => { throw new HttpException(toError('bad-request', 'current invalid'), HttpStatus.BAD_REQUEST) })()
+    const version = typeof body?.version === 'string' ? body.version : 'unknown'
+    try {
+      this.authorizeBridge(request, origin)
+      this.connectivity.bridgeHello(origin, version, protocolVersion(body?.protocolVersion), current)
+      return { helloed: true, accepted: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Validates the capability ONLY when the caller presented one. A request
+   * with no capability header reached this method only because it already
+   * satisfied TokenMiddleware's persistent-cookie requirement (the middleware
+   * carve-out that lets a header-bearing request skip the cookie check does
+   * not, and must not, also let a header-less request skip both checks) — so
+   * it is legitimately the legacy compatibility path, not an unauthenticated
+   * request, and must not be rejected here. */
+  private authorizeBridge(request: import('express').Request, origin: string): void {
+    const token = request.headers[BRIDGE_CAPABILITY_HEADER]
+    const capability = Array.isArray(token) ? token[0] : token
+    if (capability === undefined) return
+    this.connectivity.validateBridgeCapability(origin, capability)
   }
 }
 
 function decodeDeviceId(value: string): string {
   if (typeof value !== 'string' || value === '') throw new HttpException(toError('bad-request', 'deviceId required'), HttpStatus.BAD_REQUEST)
   return value
+}
+
+function protocolVersion(value: unknown): number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 1
 }
 
 function requireOrigin(request: import('express').Request): string {
@@ -185,5 +241,6 @@ function toHttp(cause: unknown): HttpException {
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)
   if (/invalid origin|matches origin/.test(message)) return new HttpException(toError('bad-request', message), HttpStatus.BAD_REQUEST)
+  if (/bridge capability/.test(message)) return new HttpException(toError('bridge-capability-invalid', message), HttpStatus.BAD_REQUEST)
   return new HttpException(toError('device-command-failed', message), HttpStatus.BAD_REQUEST)
 }

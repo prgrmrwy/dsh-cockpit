@@ -416,3 +416,111 @@ describe('connectivity device updates', () => {
     await service.onApplicationShutdown()
   })
 })
+
+describe('bridge capability and protocol', () => {
+  it('issues a capability only for a connected, enabled device and rejects an unknown one', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const grant = service.issueBridgeCapability('local')
+    expect(grant.capability).toBeTruthy()
+    expect(grant.protocolVersion).toBe(2)
+
+    expect(() => service.issueBridgeCapability('missing-device')).toThrow('unknown device')
+    await service.onApplicationShutdown()
+  })
+
+  it('a capability is bound to the DEVICE origin (where the bridge actually calls from), not the issuing caller', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    // Issuance happens through the cockpit's OWN same-origin page — a
+    // completely different origin from the device's DSH endpoint.
+    const deviceOrigin = new URL(service.statuses()[0]!.endpoint!).origin
+    const grant = service.issueBridgeCapability('local')
+
+    // Validated as if presented FROM the device origin: succeeds.
+    expect(() => service.validateBridgeCapability(deviceOrigin, grant.capability)).not.toThrow()
+    // Presented from any other origin (e.g. the cockpit's own, or an
+    // unrelated one) must be rejected — the whole point of Origin binding.
+    expect(() => service.validateBridgeCapability('http://127.0.0.1:9999', grant.capability)).toThrow()
+  })
+
+  it('validateBridgeCapability rejects a forged or missing token from the correct device origin', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const origin = new URL(service.statuses()[0]!.endpoint!).origin
+
+    expect(() => service.validateBridgeCapability(origin, 'forged-token')).toThrow('invalid or expired bridge capability')
+    expect(() => service.validateBridgeCapability(origin, undefined)).toThrow('invalid or expired bridge capability')
+    await service.onApplicationShutdown()
+  })
+
+  it('disabling a device revokes its outstanding bridge capabilities', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const origin = new URL(service.statuses()[0]!.endpoint!).origin
+    const grant = service.issueBridgeCapability('local')
+
+    await service.updateDevice('local', { enabled: false })
+
+    expect(() => service.validateBridgeCapability(origin, grant.capability)).toThrow()
+    await service.onApplicationShutdown()
+  })
+
+  it('bridgeSessionOpened and bridgeHello record protocol version and last-success time, surfaced as bridgeHealth', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const origin = new URL(service.statuses()[0]!.endpoint!).origin
+
+    // No bridge contact yet: missing.
+    expect(service.statuses()[0]?.bridgeHealth).toBe('missing')
+
+    // A legacy (protocol 1) hello reports connected but not reliable.
+    service.bridgeHello(origin, 'legacy-plugin', 1)
+    expect(service.statuses()[0]?.bridgeHealth).toBe('legacy')
+    expect(service.statuses()[0]?.bridgeProtocolVersion).toBe(1)
+
+    // A reliable-protocol selection ack upgrades health to reliable.
+    service.bridgeSessionOpened(origin, 's1', 2)
+    expect(service.statuses()[0]?.bridgeHealth).toBe('reliable')
+    expect(service.statuses()[0]?.bridgeProtocolVersion).toBe(2)
+    expect(service.statuses()[0]?.bridgeLastSuccessAt).toBeDefined()
+
+    await service.onApplicationShutdown()
+  })
+
+  it('ackCompleted clears completion reminders for an enabled device and rejects a disabled or unknown one', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    // No throw for a connected, enabled device even with nothing to clear.
+    expect(() => service.ackCompleted('local')).not.toThrow()
+    expect(() => service.ackCompleted('missing-device')).toThrow('unknown device')
+
+    await service.updateDevice('local', { enabled: false })
+    expect(() => service.ackCompleted('local')).toThrow('is disabled')
+    await service.onApplicationShutdown()
+  })
+})

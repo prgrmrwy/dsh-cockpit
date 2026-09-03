@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
@@ -152,6 +152,67 @@ describe('workbench', () => {
     )
     const after = container.querySelector('.overlay-meta')?.textContent
     expect(after).not.toBe(before)
+  })
+
+  it('requests a bridge capability for the active device and relays it with the real Cockpit origin', async () => {
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
+    const requestBridgeCapability = vi.fn().mockResolvedValue({ capability: 'tok-1', expiresAt: Date.now() + 60_000, protocolVersion: 2 })
+    const { container } = render(
+      <StrictMode><Workbench device={a} enabledDeviceIds={['d1']} requestBridgeCapability={requestBridgeCapability} /></StrictMode>,
+    )
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+
+    expect(requestBridgeCapability).toHaveBeenCalledWith('d1')
+    await waitFor(() => {
+      expect(postToA).toHaveBeenCalledWith(
+        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+        'http://127.0.0.1:51000',
+      )
+    })
+  })
+
+  it('re-requests and re-sends the bridge capability on every activation (device reactivated)', async () => {
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
+    const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/' })
+    const requestBridgeCapability = vi.fn().mockResolvedValue({ capability: 'tok-1', expiresAt: Date.now() + 60_000, protocolVersion: 2 })
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} requestBridgeCapability={requestBridgeCapability} /></StrictMode>,
+    )
+    await waitFor(() => expect(requestBridgeCapability).toHaveBeenCalledWith('d1'))
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+    postToA.mockClear()
+
+    rerender(<StrictMode><Workbench device={b} enabledDeviceIds={['d1', 'd2']} requestBridgeCapability={requestBridgeCapability} /></StrictMode>)
+    rerender(<StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} requestBridgeCapability={requestBridgeCapability} /></StrictMode>)
+
+    // Reactivating device A must resend its bridge-config alongside the
+    // existing device-activated message (the bridge re-asserts current +
+    // retried acks on any activation/config refresh).
+    expect(postToA).toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+      'http://127.0.0.1:51000',
+    )
+    expect(postToA).toHaveBeenCalledWith({ type: 'dsh-cockpit:device-activated' }, 'http://127.0.0.1:51000')
+  })
+
+  it('a failed capability request never disturbs the native workbench (bridge stays optional)', async () => {
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
+    const requestBridgeCapability = vi.fn().mockRejectedValue(new Error('cockpit unreachable'))
+    const { container } = render(
+      <StrictMode><Workbench device={a} enabledDeviceIds={['d1']} requestBridgeCapability={requestBridgeCapability} /></StrictMode>,
+    )
+    await waitFor(() => expect(requestBridgeCapability).toHaveBeenCalledWith('d1'))
+    // The iframe is still mounted and active; no offline overlay appears due
+    // to a bridge failure — only connectivity state drives that overlay.
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).not.toBeNull()
+    expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
+  })
+
+  it('does not request a bridge capability when no requestBridgeCapability prop is supplied', () => {
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/' })
+    expect(() => render(<StrictMode><Workbench device={a} enabledDeviceIds={['d1']} /></StrictMode>)).not.toThrow()
   })
 
   it('follows the live tunnel endpoint after a reconnect (new loopback port)', () => {

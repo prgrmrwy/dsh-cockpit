@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-// The plugin imports the ClientContext TYPE only; the runtime module is not
-// loaded at test time, so we exercise apply() directly with a fake ctx.
 interface SessionListStateLike { current: string | undefined }
+
+const COCKPIT_ORIGIN = 'http://127.0.0.1:4317'
+const CAPABILITY = 'short-lived-capability'
+const ok = (status = 200): Pick<Response, 'ok' | 'status'> => ({ ok: status >= 200 && status < 300, status })
 
 class FakeWindow {
   parent: unknown = {}
@@ -16,7 +18,7 @@ class FakeWindow {
     if (type === 'message') this.listeners.delete(listener as (event: MessageEvent) => void)
   }
 
-  emitMessage(data: unknown, source: unknown = this.parent, origin = 'http://127.0.0.1:3090'): void {
+  emitMessage(data: unknown, source: unknown = this.parent, origin = COCKPIT_ORIGIN): void {
     for (const listener of [...this.listeners]) listener({ data, source, origin } as MessageEvent)
   }
 }
@@ -24,6 +26,7 @@ class FakeWindow {
 function fakeCtx(initial = { current: undefined }) {
   const listeners = new Set<() => void>()
   let snapshot: SessionListStateLike = { ...initial }
+  let cleanup: (() => void) | undefined
   const ctx = {
     sessions: {
       list: {
@@ -34,7 +37,7 @@ function fakeCtx(initial = { current: undefined }) {
         },
       },
     },
-    effect: (fn: () => () => void) => { fn() }, // run immediately, ignore cleanup
+    effect: (fn: () => () => void) => { cleanup = fn() },
   }
   return {
     ctx,
@@ -42,6 +45,7 @@ function fakeCtx(initial = { current: undefined }) {
       snapshot = { current }
       for (const fn of [...listeners]) fn()
     },
+    cleanup: () => { cleanup?.() },
   }
 }
 
@@ -50,122 +54,348 @@ async function loadApply(): Promise<(ctx: unknown) => void> {
   return mod.apply as (ctx: unknown) => void
 }
 
+function configure(fakeWindow = window as unknown as FakeWindow): void {
+  fakeWindow.emitMessage({
+    type: 'dsh-cockpit:bridge-config',
+    cockpitOrigin: COCKPIT_ORIGIN,
+    capability: CAPABILITY,
+  })
+}
+
+function callsFor(path: string): Array<[string, RequestInit]> {
+  return fetchMock.mock.calls.filter(([url]) => String(url).endsWith(path)) as Array<[string, RequestInit]>
+}
+
+function bodiesFor(path: string): Array<Record<string, unknown>> {
+  return callsFor(path).map(([, init]) => JSON.parse(String(init.body)) as Record<string, unknown>)
+}
+
+const fetchMock = vi.fn()
+
 describe('cockpit bridge client', () => {
-  const fetchMock = vi.fn()
   beforeEach(() => {
+    vi.useFakeTimers()
+    fetchMock.mockResolvedValue(ok())
     vi.stubGlobal('fetch', fetchMock)
     vi.stubGlobal('window', new FakeWindow())
   })
-  afterEach(() => { fetchMock.mockReset(); vi.unstubAllGlobals() })
 
-  it('sends a startup hello (with version) before watching selections', async () => {
-    fetchMock.mockResolvedValue({ status: 200 })
+  afterEach(() => {
+    fetchMock.mockReset()
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('waits for an authenticated parent config and uses its dynamic origin', async () => {
+    const { ctx } = fakeCtx({ current: 'already-open' })
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    const fakeWindow = window as unknown as FakeWindow
+    const message = {
+      type: 'dsh-cockpit:bridge-config',
+      cockpitOrigin: COCKPIT_ORIGIN,
+      capability: CAPABILITY,
+    }
+    fakeWindow.emitMessage(message, {})
+    fakeWindow.emitMessage(message, fakeWindow.parent, 'http://attacker.test')
+    fakeWindow.emitMessage({ ...message, cockpitOrigin: `${COCKPIT_ORIGIN}/path` })
+    fakeWindow.emitMessage({ ...message, cockpitOrigin: 'https://127.0.0.1:4317' }, fakeWindow.parent, 'https://127.0.0.1:4317')
+    fakeWindow.emitMessage({ ...message, cockpitOrigin: 'http://localhost:4317' }, fakeWindow.parent, 'http://localhost:4317')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    configure(fakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const [helloUrl, helloInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(helloUrl).toBe(`${COCKPIT_ORIGIN}/api/bridge/hello`)
+    expect(helloInit.credentials).toBeUndefined()
+    expect(helloInit.headers).toEqual({
+      'content-type': 'application/json',
+      'x-dsh-cockpit-bridge-capability': CAPABILITY,
+    })
+    expect(JSON.parse(String(helloInit.body))).toEqual({
+      version: '0.2.0',
+      protocolVersion: 2,
+      current: 'already-open',
+    })
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([{
+      protocolVersion: 2,
+      sessionId: 'already-open',
+      current: 'already-open',
+    }])
+  })
+
+  it('pins the first validated cockpit origin while allowing capability rotation', async () => {
     const { ctx } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0))
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
 
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('http://127.0.0.1:3090/api/bridge/hello')
-    expect(JSON.parse(String(init.body))).toMatchObject({ version: expect.any(String) })
+    const fakeWindow = window as unknown as FakeWindow
+    fakeWindow.emitMessage({
+      type: 'dsh-cockpit:bridge-config',
+      cockpitOrigin: 'http://127.0.0.1:9999',
+      capability: 'attacker-capability',
+    }, fakeWindow.parent, 'http://127.0.0.1:9999')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fakeWindow.emitMessage({
+      type: 'dsh-cockpit:bridge-config',
+      cockpitOrigin: COCKPIT_ORIGIN,
+      capability: 'rotated-capability',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock.mock.calls[0]![0]).toBe(`${COCKPIT_ORIGIN}/api/bridge/hello`)
+    expect(fetchMock.mock.calls[0]![1]!.headers).toMatchObject({
+      'x-dsh-cockpit-bridge-capability': 'rotated-capability',
+    })
   })
 
-  it('reports the opened session id to the cockpit', async () => {
-    fetchMock.mockResolvedValue({ status: 200 })
+  it('captures rapid A/B/C selections and delivers every distinct id', async () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0)) // hello consumed
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
     fetchMock.mockClear()
-    set('session-a')
-    await new Promise(r => setTimeout(r, 300))
-    set('session-b')
-    await new Promise(r => setTimeout(r, 300))
 
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('http://127.0.0.1:3090/api/bridge/session-opened')
-    expect(init.method).toBe('POST')
-    expect(init.credentials).toBe('include')
-    expect(JSON.parse(String(init.body))).toEqual({ sessionId: 'session-a' })
-    expect(fetchMock.mock.calls[1]![1]!.body).toBe(JSON.stringify({ sessionId: 'session-b' }))
-  })
-
-  it('debounces rapid selection changes into one report', async () => {
-    fetchMock.mockResolvedValue({ status: 200 })
-    const { ctx, set } = fakeCtx()
-    const apply = await loadApply()
-    apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0))
-    fetchMock.mockClear()
     set('a')
     set('b')
     set('c')
-    await new Promise(r => setTimeout(r, 300))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(fetchMock.mock.calls[0]![1]!.body).toBe(JSON.stringify({ sessionId: 'c' }))
+    await vi.advanceTimersByTimeAsync(249)
+    expect(fetchMock).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+      { protocolVersion: 2, sessionId: 'b', current: 'b' },
+      { protocolVersion: 2, sessionId: 'c', current: 'c' },
+    ])
   })
 
-  it('does not re-report the same selection from an ordinary list refresh', async () => {
-    fetchMock.mockResolvedValue({ status: 200 })
+  it('keeps the captured id when archive clears current before flush', async () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0))
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
     fetchMock.mockClear()
+
     set('a')
-    await new Promise(r => setTimeout(r, 300))
-    set('a') // list refresh with the same current
-    await new Promise(r => setTimeout(r, 300))
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    set(undefined)
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+      { protocolVersion: 2, current: null },
+    ])
   })
 
-  it('re-reports the current session when the parent reactivates this device', async () => {
-    fetchMock.mockResolvedValue({ status: 200 })
+  it('selection cleared resets the same-value latch so restored id reports again', async () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0))
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
     fetchMock.mockClear()
 
     set('a')
-    await new Promise(r => setTimeout(r, 300))
+    await vi.advanceTimersByTimeAsync(250)
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    set(undefined)
+    await vi.advanceTimersByTimeAsync(250)
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+      { protocolVersion: 2, current: null },
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+    ])
+  })
+
+  it('keeps non-2xx acknowledgements and retries an unchanged current', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValueOnce(ok(503)).mockResolvedValue(ok())
+
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(callsFor('/api/bridge/session-opened')).toHaveLength(1)
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+    ])
+  })
+
+  it('retains 401 without bootstrap or cookies and retries after a new config hello', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValueOnce(ok(401)).mockResolvedValue(ok())
+
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
     expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock.mock.calls[0]![1]).not.toHaveProperty('credentials')
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/api/bootstrap'))).toBe(false)
+
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsFor('/api/bridge/hello')).toHaveLength(1)
+    expect(callsFor('/api/bridge/session-opened')).toHaveLength(2)
+  })
+
+  it('uses single-flight bounded exponential retry for network failures', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockRejectedValue(new Error('offline'))
+
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(499)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(999)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    // Repeated failures cap at 30 seconds rather than growing without bound.
+    await vi.advanceTimersByTimeAsync(2_000 + 4_000 + 8_000 + 16_000 + 30_000)
+    const atCap = fetchMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(29_999)
+    expect(fetchMock).toHaveBeenCalledTimes(atCap)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fetchMock).toHaveBeenCalledTimes(atCap + 1)
+  })
+
+  it('times out a stuck request and retries without blocking the DSH page', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockImplementationOnce((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener('abort', () => { reject(new Error('aborted')) })
+    })).mockResolvedValue(ok())
+
+    expect(() => { set('a') }).not.toThrow()
+    await vi.advanceTimersByTimeAsync(250 + 10_000)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(bodiesFor('/api/bridge/session-opened').at(-1)).toMatchObject({ sessionId: 'a' })
+  })
+
+  it('activation refreshes hello and reasserts the current selection', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    fetchMock.mockClear()
 
     const fakeWindow = window as unknown as FakeWindow
-    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' })
-    await new Promise(r => setTimeout(r, 0))
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    expect(fetchMock.mock.calls[1]![1]!.body).toBe(JSON.stringify({ sessionId: 'a' }))
-
-    // Ignore similarly shaped messages that did not come from the expected
-    // parent window and cockpit origin.
     fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' }, {})
-    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' }, fakeWindow.parent, 'http://example.test')
-    await new Promise(r => setTimeout(r, 0))
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' }, fakeWindow.parent, 'http://attacker.test')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsFor('/api/bridge/hello')).toHaveLength(1)
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+    ])
   })
 
-  it('bootstraps on 401 then retries, and survives a dead cockpit', async () => {
-    fetchMock
-      .mockResolvedValueOnce({ status: 200 }) // hello
-      .mockResolvedValueOnce({ status: 401 })  // session-opened → 401
-      .mockResolvedValueOnce({ status: 200 })  // bootstrap
-      .mockResolvedValueOnce({ status: 200 })  // retried session-opened
+  it('bounds outbox capacity while preserving current and recent selections', async () => {
     const { ctx, set } = fakeCtx()
     const apply = await loadApply()
     apply(ctx as unknown)
-    await new Promise(r => setTimeout(r, 0))
-    set('a')
-    await new Promise(r => setTimeout(r, 300))
-    // hello + 401 → bootstrap → retried POST; a later change when cockpit is
-    // gone must resolve quietly.
-    expect(fetchMock).toHaveBeenCalledTimes(4)
-    expect(fetchMock.mock.calls[2]![0]).toBe('http://127.0.0.1:3090/api/bootstrap')
-    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'))
-    set('b')
-    await new Promise(r => setTimeout(r, 300))
-    expect(fetchMock).toHaveBeenCalledTimes(5)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(ok(503))
+
+    for (let index = 0; index < 40; index += 1) set(`s${index}`)
+    await vi.advanceTimersByTimeAsync(250)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(ok())
+    ;(window as unknown as FakeWindow).emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const delivered = bodiesFor('/api/bridge/session-opened').map(body => body.sessionId)
+    expect(delivered).toHaveLength(32)
+    expect(delivered).toContain('s39')
+    expect(delivered).toContain('s38')
+    expect(delivered).not.toContain('s0')
+    expect(delivered).not.toContain('s7')
+  })
+
+  it('expires stale non-current entries but preserves a freshly reasserted current', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(ok(503))
+
+    set('stale')
+    set('current')
+    await vi.advanceTimersByTimeAsync(250)
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValue(ok())
+    ;(window as unknown as FakeWindow).emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'current', current: 'current' },
+    ])
+  })
+
+  it('swallows persistent bridge failures and cleanup cancels pending work', async () => {
+    fetchMock.mockRejectedValue(new Error('cockpit unavailable'))
+    const { ctx, set, cleanup } = fakeCtx()
+    const apply = await loadApply()
+    expect(() => { apply(ctx as unknown) }).not.toThrow()
+    expect(() => { configure() }).not.toThrow()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(() => { set('a') }).not.toThrow()
+    await vi.advanceTimersByTimeAsync(250)
+    const callsBeforeCleanup = fetchMock.mock.calls.length
+    cleanup()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(fetchMock).toHaveBeenCalledTimes(callsBeforeCleanup)
   })
 })

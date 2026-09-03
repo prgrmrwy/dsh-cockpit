@@ -347,6 +347,301 @@ describe('device lifecycle', () => {
     expect(lifecycle.current().sessionStatuses).toEqual([])
   })
 })
+describe('reliable completion reminders: ack/edge ordering, archive, and manual clear', () => {
+  it('ack-before-edge: opening a session before its running→idle edge suppresses that generation only', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // Bridge reports the session as opened (selected) WHILE it is still
+    // running — before the completion edge arrives.
+    ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
+    // The completion edge now arrives late: must NOT produce a reminder.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    // A brand-new run-and-finish cycle on the SAME session (after selection
+    // moves elsewhere) must still be able to arm a fresh reminder — the old
+    // ack must not suppress a future, unrelated generation.
+    ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection(undefined)
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('edge-before-ack: a late bridge ack for the same generation clears the reminder', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // The bridge ack for that same generation arrives after the edge.
+    ;(lifecycle as unknown as { clearCompleted(id: string): void }).clearCompleted('s1')
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a session currently reported as selected by the bridge never shows as unread while selected', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('archiving a session clears its current reminder without affecting others', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 2 },
+    ])
+
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1'] })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('restoring an idle archived session does not manufacture a new completion edge', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    // s1 finishes, was already acked (bridge opened it), then archived.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    ;(lifecycle as unknown as { clearCompleted(id: string): void }).clearCompleted('s1')
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1'] })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    // Restore (archived set no longer contains s1) without any new
+    // running→idle edge on it: must remain read, no phantom reminder.
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: [] })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('archiving an unread session and restoring it keeps it read (no re-arm without a new run)', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // Archive alone (without a prior explicit ack) must still clear the
+    // reminder — archive is itself an explicit disposition (design.md D4).
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1'] })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: [] })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a session temporarily absent from a baseline refresh is not treated as deleted or archived', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let listCall = 0
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => {
+          listCall += 1
+          // First call (connect baseline): s1 running. Second call (manual
+          // refresh): s1 is transiently absent from the list — e.g. a
+          // momentary host/session-list gap — NOT reported as idle or gone.
+          return listCall === 1 ? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }] : []
+        },
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // A subsequent baseline refresh that happens not to include s1 (e.g. a
+    // transient host/session-list gap) must not clear or duplicate its
+    // reminder — only host/session-removed is authoritative for deletion.
+    await lifecycle.refresh()
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('permanent removal clears running, selection, ack and reminder state for that session', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
+    emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    expect(lifecycle.current().runningSessionCount).toBe(0)
+    // A fresh session reusing the same id (unlikely, but state must not leak)
+    // starts a clean baseline: first observation only records the bit.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('clearAllCompleted() acknowledges every current generation and is idempotent, including in-flight edges', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: true })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    // Clear-all while s3 is still running (an edge for its generation is "in
+    // flight" conceptually) must pre-acknowledge that generation so the
+    // eventual idle frame does not resurrect a reminder for work already
+    // cleared by the manual fallback.
+    ;(lifecycle as unknown as { clearAllCompleted(): void }).clearAllCompleted()
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's3', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    // Idempotent: calling again with nothing outstanding changes nothing and
+    // does not throw.
+    expect(() => (lifecycle as unknown as { clearAllCompleted(): void }).clearAllCompleted()).not.toThrow()
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    // A subsequent genuinely new run-and-finish cycle still arms a reminder.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a reconnect baseline reporting the same idle state preserves the still-unread reminder', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let listCall = 0
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => {
+          listCall += 1
+          // First call (connect baseline): s1 running. A later reconnect
+          // baseline (simulated here via refresh) reports s1 idle — matching
+          // the in-memory idle state already set by the live completion edge
+          // below, i.e. NOT a fresh false→true run edge.
+          return listCall === 1
+            ? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }]
+            : [{ sessionId: 's1', running: false, updatedAt: 2, blank: false }]
+        },
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // A reconnect-driven refresh baseline that reports s1 as still idle must
+    // not clear or duplicate the still-unread reminder for the same generation.
+    await lifecycle.refresh()
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+})
+
 describe('local device lifecycle', () => {
   it('connects directly to the loopback port without a tunnel', async () => {
     const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()

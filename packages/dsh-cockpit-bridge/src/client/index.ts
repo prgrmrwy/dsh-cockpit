@@ -22,95 +22,288 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 
 export const inject = ['sessions']
 
-const COCKPIT_BASE = 'http://127.0.0.1:3090'
+const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config'
 const DEVICE_ACTIVATED_MESSAGE = 'dsh-cockpit:device-activated'
-const PLUGIN_VERSION = '0.1.2'
+const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
+const PLUGIN_VERSION = '0.2.0'
+const PROTOCOL_VERSION = 2
 
-/** Fire-and-forget report; failures must never disturb the DSH page. */
-async function reportOpen(ctx: ClientContext, sessionId: string): Promise<void> {
-  try {
-    const response = await fetch(`${COCKPIT_BASE}/api/bridge/session-opened`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
-    })
-    if (response.status === 401) {
-      // The cockpit cookie is unknown to this browser yet — ask for it once,
-      // then re-send (the Set-Cookie is issued on /api/bootstrap).
-      await fetch(`${COCKPIT_BASE}/api/bootstrap`, { credentials: 'include' })
-      await fetch(`${COCKPIT_BASE}/api/bridge/session-opened`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ sessionId }),
-      })
-    }
-  } catch {
-    // No cockpit running / transient failure: swallow. The selection was still
-    // observed locally; a later session change re-reports.
-  }
+// These limits are deliberately implementation details rather than protocol.
+const FLUSH_DELAY_MS = 250
+const RETRY_BASE_MS = 500
+const RETRY_MAX_MS = 30_000
+const REQUEST_TIMEOUT_MS = 10_000
+const OUTBOX_TTL_MS = 5 * 60_000
+const OUTBOX_CAPACITY = 32
+const CLEARED_KEY = '\u0000selection-cleared'
+
+interface BridgeConfig {
+  cockpitOrigin: string
+  capability: string
 }
 
-/** Startup hello: stamps bridgeSeenAt in the cockpit so the connection layer
- * is visible in the top bar; 401 → bootstrap first (issues the cookie). */
-async function reportHello(): Promise<void> {
-  try {
-    const response = await fetch(`${COCKPIT_BASE}/api/bridge/hello`, {
-      method: 'POST',
-      credentials: 'include',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ version: PLUGIN_VERSION }),
-    })
-    if (response.status === 401) {
-      await fetch(`${COCKPIT_BASE}/api/bootstrap`, { credentials: 'include' })
-      await fetch(`${COCKPIT_BASE}/api/bridge/hello`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ version: PLUGIN_VERSION }),
-      })
-    }
-  } catch {
-    // Cockpit not running: stay quiet; a later session-open retries the flow.
-  }
+interface OutboxEntry {
+  key: string
+  sessionId?: string
+  current: string | null
+  updatedAt: number
 }
 
-/** Debounce consecutive selection changes (rapid left/right clicks). */
-function schedule(callback: () => void): () => void {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  return () => {
-    if (timer !== undefined) clearTimeout(timer)
-    timer = setTimeout(() => { timer = undefined; callback() }, 250)
+function parseConfig(event: MessageEvent): BridgeConfig | undefined {
+  if (event.source !== window.parent || typeof event.data !== 'object' || event.data === null) return
+  const data = event.data as { type?: unknown; cockpitOrigin?: unknown; capability?: unknown }
+  if (data.type !== BRIDGE_CONFIG_MESSAGE || typeof data.cockpitOrigin !== 'string' || typeof data.capability !== 'string' || data.capability === '') return
+  try {
+    const url = new URL(data.cockpitOrigin)
+    // The sender is the claimed Cockpit origin. Requiring canonical origin form
+    // prevents a path, credentials, or a look-alike origin from becoming the
+    // base for capability-bearing requests.
+    if (url.origin !== data.cockpitOrigin || event.origin !== data.cockpitOrigin) return
+    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1') return
+  } catch {
+    return
   }
+  return { cockpitOrigin: data.cockpitOrigin, capability: data.capability }
+}
+
+function isActivation(event: MessageEvent, config: BridgeConfig | undefined): boolean {
+  return config !== undefined
+    && event.source === window.parent
+    && event.origin === config.cockpitOrigin
+    && typeof event.data === 'object'
+    && event.data !== null
+    && (event.data as { type?: unknown }).type === DEVICE_ACTIVATED_MESSAGE
 }
 
 export function apply(ctx: ClientContext): void {
-  let last: string | undefined
-
-  // Subscribe to the official sessions list store; `current` flips exactly
-  // when the user opens a session (SessionManager.select persists it to
-  // dsh.sessions.current). A startup hello (one per page load) stamps the
-  // bridge connection state in the cockpit.
   ctx.effect(() => {
-    void reportHello()
-    const flush = schedule(() => {
+    let config: BridgeConfig | undefined
+    let helloReady = false
+    let disposed = false
+    let running = false
+    let rerunRequested = false
+    let failureCount = 0
+    let flushTimer: ReturnType<typeof setTimeout> | undefined
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    let lastSelection = ctx.sessions.list.getSnapshot().current
+    const outbox = new Map<string, OutboxEntry>()
+
+    const currentKey = (): string | undefined => {
       const current = ctx.sessions.list.getSnapshot().current
-      if (current === undefined || current === last) return
-      last = current
-      void reportOpen(ctx, current)
-    })
-    const unsubscribe = ctx.sessions.list.subscribe(flush)
+      return current === undefined ? undefined : current
+    }
+
+    const purgeExpired = (now = Date.now()): void => {
+      for (const [key, entry] of outbox) {
+        if (now - entry.updatedAt >= OUTBOX_TTL_MS) outbox.delete(key)
+      }
+    }
+
+    const enforceCapacity = (): void => {
+      while (outbox.size > OUTBOX_CAPACITY) {
+        const protectedKey = currentKey()
+        const oldestNonCurrent = [...outbox.keys()].find(key => key !== protectedKey)
+        outbox.delete(oldestNonCurrent ?? outbox.keys().next().value as string)
+      }
+    }
+
+    const enqueue = (current: string | undefined): void => {
+      const key = current ?? CLEARED_KEY
+      // Re-insertion makes a duplicate pending ID recent without increasing the
+      // bounded set, which also gives archive-clear/reopen ordering semantics.
+      outbox.delete(key)
+      outbox.set(key, {
+        key,
+        ...(current === undefined ? {} : { sessionId: current }),
+        current: current ?? null,
+        updatedAt: Date.now(),
+      })
+      purgeExpired()
+      enforceCapacity()
+    }
+
+    const post = async (path: string, body: object, activeConfig: BridgeConfig): Promise<Response> => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
+      try {
+        return await fetch(`${activeConfig.cockpitOrigin}${path}`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            [CAPABILITY_HEADER]: activeConfig.capability,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
+      }
+    }
+
+    const clearFlushTimer = (): void => {
+      if (flushTimer !== undefined) clearTimeout(flushTimer)
+      flushTimer = undefined
+    }
+
+    const clearRetryTimer = (): void => {
+      if (retryTimer !== undefined) clearTimeout(retryTimer)
+      retryTimer = undefined
+    }
+
+    const scheduleRetry = (): void => {
+      if (disposed || config === undefined || retryTimer !== undefined) return
+      const exponent = Math.min(failureCount, 16)
+      const delay = Math.min(RETRY_BASE_MS * 2 ** exponent, RETRY_MAX_MS)
+      failureCount += 1
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined
+        void run()
+      }, delay)
+    }
+
+    const fail = (status?: number): void => {
+      if (status === 401) helloReady = false
+      scheduleRetry()
+    }
+
+    const run = async (): Promise<void> => {
+      if (disposed || config === undefined) return
+      if (running) {
+        rerunRequested = true
+        return
+      }
+      running = true
+      const activeConfig = config
+      let failed = false
+      try {
+        if (!helloReady) {
+          let response: Response
+          try {
+            const current = ctx.sessions.list.getSnapshot().current
+            response = await post('/api/bridge/hello', {
+              version: PLUGIN_VERSION,
+              protocolVersion: PROTOCOL_VERSION,
+              current: current ?? null,
+            }, activeConfig)
+          } catch {
+            failed = true
+            fail()
+            return
+          }
+          if (!response.ok) {
+            failed = true
+            fail(response.status)
+            return
+          }
+          if (config !== activeConfig) {
+            rerunRequested = true
+            return
+          }
+          helloReady = true
+          failureCount = 0
+          // A successful hello is a recovery point. Re-asserting the current
+          // selection also recreates an ack that may have expired from outbox.
+          const current = ctx.sessions.list.getSnapshot().current
+          if (current !== undefined) enqueue(current)
+        }
+
+        purgeExpired()
+        while (!disposed && config === activeConfig && outbox.size > 0) {
+          const entry = outbox.values().next().value as OutboxEntry
+          let response: Response
+          try {
+            response = await post('/api/bridge/session-opened', {
+              protocolVersion: PROTOCOL_VERSION,
+              ...(entry.sessionId === undefined ? {} : { sessionId: entry.sessionId }),
+              current: entry.current,
+            }, activeConfig)
+          } catch {
+            failed = true
+            fail()
+            return
+          }
+          if (!response.ok) {
+            failed = true
+            fail(response.status)
+            return
+          }
+          // A selection may have been re-enqueued while this request was in
+          // flight. Only remove the exact accepted entry, never its successor.
+          if (outbox.get(entry.key) === entry) outbox.delete(entry.key)
+          failureCount = 0
+        }
+      } catch {
+        // This bridge must never leak failures into the host DSH page, including
+        // unexpected mocks/polyfills throwing outside fetch itself.
+        failed = true
+        scheduleRetry()
+      } finally {
+        running = false
+        if (rerunRequested && !disposed) {
+          rerunRequested = false
+          if (!failed) {
+            clearRetryTimer()
+            void run()
+          }
+        }
+      }
+    }
+
+    const requestRun = (delay: number, recovery: boolean): void => {
+      if (disposed || config === undefined) return
+      if (recovery) {
+        failureCount = 0
+        clearRetryTimer()
+      }
+      clearFlushTimer()
+      flushTimer = setTimeout(() => {
+        flushTimer = undefined
+        void run()
+      }, delay)
+    }
+
+    const onSelectionChange = (): void => {
+      // Capture now. Never defer getSnapshot(): a subsequent archive can clear
+      // current before the 250 ms network batching window expires.
+      const current = ctx.sessions.list.getSnapshot().current
+      if (current === lastSelection) {
+        // An ordinary store refresh stays deduplicated, but if this ID is still
+        // pending after a failure it is an explicit recovery opportunity.
+        const key = current ?? CLEARED_KEY
+        if (outbox.has(key)) requestRun(FLUSH_DELAY_MS, true)
+        return
+      }
+      lastSelection = current
+      enqueue(current)
+      requestRun(FLUSH_DELAY_MS, true)
+    }
+
+    const unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
     const onMessage = (event: MessageEvent): void => {
-      if (event.source !== window.parent || event.origin !== COCKPIT_BASE) return
-      if (typeof event.data !== 'object' || event.data === null || (event.data as { type?: unknown }).type !== DEVICE_ACTIVATED_MESSAGE) return
+      const nextConfig = parseConfig(event)
+      if (nextConfig !== undefined && (config === undefined || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
+        config = nextConfig
+        helloReady = false
+        // bridge-config doubles as activation/capability refresh: heartbeat,
+        // current snapshot and all retained acknowledgements are retried.
+        requestRun(0, true)
+        return
+      }
+      if (!isActivation(event, config)) return
       const current = ctx.sessions.list.getSnapshot().current
-      if (current !== undefined) void reportOpen(ctx, current)
+      if (current !== undefined) enqueue(current)
+      helloReady = false
+      requestRun(0, true)
     }
     window.addEventListener('message', onMessage)
+
     return () => {
+      disposed = true
+      clearFlushTimer()
+      clearRetryTimer()
       unsubscribe()
       window.removeEventListener('message', onMessage)
+      outbox.clear()
     }
-  }, 'cockpit-bridge: hello + current session watch + device activation')
+  }, 'cockpit-bridge: reliable current session acknowledgement')
 }

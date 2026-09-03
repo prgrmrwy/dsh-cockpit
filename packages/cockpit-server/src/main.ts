@@ -25,6 +25,7 @@ export async function bootstrap(): Promise<void> {
       } catch { callback(null, false) }
     },
     credentials: true,
+    allowedHeaders: ['content-type', 'accept', 'x-dsh-cockpit-bridge-capability'],
   })
 
   const here = path.dirname(fileURLToPath(import.meta.url))

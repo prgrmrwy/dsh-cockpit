@@ -66,9 +66,14 @@ export interface DeviceStatusFacts {
   /** Official session-row status groups, non-zero only, ordered by official
    * priority (pending warning first, then active work). */
   readonly sessionStatuses: readonly SessionActivitySummary[]
-  /** Epoch ms of the last bridge hello from this device's DSH web client
-   * (the dsh-cockpit-bridge plugin); undefined = plugin not seen yet. */
+  /** Epoch ms of the last successful bridge hello (kept for mixed-version UI). */
   readonly bridgeSeenAt?: number
+  /** Protocol reported by the most recent successful bridge message. */
+  readonly bridgeProtocolVersion?: number
+  /** Epoch ms of the most recent successful bridge hello or selection ack. */
+  readonly bridgeLastSuccessAt?: number
+  /** Whether the optional bridge can currently provide reliable selection acks. */
+  readonly bridgeHealth?: 'reliable' | 'legacy' | 'stale' | 'missing'
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
   readonly diagnostic?: string
@@ -101,6 +106,9 @@ export type CockpitEvent =
   | { readonly type: 'session-status'; readonly deviceId: string; readonly sessionId: string; readonly running: boolean }
   | { readonly type: 'interaction'; readonly deviceId: string; readonly sessionId: string; readonly kind: 'approval' | 'question'; readonly rpcId: string; readonly resolved: boolean }
   | { readonly type: 'session-added'; readonly deviceId: string; readonly sessionId?: string; readonly origin?: 'subagent' }
+  /** Full authoritative archive set after a durable archive/restore change. */
+  | { readonly type: 'archived-sessions-changed'; readonly deviceId: string; readonly archivedSessionIds: readonly string[] }
+  /** Authoritative permanent removal, distinct from archive visibility. */
   | { readonly type: 'session-removed'; readonly deviceId: string; readonly sessionId: string }
 
 /** REST API responses exposed by cockpit-local. */

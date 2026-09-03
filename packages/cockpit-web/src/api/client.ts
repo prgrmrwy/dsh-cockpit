@@ -28,6 +28,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export interface DevicesPayload { readonly device: readonly DeviceStatusFacts[] }
 
+/** Short-lived, device-bound credential delivered to the optional bridge via
+ * the workbench iframe handshake. It is deliberately not the persistent
+ * HttpOnly cockpit token. */
+export interface BridgeCapabilityPayload {
+  readonly capability: string
+  readonly expiresAt: number
+  readonly protocolVersion?: number
+}
+
 export const api = {
   bootstrap: () => request<{ ok: true }>('/bootstrap'),
   devices: () => request<DevicesPayload>('/devices'),
@@ -36,4 +45,8 @@ export const api = {
   removeDevice: (input: RemoveDeviceRequest) => request<{ removed: boolean; requiresConfirmation: boolean }>(`/devices/${encodeURIComponent(input.deviceId)}${input.confirmed ? '?confirmed=true' : ''}`, { method: 'DELETE' }),
   refreshDevice: (deviceId: string) => request<{ refreshed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/refresh`, { method: 'POST' }),
   reconnectDevice: (deviceId: string) => request<{ reconnecting: boolean }>(`/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: 'POST' }),
+  /** Marks every currently known completion generation for this device read. */
+  ackCompleted: (deviceId: string) => request<{ acked: boolean }>(`/devices/${encodeURIComponent(deviceId)}/completed/ack`, { method: 'POST' }),
+  /** Requests the short-lived capability used by the iframe bridge handshake. */
+  bridgeCapability: (deviceId: string) => request<BridgeCapabilityPayload>(`/devices/${encodeURIComponent(deviceId)}/bridge/capability`, { method: 'POST' }),
 }

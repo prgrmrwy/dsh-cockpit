@@ -76,14 +76,42 @@ There are only two prerequisites:
   failure / DSH not running / non-DSH service / incompatible version) is
   surfaced directly, because the remote page cannot say it itself.
 
+## Completion reminders: generations, acknowledgement, and manual fallback
+
+The green "completed" reminder on a Device Tab is maintained server-side per
+**root-session generation**: a session idle at first observation gets no
+reminder; one `running → idle` edge arms a reminder for that generation;
+re-running starts a fresh generation and disarms the previous one. "The user
+already saw this generation's result" can arrive from two independent
+sources — the bridge plugin's reported session-open fact, or a manual clear on
+the Device Tab — in either order relative to the completion edge itself; the
+server converges these so that a generation acknowledged at or after
+completion never shows as unread, while that acknowledgement never suppresses
+the *next* genuinely new completion on the same session.
+
+- **The manual fallback is always available**: the "completed" status icon on
+  the Device Tab is itself an independent, accessible clear control (keyboard
+  reachable, does not bubble into switching devices). Activating it clears all
+  of that device's current completion reminders — regardless of whether the
+  bridge plugin is installed or currently on the reliable protocol.
+- **Archiving is an explicit disposition**: archiving a session clears its
+  current completion reminder; restoring an idle archived session does not
+  manufacture a new reminder out of thin air (unless it genuinely runs and
+  goes idle again afterward). Only *permanent* deletion (not archiving) clears
+  a session's running, selection, acknowledgement and reminder state entirely.
+  On older DSH versions that do not emit an archive event, the cockpit never
+  infers deletion merely because a session is momentarily missing from one
+  `session.list` refresh.
+
 ## Bridge plugin (optional): talking to DSH
 
 Core cockpit functionality **does not depend** on any plugin (see
 [Remote requirements](#remote-requirements)). `packages/dsh-cockpit-bridge` is
 an **optional** plugin for the official DSH web client. It runs inside **the
-device's own dsh web page** (a same-origin cordis bundle) and bridges one
-purely browser-local signal — "which session did the user open" — back to the
-cockpit.
+device's own dsh web page** (a same-origin cordis bundle) and losslessly
+bridges one purely browser-local signal — "which session did the user open" —
+back to the cockpit, for precise per-session acknowledgement of completion
+reminders.
 
 ### Why it exists
 
@@ -93,41 +121,59 @@ state**; there is no "selected" signal on the event stream. The cockpit does
 not read iframe DOM by architectural principle, so it cannot observe it either.
 With the plugin installed:
 
-- The cockpit top bar shows a chain icon (`bridgeSeenAt`) — a closed chain means
-  the bridge is connected, a broken chain means no plugin was detected — so you
-  can confirm at a glance that the device's connectivity layer is alive.
+- The cockpit top bar shows a chain icon: a closed chain means the bridge was
+  detected and has recently communicated successfully, a broken chain means no
+  plugin was detected or the bridge connection has gone stale — so you can
+  confirm at a glance whether precise clearing is currently available.
 - Green "completed" reminders clear with **official select semantics**: opening
-  a session clears exactly that session's dot. Without the plugin the behaviour
-  is still correct, just coarser — dots clear only on re-run or session removal.
+  a session clears exactly that session's dot — and this now survives **rapid
+  consecutive selections, archiving immediately after opening, and transient
+  network failures** without losing the acknowledgement. Without the plugin,
+  an outdated plugin, or while the bridge is unreachable, the workbench and
+  status aggregation remain fully correct; the Device Tab's manual clear stays
+  available as the fallback.
 
-### How it talks to DSH
+### The reliable acknowledgement protocol (v2)
 
 | Signal | Plugin side (inside the device's DSH page) | Cockpit side |
 | --- | --- | --- |
-| **Startup hello** | `POST /api/bridge/hello {version}` on page load | Match the device by request `Origin` → record `bridgeSeenAt` → closed chain icon in the top bar |
-| **Session selection** | Subscribe to `current` of the official `sessions.list`; on user click (250 ms debounce) → `POST /api/bridge/session-opened {sessionId}` | Match the device by `Origin` → `clearCompletedSession(sessionId)`, clearing only that session's dot |
+| **Parent handshake** | On iframe `load`, device activation, or a capability refresh, the parent `postMessage`s `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability }` to the iframe using a precise `targetOrigin` | The parent first authenticates via its own same-origin cookie session and calls `POST /api/devices/:id/bridge/capability` to obtain a one-shot, short-TTL capability bound to that device's Origin |
+| **Startup hello** | On receiving the handshake, `POST <cockpitOrigin>/api/bridge/hello {version, protocolVersion, current}` with an `X-DSH-Cockpit-Bridge-Capability` header | Validates the capability → matches the device by `Origin` → records protocol version and last-success time → drives the top bar bridge icon |
+| **Session selection** | Subscribes to `sessions.list.current`; on change, the id is **captured immediately** into a bounded, deduplicated outbox (not re-read later when a timer fires); a 250 ms window only batches the network flush, then each entry is `POST`ed to `.../session-opened {sessionId, current, protocolVersion}`; an entry is removed from the outbox only after an explicit success response | Validates the capability → matches by `Origin` → acknowledges that session's current generation, converging with the completion edge in whichever order they arrive |
+| **Cleared after archive** | When `current` becomes `undefined`, the plugin reports `{ current: null }` and resets its same-value dedup latch, so restoring the same id later can be acknowledged again | Handled per-session without touching other sessions' state |
+| **Failure retry** | Network errors, 401s, and any other non-2xx response all keep the pending acknowledgement; retries are single-flight with a bounded exponential backoff; a new selection, device activation, or a successful hello are all recovery opportunities | Silent failure never disturbs the native DSH page |
 
-- **Device identity is never hardcoded**: the plugin neither needs nor knows
-  which device it runs on. The cockpit matches the request `Origin`
-  (`127.0.0.1:<tunnel port>`, same origin as the device endpoint) against every
-  device's live endpoint. Running inside the DSH page, the plugin naturally
-  carries the correct same-origin `Origin`.
-- **Authentication**: cross-origin fetches use `credentials: include` (the
-  cockpit enables CORS credentials for loopback origins) and pass the token gate
-  via an HttpOnly cookie. On a 401 the plugin requests `GET /api/bootstrap` to
-  obtain the cookie, then retries once.
-- **Only `sessionId` crosses the bridge**: no conversation content, settings or
-  credentials are read or forwarded.
-- **Silent failure**: when the cockpit is unreachable, errors are swallowed
-  (fire-and-forget) and the DSH page is never disturbed; the next session change
-  reports again.
+- **The port is no longer hardcoded**: the plugin does not fetch a fixed
+  `127.0.0.1:3090` anymore — the real Cockpit origin is supplied dynamically by
+  the parent handshake, so the cockpit can run on **any supported
+  `COCKPIT_PORT`** and the bridge still works.
+- **Authentication does not depend on a cross-port cookie**: the persistent
+  `SameSite=Strict` HttpOnly token is never exposed to the plugin. The parent
+  page exchanges its own session for a short-lived, single-purpose capability
+  bound to one device's Origin, and passes it to bridge calls via a request
+  header for the cockpit to validate.
+- **Only the session identity and protocol metadata cross the bridge**: no
+  conversation content, settings, credentials, or provider tokens are read or
+  forwarded.
+- **Silent failure**: when the cockpit is unreachable, the pending
+  acknowledgement queue is retained and retried with backoff, and the DSH page
+  is never disturbed; the outbox has a fixed capacity and TTL, preferring the
+  current and most recent selections, so a long cockpit outage cannot grow it
+  without bound.
+- **Older plugins keep working**: a device still running the legacy (protocol
+  1) plugin continues to report best-effort; the top bar marks it as
+  "connected but not on the reliable protocol" and points at the manual clear
+  fallback.
 
 ### Installation (device side, optional)
 
 On each device that should get bridge capability: add `"dsh-cockpit-bridge"` to
 the bundles in its `dsh.yaml` (ohmydsh manifest), point the profile dependencies
 at this repository's package path, run `dsh build` to materialise it into that
-device's `~/.dsh/profiles/web`, then restart that device's DSH web. See
+device's `~/.dsh/profiles/web`, then restart that device's DSH web. **A device
+already running an older plugin needs a fresh `dsh build` plus a DSH web
+restart to pick up the v2 reliable protocol** — until then it keeps working on
+the legacy protocol without affecting the native workbench. See
 `packages/dsh-cockpit-bridge/README.md` for details.
 
 ## Running it
@@ -209,7 +255,11 @@ command fails closed and refuses to stop or overwrite that process.
 - Remote Settings/Subscriptions/Credentials are never proxied; provider tokens
   are never read or synced. The cockpit installs nothing at runtime — the bridge
   plugin, if deployed, is installed by the user on the device side and reports
-  only a `sessionId`.
+  only a session-selection identity and protocol metadata.
+- Bridge authentication uses a capability bound to one device's Origin, with a
+  short TTL and a single purpose; it never exposes the persistent HttpOnly
+  token to the plugin. The bridge Origin itself is supplied dynamically by the
+  parent handshake, so it always matches the actual `COCKPIT_PORT`.
 - Every `127.0.0.1:<port>` is a secure context, so remote GUIs run natively
   through the tunnel.
 - On catchable signals (SIGINT/SIGTERM) the cockpit conclusively cleans up its
@@ -219,15 +269,40 @@ command fails closed and refuses to stop or overwrite that process.
   was offline cannot be read back (that state has no query field — an rc.2
   protocol limitation). The device's own UI shows them correctly once you enter
   it.
+- The token auth middleware is mounted on an Express 5 (`path-to-regexp` v8)
+  catch-all route; a bare `'*'` is invalid syntax under that combination, and
+  Express rewrites `request.path` relative to the mount point inside
+  path-scoped middleware, so the middleware must read `request.originalUrl` to
+  match the real request path. This implementation detail is enforced by
+  `token.middleware.ts` and a real HTTP integration test
+  (`app-auth.e2e.test.ts`); nothing about it is a concern for API consumers.
 
 For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Verification (measured against the current implementation)
 
-- server vitest 34/34 (registry atomicity / fail-closed corruption, SSH
-  identity, conclusive tunnel teardown, event conversion, device lifecycle,
-  delete confirmation gate, order normalisation)
-- typecheck + build green across all four packages; web vitest 42/42
+- server vitest 104/104 (registry atomicity / fail-closed corruption, SSH
+  identity, conclusive tunnel teardown, event conversion including the archive
+  set, device lifecycle including the generation state machine / ack-edge
+  convergence / archive-restore, bridge capability lifecycle and
+  authorization, delete confirmation gate, order normalisation, **a real
+  NestJS+Express integration test confirming the auth middleware actually
+  gates every `/api/*` route**)
+- web vitest 59/59 (mouse/keyboard/non-bubbling coverage for the Device Tab
+  completion clear control, reliable/legacy/stale/missing bridge health
+  presentation, Workbench bridge handshake and graceful degradation)
+- bridge vitest 13/13 (lossless rapid multi-select, archive-before-flush,
+  failure retry, outbox capacity/TTL, activation re-assertion, DSH page
+  unaffected by bridge failures)
+- typecheck + build green across all five packages (including the bridge's
+  host/client dual entry points and source maps)
+- Real browser acceptance (agent-browser + an isolated cockpit instance + a
+  real local DSH + a controllable fake DSH): non-default port deployment,
+  bridge capability issuance and Origin binding, live reliable/legacy/stale
+  bridge health presentation, complete→open, ack-before-edge,
+  edge-before-ack, archive immediately after completion, restore without
+  re-arming, a genuinely new completion re-arming on the next generation, and
+  mouse/keyboard manual clearing without switching the selected device
 - Real E2E (isolated home + a real `lumevm`): add → own tunnel → READY →
   workbench HTTP 200 → real status counts
 - Fault injection: kill the cockpit's ssh → immediately CONNECTING →

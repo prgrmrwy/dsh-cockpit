@@ -143,6 +143,10 @@ export class DualEventStream extends EventEmitter {
           ...(sessionId === undefined ? {} : { sessionId }),
           ...(payload.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
         }
+      case 'host/archived-sessions-changed':
+        return !Array.isArray(payload.archivedSessionIds) || payload.archivedSessionIds.some(id => typeof id !== 'string')
+          ? undefined
+          : { type: 'archived-sessions-changed', deviceId: this.#deviceId, archivedSessionIds: payload.archivedSessionIds }
       case 'host/session-removed':
         return sessionId === undefined ? undefined : { type: 'session-removed', deviceId: this.#deviceId, sessionId }
       default:

@@ -105,6 +105,17 @@ body {
 .session-chip .dsh-state-dot-matrix,
 .session-chip .dsh-state-dot { vertical-align: middle; }
 .session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
+/* completed chip is the one interactive status: a real <button> so mouse,
+   keyboard and assistive tech can activate "clear this device's completion
+   reminders" independently of the tab's own select/switch behavior. It must
+   look IDENTICAL to the other (purely decorative) chips at rest — the
+   difference is only the pointer affordance and focus ring, not appearance. */
+.session-chip-clear {
+  appearance: none; border: 1px solid transparent; margin: 0; font: inherit;
+  cursor: pointer;
+}
+.session-chip-clear:hover { color: var(--fg); background: var(--bg-hover); }
+.session-chip-clear:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
 .topbar-actions { display: flex; gap: 4px; }
 .ghost {
   appearance: none; background: transparent; border: 1px solid var(--border);

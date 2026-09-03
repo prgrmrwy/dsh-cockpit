@@ -46,6 +46,20 @@ describe('dual event stream conversion', () => {
     // keep origin-less host/session-status frames correctly filtered).
     sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r8', method: 'host/session-added', payload: { sessionId: 'sub-1', blank: false, origin: 'subagent' } }))
     expect(events).toContainEqual({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-1', origin: 'subagent' })
+
+    // host/archived-sessions-changed carries the full authoritative set, and
+    // is distinct from host/session-removed (permanent deletion).
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r9', method: 'host/archived-sessions-changed', payload: { archivedSessionIds: ['s1', 's2'] } }))
+    expect(events).toContainEqual({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1', 's2'] })
+    // A malformed payload (non-array / non-string entries) must be ignored,
+    // not throw and not emit a bogus event.
+    const before = events.length
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r10', method: 'host/archived-sessions-changed', payload: { archivedSessionIds: 'not-an-array' } }))
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r11', method: 'host/archived-sessions-changed', payload: { archivedSessionIds: [1, 2] } }))
+    expect(events).toHaveLength(before)
+
+    sockets[1]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r12', method: 'host/session-removed', payload: { sessionId: 's1' } }))
+    expect(events).toContainEqual({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
     stream.dispose()
   })
 })

@@ -64,12 +64,29 @@
   时间；连接层知道的具体原因（SSH 不通 / 隧道失败 / DSH 未运行 / 非 DSH 服务 /
   版本不兼容）直接呈现，因为远端页面自己说不出来。
 
+## 完成提醒：生成、已读确认与人工兜底
+
+Device Tab 上的绿色「已完成」提醒由驾驶舱服务端按**每个根会话的运行轮次**
+（generation）维护：首次观测到的空闲会话不提醒；一次 `running → idle` 边缘
+为该轮产生一条提醒；重新运行开始新一轮并解除旧提醒。「用户已经看过这轮结果」
+可能来自两个独立来源——桥接插件上报的会话打开事实，或 Device Tab 上的人工清除——
+且两者与完成边缘本身可能以任意顺序到达；服务端把它们收敛为「该轮在完成时或
+完成后已被看到就不再未读」，同时不让这次确认压制该会话*下一轮*真正的新完成。
+
+- **人工兜底始终可用**：Device Tab 上「已完成」状态图标本身就是一个独立的可
+  访问清除控件（键盘可达、不冒泡到设备切换），点击/激活即可清除该设备当前
+  全部完成提醒——不依赖桥接插件是否安装或是否处于可靠协议。
+- **归档即处置**：会话被归档会清除其当前完成提醒；恢复一个空闲的已归档会话
+  不会凭空制造新提醒（除非它之后真的重新运行又空闲）。永久删除（而非归档）
+  才会清空该会话的运行、选择、已读协调与提醒状态。旧版本 DSH 若不提供归档
+  事件，驾驶舱也不会仅因一次 `session.list` 刷新中会话暂时缺席就当作已删除。
+
 ## 桥接插件（可选）：与 DSH 的通信
 
 驾驶舱核心功能**不依赖**任何插件（见「远端要求」）；`packages/dsh-cockpit-bridge`
 是一个**可选**的官方 DSH web 客户端插件，运行在**设备自己的 dsh web 页面**里
 （同源 cordis bundle），把 DSH 页面中一个纯浏览器本地的信号——「用户点击/打开了
-哪个会话」——桥接给驾驶舱。
+哪个会话」——无损地桥接给驾驶舱，用于完成提醒的精确按会话已读确认。
 
 ### 为什么需要它
 
@@ -77,33 +94,44 @@
 是**纯浏览器内存状态**，事件流上没有任何「选中」信号；驾驶舱按架构原则不读
 iframe DOM，也拿不到它。有了插件后：
 
-- 驾驶舱顶栏显示链条图标（`bridgeSeenAt`）：闭合链条表示桥接已连接，断开链条
-  表示未检测到插件，一眼确认该设备连接层活着；
-- 完成提醒绿点按**官方 select 语义**精确清除——打开哪个会话就清除哪个会话的绿点。
-  不装插件时行为仍然正确：绿点只能靠「重新运行 / 会话删除」清除。
+- 驾驶舱顶栏显示链条图标：闭合链条表示检测到桥接且最近成功通信，断开链条
+  表示未检测到插件或桥接连接已过期，一眼确认该设备的精确清除能力是否可用；
+- 完成提醒绿点按**官方 select 语义**精确清除——打开哪个会话就清除哪个会话的绿点，
+  且**快速连续打开多个会话、打开后立即归档、网络瞬断**等情况下也不丢失确认。
+  不装插件、装的是旧版本、或桥接暂不可达时，行为仍然正确：Device Tab 的人工
+  清除兜底始终可用。
 
-### 与 DSH 的通信
+### 可靠确认协议（v2）
 
 | 信号 | 插件侧（设备 DSH 页面内） | 驾驶舱侧 |
 | --- | --- | --- |
-| **启动 hello** | 页面加载即 `POST /api/bridge/hello {version}` | 按请求 `Origin` 匹配设备 → 记 `bridgeSeenAt` → 顶栏闭合链条图标 |
-| **会话选择** | 订阅官方 `sessions.list` 的 `current`，用户点击会话（250ms 防抖）→ `POST /api/bridge/session-opened {sessionId}` | 按 `Origin` 匹配设备 → `clearCompletedSession(sessionId)`，只清该会话绿点 |
+| **父页面握手** | iframe `load`、设备被激活、能力刷新时，父页面通过精确 `targetOrigin` 向 iframe `postMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability })` | 父页面先以同源 Cookie 认证向 `POST /api/devices/:id/bridge/capability` 换取绑定该设备 Origin、短 TTL 的一次性能力 |
+| **启动 hello** | 收到握手后 `POST <cockpitOrigin>/api/bridge/hello {version, protocolVersion, current}`，带 `X-DSH-Cockpit-Bridge-Capability` 头 | 校验能力 → 按 `Origin` 匹配设备 → 记协议版本与最近成功时间 → 顶栏桥接图标 |
+| **会话选择** | 订阅官方 `sessions.list.current`，变化时**立即捕获**该 ID 入有界去重 outbox（不是定时器触发时才读），250ms 合并网络请求后逐个 `POST .../session-opened {sessionId, current, protocolVersion}`；仅服务端明确成功后才从 outbox 移除 | 校验能力 → 按 `Origin` 匹配设备 → 确认该会话当前 generation，随乱序到达的完成边缘收敛 |
+| **归档后清空** | `current` 变为 `undefined` 时上报 `{ current: null }` 并重置同值去重闩，之后恢复同一 ID 仍可再次确认 | 按会话精确处理，不清除其它会话状态 |
+| **失败重试** | 网络异常、401、其它非 2xx 均保留待确认状态，单飞、有上限指数退避重试；新选择、设备激活、成功 hello 都是恢复机会 | 静默失败不影响原生 DSH 页面 |
 
-- **设备识别不写死**：插件不需要、也不知道自己是哪台设备——驾驶舱拿请求的
-  `Origin`（`127.0.0.1:<隧道端口>`，与设备 endpoint 同源）与各设备实时端点比对
-  匹配。插件运行在 DSH 页面内，天然携带正确的同源 Origin。
-- **认证**：跨源 fetch 带 `credentials: include`（驾驶舱对 loopback origin 开启
-  CORS credentials），凭 HttpOnly cookie 通过 token 门禁；收到 401 时先请求
-  `GET /api/bootstrap` 领取 cookie，再重发一次。
-- **只传 `sessionId`**：不读、不传会话内容、settings、credentials。
-- **静默失败**：驾驶舱不可达时吞掉错误（fire-and-forget），绝不扰动 DSH 页面；
-  下一次会话变化会重新上报。
+- **端口不写死**：插件不再固定请求 `127.0.0.1:3090`——实际 Cockpit Origin 由
+  父页面握手动态提供，因此驾驶舱运行在 `COCKPIT_PORT` 指定的**任意受支持端口**
+  上都能正常工作。
+- **认证不依赖跨端口 Cookie**：`SameSite=Strict` 的持久 HttpOnly token 从不
+  暴露给插件；父页面用自己的会话凭据换取一个绑定设备 Origin、短期有效、
+  单一用途的能力串，通过请求头传给桥接调用，驾驶舱据此校验。
+- **只传会话标识与协议元数据**：不读、不传会话内容、settings、credentials、
+  provider token。
+- **静默失败**：桥接不可达时保留待确认队列并按退避重试，绝不扰动 DSH 页面；
+  outbox 有固定容量与 TTL，优先保留当前与最近选择，避免驾驶舱长期离线时
+  无界增长。
+- **旧版插件兼容**：仍运行旧版（协议 1）插件的设备继续按尽力而为方式上报，
+  顶栏图标会标注为「已连接但非可靠协议」，并提示可用人工清除兜底。
 
 ### 安装（设备侧，可选）
 
 每台要享受桥接能力的设备：在其 `dsh.yaml`（ohmydsh manifest）的 bundles 里加入
 `"dsh-cockpit-bridge"`，profile dependencies 指向本仓库包路径，`dsh build`
-物化到该设备 `~/.dsh/profiles/web`，再重启该设备的 DSH web。详见
+物化到该设备 `~/.dsh/profiles/web`，再重启该设备的 DSH web。**已安装旧版插件的
+设备需要重新 `dsh build` 并重启该设备 DSH web 才能获得 v2 可靠协议**——重启前
+仍按旧协议尽力而为工作，不影响原生工作台。详见
 `packages/dsh-cockpit-bridge/README.md`。
 
 ## 运行
@@ -176,15 +204,20 @@ fail-closed 拒绝停止或覆盖该进程。
 ## 安全与边界
 
 - 驾驶舱服务只监听 `127.0.0.1`，凭据仅复用系统 OpenSSH 免密，**不保存**密码/私钥/passphrase。
-- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；驾驶舱运行时零安装——桥接插件（若部署）由用户在设备侧自行安装，只上报 sessionId。
+- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；驾驶舱运行时零安装——桥接插件（若部署）由用户在设备侧自行安装，只上报会话选择标识与协议元数据。
+- 桥接鉴权使用绑定设备 Origin、短 TTL、单一用途的能力串，从不向插件暴露持久 HttpOnly token；桥接 Origin 由父页面握手动态提供，与 `COCKPIT_PORT` 实际端口保持一致。
 - 每个 `127.0.0.1:<port>` 均为 secure context，远端 GUI 经隧道原生运行。
 - 可捕获信号（SIGINT/SIGTERM）下终结性清理自有 SSH 子进程（无 `ppid=1` 孤儿），不误杀用户其他 SSH 连接。
 - 已知边界：驾驶舱离线期间的 approval/question **事件**读不回来（该状态无查询字段，属 rc.2 协议限制）；进入设备后其自身 UI 会正常显示。
+- Token 鉴权中间件挂载在 Express 5（`path-to-regexp` v8）通配路由上；该版本组合下裸 `'*'` 语法已失效，且 Express 会将中间件内部 `request.path` 相对挂载点重写，因此中间件必须读取 `request.originalUrl` 才能正确匹配真实路径——这一实现细节由 `token.middleware.ts` 与配套的真实 HTTP 集成测试（`app-auth.e2e.test.ts`）保证，不需要使用方关心。
 
 ## 验证（当前实现已通过的实测）
 
-- server vitest 34/34（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换、设备生命周期、删除确认门禁、排序归一化）
-- 四包 typecheck + build 全绿；web vitest 42/42
+- server vitest 104/104（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
+- web vitest 59/59（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接可靠/legacy/过期/缺失状态呈现、Workbench 桥接握手与失败降级）
+- bridge vitest 13/13（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、DSH 页面不受失败影响）
+- 五包 typecheck + build 全绿（含 bridge host/client 双入口与 source map）
+- 真实浏览器验收（agent-browser + 隔离 Cockpit 实例 + 真实本机 DSH + 可控 fake DSH）：非默认端口部署、桥接 capability 签发与 Origin 校验、可靠/legacy/过期桥接状态实时呈现、完成→打开、ack-before-edge、edge-before-ack、打开后立即归档、恢复不重新点亮、下一轮真正完成重新点亮、鼠标与键盘人工清除且不切换设备
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
 - 5 台 iframe 常驻内存基准：JS heap 增量 ≈ 13KB/台（浏览器原生隔离，驾驶舱机制开销可忽略）
