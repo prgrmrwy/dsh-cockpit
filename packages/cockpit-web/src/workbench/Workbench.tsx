@@ -22,6 +22,18 @@ export interface WorkbenchProps {
 
 const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
 const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config' as const
+const CAPABILITY_EXPIRED_MESSAGE = 'dsh-cockpit:capability-expired' as const
+
+/** Bridge capabilities expire on the server after a short TTL. The parent
+ * renews before expiry (grace window below) so a user staying on one device
+ * never loses reliable acknowledgements; renewal failures retry with bounded
+ * exponential backoff. */
+const CAPABILITY_RENEW_GRACE_MS = 15_000
+const CAPABILITY_RENEW_RETRY_BASE_MS = 15_000
+const CAPABILITY_RENEW_RETRY_MAX_MS = 120_000
+/** The bridge reports an invalid/expired capability as backstop for hidden
+ * iframes where timers are throttled; the parent rate-limits its renewal. */
+const CAPABILITY_RENEW_THROTTLE_MS = 5_000
 
 interface FrameInfo {
   readonly deviceId: string
@@ -42,6 +54,9 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
   const capabilityRef = useRef<Map<string, BridgeCapabilityPayload>>(new Map())
+  const renewalTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; attempt: number }>>(new Map())
+  const renewalInFlightRef = useRef<Set<string>>(new Set())
+  const renewalRequestedAtRef = useRef<Map<string, number>>(new Map())
 
   const notifyActivated = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
@@ -69,19 +84,117 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     }
   }
 
+  /** Capability renewal helpers — one routine shared by the initial issue,
+   * the expiry timer, iframe load/activation and the bridge backstop signal,
+   * so every path re-sends bridge-config exactly once after issuance. */
+  const clearRenewalTimer = (deviceId: string): void => {
+    const entry = renewalTimersRef.current.get(deviceId)
+    if (entry !== undefined) {
+      clearTimeout(entry.timer)
+      renewalTimersRef.current.delete(deviceId)
+    }
+  }
+
+  /** Schedule at an exact delay (used for retry backoff). */
+  const setRenewalTimer = (deviceId: string, delayMs: number, attempt: number): void => {
+    clearRenewalTimer(deviceId)
+    renewalTimersRef.current.set(deviceId, {
+      timer: setTimeout(() => {
+        renewalTimersRef.current.delete(deviceId)
+        renewCapability(deviceId)
+      }, delayMs),
+      attempt,
+    })
+  }
+
+  /** Schedule ahead of a known expiry (deducting the renewal grace window). */
+  const scheduleRenewal = (deviceId: string, expiresAt: number, attempt: number): void => {
+    setRenewalTimer(deviceId, Math.max(0, expiresAt - Date.now() - CAPABILITY_RENEW_GRACE_MS), attempt)
+  }
+
+  const renewCapability = (deviceId: string): void => {
+    if (requestBridgeCapability === undefined) return
+    const frame = registryRef.current.get(deviceId)
+    const iframe = iframeRefs.current.get(deviceId)
+    if (frame === undefined || iframe === undefined || iframe.contentWindow === null) return
+    if (renewalInFlightRef.current.has(deviceId)) return
+    renewalInFlightRef.current.add(deviceId)
+    requestBridgeCapability(deviceId).then(capability => {
+      renewalInFlightRef.current.delete(deviceId)
+      renewalRequestedAtRef.current.set(deviceId, Date.now())
+      capabilityRef.current.set(deviceId, capability)
+      notifyActivated(deviceId)
+      scheduleRenewal(deviceId, capability.expiresAt, 0)
+    }).catch(() => {
+      renewalInFlightRef.current.delete(deviceId)
+      const attempt = renewalTimersRef.current.get(deviceId)?.attempt ?? 0
+      const delay = Math.min(CAPABILITY_RENEW_RETRY_BASE_MS * 2 ** attempt, CAPABILITY_RENEW_RETRY_MAX_MS)
+      setRenewalTimer(deviceId, delay, attempt + 1)
+    })
+  }
+
   useEffect(() => {
     if (requestBridgeCapability === undefined || device === undefined || !device.enabled || device.endpoint === undefined) return
     let cancelled = false
-    void requestBridgeCapability(device.deviceId).then(capability => {
+    const deviceId = device.deviceId
+    // Clean slate for this device: a previous timer/in-flight renewal belongs
+    // to the old endpoint or an older device activation.
+    clearRenewalTimer(deviceId)
+    renewalInFlightRef.current.delete(deviceId)
+    requestBridgeCapability(deviceId).then(capability => {
       if (cancelled) return
-      capabilityRef.current.set(device.deviceId, capability)
-      notifyActivated(device.deviceId)
+      renewalRequestedAtRef.current.set(deviceId, Date.now())
+      capabilityRef.current.set(deviceId, capability)
+      notifyActivated(deviceId)
+      scheduleRenewal(deviceId, capability.expiresAt, 0)
     }).catch(() => {
-      // Bridge is optional. A missing capability must not affect the native
-      // workbench or its status aggregation; manual completion clearing remains.
+      // Bridge is optional: a missing capability must never disturb the
+      // native workbench. Still retry with bounded backoff, so one transient
+      // failure at page load does not silently disable precise
+      // acknowledgements until the user switches devices.
+      const attempt = renewalTimersRef.current.get(deviceId)?.attempt ?? 0
+      const delay = Math.min(CAPABILITY_RENEW_RETRY_BASE_MS * 2 ** attempt, CAPABILITY_RENEW_RETRY_MAX_MS)
+      setRenewalTimer(deviceId, delay, attempt + 1)
     })
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+      clearRenewalTimer(deviceId)
+      renewalInFlightRef.current.delete(deviceId)
+    }
   }, [device?.deviceId, device?.endpoint, device?.enabled, requestBridgeCapability])
+
+  // Backstop for hidden iframes (throttled timers): the bridge peeks at the
+  // HTTP status of its own callbacks and asks the parent for a fresh
+  // capability when the old one was rejected. Attribute strictly to OUR
+  // iframe of that device and its exact origin.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent): void => {
+      if (typeof event.data !== 'object' || event.data === null) return
+      if ((event.data as { type?: unknown }).type !== CAPABILITY_EXPIRED_MESSAGE) return
+      let deviceId: string | undefined
+      for (const [id, iframe] of iframeRefs.current) {
+        if (iframe.contentWindow === event.source) {
+          deviceId = id
+          break
+        }
+      }
+      if (deviceId === undefined) return
+      const frame = registryRef.current.get(deviceId)
+      if (frame === undefined) return
+      let expectedOrigin: string
+      try {
+        expectedOrigin = new URL(frame.url).origin
+      } catch {
+        return
+      }
+      if (event.origin !== expectedOrigin) return
+      const requestedAt = renewalRequestedAtRef.current.get(deviceId) ?? 0
+      if (Date.now() - requestedAt < CAPABILITY_RENEW_THROTTLE_MS) return
+      renewCapability(deviceId)
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [requestBridgeCapability])
 
   useEffect(() => {
     if (enabledDeviceIds === undefined) return

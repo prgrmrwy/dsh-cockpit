@@ -1,7 +1,17 @@
-import type { DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
+import { Logger } from '@nestjs/common'
+import type { CockpitEvent, DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { TunnelManager } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
+
+/** Completion-coordination retention ceiling: one entry per session id ever
+ * observed. Live detach keeps entries for lineage continuity, so the map is
+ * pruned back to this bound with conservative eviction rules (see
+ * #pruneSessions). */
+const SESSION_RETENTION_MAX = 2_000
+/** While a baseline reconciliation is in flight, stream events are buffered
+ * instead of applied; this caps the buffer against pathological floods. */
+const EVENT_BUFFER_CAP = 2_000
 
 export interface LiveDeviceFacts {
   readonly deviceId: string
@@ -32,8 +42,12 @@ export interface DeviceLifecycleOptions {
   /** Reports the local forward port a remote tunnel actually bound, so the
    * owner can persist it as this device's stable port. */
   readonly onLocalPort?: (deviceId: string, localPort: number) => void
+  /** Bounded wait for baseline RPCs during reconciliation. On expiry the
+   * connect attempt is abandoned (backoff retry) or refresh keeps its last
+   * facts; buffered events are still applied before returning. */
+  readonly baselineTimeoutMs?: number
   /** Test seam for the rc.2 client (defaults to a real Rc2Client). */
-  readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
+  readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   /** Test seam for the dual event stream (defaults to a real DualEventStream). */
   readonly createStream?: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
 }
@@ -45,8 +59,10 @@ export class DeviceLifecycle {
   readonly #onFacts: (facts: LiveDeviceFacts) => void
   readonly #onLocalPort: ((deviceId: string, localPort: number) => void) | undefined
   readonly #reconnectDelay: (attempt: number) => number
-  readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions'>> | Pick<Rc2Client, 'probe' | 'listSessions'>
+  readonly #baselineTimeoutMs: number
+  readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
+  readonly #log = new Logger(DeviceLifecycle.name)
   readonly #abort = new AbortController()
   #runAbort: AbortController | undefined
   #reconnectTask: Promise<void> | undefined
@@ -69,17 +85,31 @@ export class DeviceLifecycle {
   #archivedSessions = new Set<string>()
   /** Subagent session ids learned from the baseline (session.list origin) and
    * session-added frames; host/session-status carries no origin field, so this
-   * prior knowledge is what keeps subagents out of root-session counts. */
+   * prior knowledge is what keeps subagents out of root-session counts. Live
+   * detach (session-removed) KEEPS this knowledge. */
   #subagents = new Set<string>()
   /** Per-session pending interactions (official pendingInteractions: session →
    * key → status). A session's display status is a single value — pending
    * outranks running (official sessionStatuses). */
   #pendingBySession = new Map<string, Map<string, 'approval' | 'question'>>()
+  /** True while a baseline reconciliation is in flight: stream events are
+   * queued to #eventBuffer and never applied directly, so a stale snapshot
+   * cannot roll back newer wire facts. This is the single write gate for all
+   * stream events. */
+  #buffering = false
+  #eventBuffer: CockpitEvent[] = []
+  /** Reconcile single-flight: connect, reconnect and manual refresh share one
+   * routine and must not interleave. */
+  #reconciling = false
+  /** Session ids present in the most recent successful baseline; entries
+   * absent from it and otherwise inactive become retention-eviction
+   * candidates. */
+  #lastBaselineSeen = new Set<string>()
   #stateExplicit: DeviceState
   #diagnostic = ''
   #endpoint: URL | undefined
   #stream: Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
-  #client: Pick<Rc2Client, 'probe' | 'listSessions'> | undefined
+  #client: Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'> | undefined
   #task: Promise<void> | undefined
   #stopped = false
 
@@ -92,6 +122,7 @@ export class DeviceLifecycle {
     this.#onFacts = options.onFacts
     this.#onLocalPort = options.onLocalPort
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
+    this.#baselineTimeoutMs = options.baselineTimeoutMs ?? 5_000
     this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
     this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
   }
@@ -426,7 +457,13 @@ export class DeviceLifecycle {
   }
 
   /** Shared probe/baseline/stream wiring for local and remote endpoints.
-   * Returns connected (stream opened) or false when probe/baseline failed. */
+   * Returns connected (stream opened) or false when probe/baseline failed.
+   *
+   * Ordering matters: the event streams are opened BEFORE any baseline RPC.
+   * events.host does not replay state on open (upstream), so an edge that
+   * happens while session.list/workspace.list are in flight would otherwise
+   * be lost forever. With subscribe-first, those edges are buffered and
+   * replayed after the baseline in arrival order. */
   async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<boolean> {
     this.#client = await this.#createClient(endpoint)
     const probe = await this.#client.probe()
@@ -436,65 +473,235 @@ export class DeviceLifecycle {
       this.#endpoint = undefined
       return false
     }
-    // Baseline: the session.list baseline carries running bits; pending
-    // interaction state is event-driven only (official SessionManager keeps
-    // pendingInteractions manager-owned exactly the same way), so clear it.
-    const sessions = await this.#client.listSessions()
-    this.#refreshSubagents(sessions)
-    this.#pendingBySession.clear()
-    this.#syncSessions(sessions)
-
     this.#stream = this.#createStream(endpoint)
-    this.#stream.on('event', event => {
-      switch (event.type) {
-        case 'session-status':
-          // host/session-status carries no origin; a session known as a
-          // subagent (baseline origin or session-added) must not contribute to
-          // root-session counts.
-          if (this.#subagents.has(event.sessionId)) break
-          this.#observeRunning(event.sessionId, event.running)
-          break
-        case 'interaction': {
-          if (this.#subagents.has(event.sessionId)) break
-          this.#trackInteraction(event.sessionId, event.rpcId, event.kind, event.resolved)
-          break
-        }
-        case 'session-added':
-          // session-added carries the origin marker; remember subagents so the
-          // origin-less status frames stay excluded.
-          if (event.origin === 'subagent' && event.sessionId !== undefined) {
-            this.#subagents.add(event.sessionId)
-            this.#pruneSubagent(event.sessionId)
-          }
-          break
-        case 'archived-sessions-changed': {
-          const nextArchived = new Set<string>(event.archivedSessionIds)
-          for (const sessionId of nextArchived) {
-            if (this.#subagents.has(sessionId)) continue
-            const state = this.#sessions.get(sessionId)
-            if (state !== undefined) {
-              state.acknowledgedGeneration = state.generation
-              state.completedGeneration = undefined
-            }
-            this.#pendingBySession.delete(sessionId)
-            if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
-          }
-          this.#archivedSessions = nextArchived
-          break
-        }
-        case 'session-removed':
-          this.#sessions.delete(event.sessionId)
-          this.#pendingBySession.delete(event.sessionId)
-          this.#subagents.delete(event.sessionId)
-          this.#archivedSessions.delete(event.sessionId)
-          if (this.#bridgeSelection === event.sessionId) this.#bridgeSelection = undefined
-          break
-      }
-      this.#emitFacts()
-    })
-    await this.#stream.open()
+    this.#stream.on('event', event => this.#onStreamEvent(event))
+    this.#buffering = true
+    try {
+      await this.#stream.open()
+    } catch (cause) {
+      this.#buffering = false
+      const message = cause instanceof Error ? cause.message : String(cause)
+      this.#log.warn(`${this.deviceId}: event stream open failed: ${message}`)
+      await onFailure?.()
+      this.#stream.dispose()
+      this.#stream = undefined
+      this.#endpoint = undefined
+      return false
+    }
+    const reconciled = await this.#reconcileBaseline()
+    if (reconciled !== 'ok') {
+      // Baseline RPC failed/timed out. The buffered events were already
+      // applied by the reconcile routine's unwind, but without a session
+      // baseline the aggregation cannot be trusted: tear the generation down
+      // and let the connect loop retry (events lost during a failed
+      // connection are a documented protocol limitation, same as a drop).
+      await this.#stream.dispose()
+      this.#stream = undefined
+      await onFailure?.()
+      this.#endpoint = undefined
+      return false
+    }
     this.#setState(probe.state === 'READY' ? 'READY' : 'DEGRADED', probe.diagnostic)
     return true
+  }
+
+  /** Single wire gate for every stream event. While a baseline reconciliation
+   * is in flight events are queued (bounded), never applied directly; the
+   * reconcile routine replays them in arrival order AFTER the baseline, so a
+   * stale snapshot can neither roll back newer events nor manufacture wrong
+   * edges. */
+  #onStreamEvent(event: CockpitEvent): void {
+    if (this.#buffering) {
+      if (this.#eventBuffer.length >= EVENT_BUFFER_CAP) this.#eventBuffer.shift()
+      this.#eventBuffer.push(event)
+      return
+    }
+    this.#applyEvent(event)
+  }
+
+  /** Apply one buffered or live event to the volatile aggregation state. */
+  #applyEvent(event: CockpitEvent): void {
+    switch (event.type) {
+      case 'session-status':
+        // host/session-status carries no origin; a session known as a
+        // subagent (baseline origin or session-added) must not contribute to
+        // root-session counts.
+        if (this.#subagents.has(event.sessionId)) break
+        this.#observeRunning(event.sessionId, event.running)
+        break
+      case 'interaction': {
+        if (this.#subagents.has(event.sessionId)) break
+        this.#trackInteraction(event.sessionId, event.rpcId, event.kind, event.resolved)
+        break
+      }
+      case 'session-added':
+        // session-added carries the origin marker; remember subagents so the
+        // origin-less status frames stay excluded.
+        if (event.origin === 'subagent' && event.sessionId !== undefined) {
+          this.#subagents.add(event.sessionId)
+          this.#pruneSubagent(event.sessionId)
+        }
+        break
+      case 'archived-sessions-changed': {
+        const nextArchived = new Set<string>(event.archivedSessionIds)
+        for (const sessionId of nextArchived) {
+          if (this.#subagents.has(sessionId)) continue
+          const state = this.#sessions.get(sessionId)
+          if (state !== undefined) {
+            state.acknowledgedGeneration = state.generation
+            state.completedGeneration = undefined
+          }
+          this.#pendingBySession.delete(sessionId)
+          if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
+        }
+        this.#archivedSessions = nextArchived
+        break
+      }
+      case 'session-removed': {
+        // Live detach, NOT permanent deletion: drop the reminder and remove
+        // the session from every count surface, but retain its generation/ack
+        // lineage and the subagent classification, so a later reappearance
+        // continues the same run identity and subagent status frames stay
+        // excluded from root counts (session.list re-lists detached
+        // persisted sessions as cold idle).
+        const state = this.#sessions.get(event.sessionId)
+        if (state !== undefined) {
+          state.running = false
+          state.completedGeneration = undefined
+        }
+        this.#pendingBySession.delete(event.sessionId)
+        this.#archivedSessions.delete(event.sessionId)
+        if (this.#bridgeSelection === event.sessionId) this.#bridgeSelection = undefined
+        break
+      }
+    }
+    this.#emitFacts()
+  }
+
+  /** One reconciliation routine shared by connect, reconnect and manual
+   * refresh: buffer events, fetch both baselines (session + archive),
+   * apply them, replay the buffer in order, then resume direct application.
+   * Returns 'ok' | 'failed' | 'skipped' (another reconcile is in flight). */
+  async #reconcileBaseline(): Promise<'ok' | 'failed' | 'skipped'> {
+    if (this.#reconciling || this.#client === undefined) return 'skipped'
+    this.#reconciling = true
+    this.#buffering = true
+    this.#eventBuffer = []
+    let baseline: {
+      sessions: { ok: true; value: Awaited<ReturnType<Rc2Client['listSessions']>> } | { ok: false; reason: unknown }
+      workspace: { ok: true; value: Awaited<ReturnType<Rc2Client['listWorkspaces']>> } | { ok: false; reason: unknown }
+    }
+    try {
+      baseline = await this.#fetchBaselines()
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause)
+      this.#log.warn(`${this.deviceId}: baseline fetch aborted: ${reason}`)
+      return 'failed'
+    }
+    try {
+      if (!baseline.sessions.ok) {
+        const reason = baseline.sessions.reason instanceof Error ? baseline.sessions.reason.message : String(baseline.sessions.reason)
+        this.#log.warn(`${this.deviceId}: session.list baseline failed: ${reason}`)
+        return 'failed'
+      }
+      const sessions = baseline.sessions.value
+      if (baseline.workspace.ok) {
+        // Archive baseline: workspace.list is the reconnect baseline for the
+        // archive set (events.host never replays it). In-flight
+        // archived-sessions-changed events were buffered and replay below, so
+        // they win over this (older) snapshot by construction.
+        this.#archivedSessions = new Set(baseline.workspace.value.archivedSessionIds)
+      } else {
+        // Compatible devices without workspace.list: keep the archive set
+        // event-driven (current behavior) and record the reason.
+        const reason = baseline.workspace.reason instanceof Error ? baseline.workspace.reason.message : String(baseline.workspace.reason)
+        this.#log.warn(`${this.deviceId}: workspace.list unavailable, archive baseline stays event-driven: ${reason}`)
+      }
+      this.#lastBaselineSeen = new Set(sessions.map(s => s.sessionId))
+      this.#refreshSubagents(sessions)
+      this.#pendingBySession.clear()
+      this.#syncSessions(sessions)
+      this.#replayBuffer()
+      this.#pruneSessions()
+      return 'ok'
+    } finally {
+      // Even on failure the buffered events are real wire facts: apply them
+      // instead of dropping them (refresh keeps last facts when the baseline
+      // itself failed).
+      this.#applyEventBuffer()
+      this.#buffering = false
+      this.#eventBuffer = []
+      this.#reconciling = false
+    }
+  }
+
+  #applyEventBuffer(): void {
+    for (const event of this.#eventBuffer.splice(0)) this.#applyEvent(event)
+  }
+
+  #replayBuffer(): void {
+    // Replay is synchronous: no stream message can interleave, so the
+    // buffered order is preserved exactly.
+    this.#applyEventBuffer()
+  }
+
+  /** Fetch session.list + workspace.list in parallel under one bounded
+   * timeout. Each result is normalized to { ok, value | reason } so a missing
+   * workspace.list degrades without failing the connection. */
+  async #fetchBaselines(): Promise<{
+    sessions: { ok: true; value: Awaited<ReturnType<Rc2Client['listSessions']>> } | { ok: false; reason: unknown }
+    workspace: { ok: true; value: Awaited<ReturnType<Rc2Client['listWorkspaces']>> } | { ok: false; reason: unknown }
+  }> {
+    const client = this.#client!
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`baseline timed out after ${this.#baselineTimeoutMs}ms`)), this.#baselineTimeoutMs)
+      timer.unref?.()
+    })
+    try {
+      const [sessions, workspace] = await Promise.race([
+        Promise.allSettled([client.listSessions(), client.listWorkspaces()]),
+        timeout,
+      ]) as [
+        PromiseSettledResult<Awaited<ReturnType<Rc2Client['listSessions']>>>,
+        PromiseSettledResult<Awaited<ReturnType<Rc2Client['listWorkspaces']>>>,
+      ]
+      return {
+        sessions: sessions.status === 'fulfilled'
+          ? { ok: true, value: sessions.value }
+          : { ok: false, reason: sessions.reason },
+        workspace: workspace.status === 'fulfilled'
+          ? { ok: true, value: workspace.value }
+          : { ok: false, reason: workspace.reason },
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
+  /** Bounded retention for #sessions: live detach keeps entries for lineage,
+   * so evict the least-recently-observed inactive entries once the cap is
+   * exceeded. Eviction is conservative — never a running session, a session
+   * with an unread completion reminder, the current bridge selection, an
+   * archived session, a subagent, or a session present in the latest
+   * baseline. */
+  #pruneSessions(): void {
+    if (this.#sessions.size <= SESSION_RETENTION_MAX) return
+    const candidates: string[] = []
+    for (const [sessionId, state] of this.#sessions) {
+      if (state.running) continue
+      if (state.completedGeneration === state.generation) continue
+      if (this.#bridgeSelection === sessionId) continue
+      if (this.#archivedSessions.has(sessionId)) continue
+      if (this.#lastBaselineSeen.has(sessionId)) continue
+      if (this.#subagents.has(sessionId)) continue
+      candidates.push(sessionId)
+    }
+    // Insertion order approximates least-recently-observed.
+    for (const sessionId of candidates) {
+      if (this.#sessions.size <= SESSION_RETENTION_MAX) break
+      this.#sessions.delete(sessionId)
+    }
   }
 
   #waitForDisconnect(signal: AbortSignal): Promise<void> {
@@ -520,15 +727,14 @@ export class DeviceLifecycle {
 
   async refresh(): Promise<void> {
     if (!this.#record.enabled || this.#stopped || this.#client === undefined) return
-    try {
-      const sessions = await this.#client.listSessions()
-      this.#refreshSubagents(sessions)
-      this.#pendingBySession.clear()
-      this.#syncSessions(sessions)
-      this.#emitFacts()
-    } catch {
-      // Keep last known facts; disconnect path will surface an error state.
-    }
+    // Shared reconciliation: buffered events are never dropped and stale
+    // snapshots never roll back newer wire facts. On failure keep last known
+    // facts; the disconnect path will surface an error state if the streams
+    // actually died.
+    await this.#reconcileBaseline().catch(cause => {
+      this.#log.warn(`${this.deviceId}: refresh reconciliation failed: ${cause instanceof Error ? cause.message : String(cause)}`)
+    })
+    this.#emitFacts()
   }
 
   #setState(state: DeviceState, diagnostic: string): void {

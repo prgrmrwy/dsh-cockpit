@@ -234,4 +234,119 @@ describe('workbench', () => {
     expect(frame()!.getAttribute('src')).toBe('http://127.0.0.1:53000/')
     expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
   })
+
+  it('renews the bridge capability before expiry without device switching', async () => {
+    vi.useFakeTimers()
+    try {
+      const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+      const requestBridgeCapability = vi.fn()
+        .mockImplementationOnce(async () => ({ capability: 'tok-1', expiresAt: Date.now() + 60_000 }))
+        .mockImplementationOnce(async () => ({ capability: 'tok-2', expiresAt: Date.now() + 60_000 }))
+      const { container } = render(
+        <Workbench device={a} enabledDeviceIds={['d1']} requestBridgeCapability={requestBridgeCapability} />,
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(1)
+      const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+      const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+      postToA.mockClear()
+
+      // Renewal fires 15s before the 60s expiry: a fresh capability is issued
+      // and the bridge-config handshake is re-sent automatically.
+      await vi.advanceTimersByTimeAsync(45_000)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(2)
+      expect(postToA).toHaveBeenCalledWith(
+        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-2' },
+        'http://127.0.0.1:51000',
+      )
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries a failed renewal with bounded backoff', async () => {
+    vi.useFakeTimers()
+    try {
+      const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+      const requestBridgeCapability = vi.fn()
+        .mockRejectedValueOnce(new Error('cockpit restarting'))
+        .mockImplementation(async () => ({ capability: 'tok-2', expiresAt: Date.now() + 60_000 }))
+      render(<Workbench device={a} enabledDeviceIds={['d1']} requestBridgeCapability={requestBridgeCapability} />)
+      await vi.advanceTimersByTimeAsync(0)
+      // Initial issue failed gracefully (bridge stays optional); the retry is
+      // scheduled 15s later and succeeds.
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('clears the renewal timer when switching devices', async () => {
+    vi.useFakeTimers()
+    try {
+      const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+      const b = device({ deviceId: 'd2', endpoint: 'http://127.0.0.1:52000/' })
+      const requestBridgeCapability = vi.fn()
+        .mockImplementation(async () => ({ capability: 'tok', expiresAt: Date.now() + 60_000 }))
+      const { rerender } = render(
+        <Workbench device={a} enabledDeviceIds={['d1', 'd2']} requestBridgeCapability={requestBridgeCapability} />,
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      rerender(<Workbench device={b} enabledDeviceIds={['d1', 'd2']} requestBridgeCapability={requestBridgeCapability} />)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability.mock.calls.length).toBe(2)
+      // Long past d1's would-be renewal: the timer for the non-current device
+      // was cleared on switch, so no third request comes from d1's slot.
+      await vi.advanceTimersByTimeAsync(50_000)
+      expect(requestBridgeCapability.mock.calls.length).toBe(3)
+      expect(requestBridgeCapability.mock.calls.filter(([id]) => id === 'd1')).toHaveLength(1)
+      expect(requestBridgeCapability.mock.calls.filter(([id]) => id === 'd2')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('renews on a capability-expired signal from its own iframe, throttled within 5s', async () => {
+    vi.useFakeTimers()
+    try {
+      const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
+      const requestBridgeCapability = vi.fn()
+        .mockImplementation(async () => ({ capability: 'tok', expiresAt: Date.now() + 60_000 }))
+      const { container } = render(
+        <Workbench device={a} enabledDeviceIds={['d1']} requestBridgeCapability={requestBridgeCapability} />,
+      )
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(1)
+      const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+      const dispatchExpired = (): void => {
+        const event = new MessageEvent('message', { data: { type: 'dsh-cockpit:capability-expired' }, origin: 'http://127.0.0.1:51000' })
+        Object.defineProperty(event, 'source', { value: frameA.contentWindow })
+        window.dispatchEvent(event)
+      }
+      // Attack/other frames are ignored: a different source or origin does
+      // not trigger a renewal.
+      const foreign = new MessageEvent('message', { data: { type: 'dsh-cockpit:capability-expired' }, origin: 'http://127.0.0.1:51000' })
+      Object.defineProperty(foreign, 'source', { value: {} })
+      window.dispatchEvent(foreign)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(1)
+      // Within the 5s throttle window the backstop does not fire; after it,
+      // the renewal runs and re-sends the handshake.
+      dispatchExpired()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(6_000)
+      dispatchExpired()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(2)
+      // Immediate repeat is throttled again.
+      dispatchExpired()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(requestBridgeCapability).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

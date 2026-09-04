@@ -5,9 +5,15 @@ interface SessionListStateLike { current: string | undefined }
 const COCKPIT_ORIGIN = 'http://127.0.0.1:4317'
 const CAPABILITY = 'short-lived-capability'
 const ok = (status = 200): Pick<Response, 'ok' | 'status'> => ({ ok: status >= 200 && status < 300, status })
+const failResponse = (status: number, code?: string): Pick<Response, 'ok' | 'status' | 'json'> => ({
+  ok: false,
+  status,
+  json: async () => (code === undefined ? {} : { code }),
+})
 
 class FakeWindow {
-  parent: unknown = {}
+  readonly parentPostMessage = vi.fn()
+  readonly parent: unknown = { postMessage: (...args: unknown[]) => { this.parentPostMessage(...args) } }
   readonly listeners = new Set<(event: MessageEvent) => void>()
 
   addEventListener(type: string, listener: EventListenerOrEventListenerObject): void {
@@ -118,7 +124,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.2.0',
+      version: '0.2.1',
       protocolVersion: 2,
       current: 'already-open',
     })
@@ -262,6 +268,55 @@ describe('cockpit bridge client', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(callsFor('/api/bridge/hello')).toHaveLength(1)
     expect(callsFor('/api/bridge/session-opened')).toHaveLength(2)
+  })
+
+  it('a capability-invalid 400 signals the parent and keeps the ack retryable until renewal', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValueOnce(failResponse(400, 'bridge-capability-invalid')).mockResolvedValue(ok())
+
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    expect(callsFor('/api/bridge/session-opened')).toHaveLength(1)
+    // The bridge tells the parent that the capability died and keeps the ack.
+    const fakeWindow = window as unknown as FakeWindow
+    expect(fakeWindow.parentPostMessage).toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:capability-expired' },
+      COCKPIT_ORIGIN,
+    )
+    // The parent renews: a fresh config resets hello and the retried ack is
+    // only removed after an explicit success.
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(callsFor('/api/bridge/hello')).toHaveLength(1)
+    expect(bodiesFor('/api/bridge/session-opened')).toEqual([
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+      { protocolVersion: 2, sessionId: 'a', current: 'a' },
+    ])
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(callsFor('/api/bridge/session-opened')).toHaveLength(2)
+  })
+
+  it('an unrecognized 400 does not claim a capability problem', async () => {
+    const { ctx, set } = fakeCtx()
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+    fetchMock.mockResolvedValueOnce(failResponse(400, 'bad-request')).mockResolvedValue(ok())
+
+    set('a')
+    await vi.advanceTimersByTimeAsync(250)
+    const fakeWindow = window as unknown as FakeWindow
+    expect(fakeWindow.parentPostMessage).not.toHaveBeenCalled()
+    // Still retried (bounded backoff), same as any other non-2xx.
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(bodiesFor('/api/bridge/session-opened')).toHaveLength(2)
   })
 
   it('uses single-flight bounded exponential retry for network failures', async () => {

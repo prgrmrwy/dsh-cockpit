@@ -24,8 +24,9 @@ export const inject = ['sessions']
 
 const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config'
 const DEVICE_ACTIVATED_MESSAGE = 'dsh-cockpit:device-activated'
+const CAPABILITY_EXPIRED_MESSAGE = 'dsh-cockpit:capability-expired'
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.2.0'
+const PLUGIN_VERSION = '0.2.1'
 const PROTOCOL_VERSION = 2
 
 // These limits are deliberately implementation details rather than protocol.
@@ -161,8 +162,33 @@ export function apply(ctx: ClientContext): void {
       }, delay)
     }
 
-    const fail = (status?: number): void => {
-      if (status === 401) helloReady = false
+    /** Read the structured error code the cockpit returns, when present. */
+    const readErrorCode = async (response: Response): Promise<string | undefined> => {
+      try {
+        const body = await response.json() as { code?: unknown }
+        return typeof body.code === 'string' ? body.code : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    const isCapabilityFailure = (status: number | undefined, code: string | undefined): boolean =>
+      status === 401 || (status === 400 && code === 'bridge-capability-invalid')
+
+    const fail = (status: number | undefined, code: string | undefined, activeConfig: BridgeConfig | undefined): void => {
+      if (activeConfig !== undefined && isCapabilityFailure(status, code)) {
+        // Invalid/expired capability: the parent must issue a fresh one.
+        // Resetting helloReady re-runs the hello with the next config; the
+        // capability-expired message is the backstop for hidden iframes
+        // where the parent's renewal timer is throttled.
+        helloReady = false
+        try {
+          window.parent.postMessage({ type: CAPABILITY_EXPIRED_MESSAGE }, activeConfig.cockpitOrigin)
+        } catch {
+          // Parent gone: stays quiet, outbox keeps the ack for the next
+          // recovery opportunity.
+        }
+      }
       scheduleRetry()
     }
 
@@ -187,12 +213,12 @@ export function apply(ctx: ClientContext): void {
             }, activeConfig)
           } catch {
             failed = true
-            fail()
+            fail(undefined, undefined, activeConfig)
             return
           }
           if (!response.ok) {
             failed = true
-            fail(response.status)
+            fail(response.status, await readErrorCode(response), activeConfig)
             return
           }
           if (config !== activeConfig) {
@@ -219,12 +245,12 @@ export function apply(ctx: ClientContext): void {
             }, activeConfig)
           } catch {
             failed = true
-            fail()
+            fail(undefined, undefined, activeConfig)
             return
           }
           if (!response.ok) {
             failed = true
-            fail(response.status)
+            fail(response.status, await readErrorCode(response), activeConfig)
             return
           }
           // A selection may have been re-enqueued while this request was in

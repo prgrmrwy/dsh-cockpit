@@ -272,6 +272,16 @@ export class ConnectivityService implements OnApplicationShutdown {
     return lifecycle
   }
 
+  /** Best-effort device id for a bridge request origin, used only for
+   * rejection diagnostics — undefined when no enabled device matches. */
+  resolveBridgeDeviceId(origin: string): string | undefined {
+    try {
+      return this.#lifecycleByOrigin(origin).deviceId
+    } catch {
+      return undefined
+    }
+  }
+
   /** Cross-origin bridge selection snapshot. `undefined` means the DSH page has
    * no selected session (for example after archive). `protocolVersion` is
    * accepted (and used by the lifecycle-level ack/edge convergence) but is

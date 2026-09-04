@@ -22,7 +22,7 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 
 ## 协议版本 2（可靠确认）
 
-当前版本实现协议 v2：
+当前版本实现协议 v2（插件版本 0.2.1）：
 
 1. **父页面握手**：驾驶舱父页面在 iframe `load`、设备被激活、或能力需要刷新
    时，通过精确 `targetOrigin` 向 iframe `postMessage`：
@@ -41,10 +41,16 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
    `{ current: null }`（省略 `sessionId`）。**只有服务端明确 2xx 成功后才从
    outbox 移除该项**；网络异常、401、其它非 2xx 均保留并按有上限的指数退避
    单飞重试。
-4. **恢复触发**：新的会话选择、设备被重新激活（`dsh-cockpit:device-activated`
-   或新的 `bridge-config`）、以及一次成功的 hello，都会重新尝试发送 outbox
-   中尚未确认的项。
-5. **outbox 上限**：固定容量与 TTL，容量压力下优先保留当前选择与最近的
+4. **capability 失效自愈**：capability 是短期凭据（服务端 TTL 60s）；父页面
+   会在到期前自动换发并重发握手，使长时间停留在同一设备也能持续确认。作为
+   隐藏 iframe（定时器被浏览器节流）的兜底，插件在收到 **401** 或
+   `bridge-capability-invalid`（400）时重置 hello 状态，并向父页面
+   `postMessage { type: 'dsh-cockpit:capability-expired' }` 请求换发；换发前
+   待确认项继续保留在 outbox 中。
+5. **恢复触发**：新的会话选择、设备被重新激活（`dsh-cockpit:device-activated`
+   或新的 `bridge-config`）、一次成功的 hello、以及 capability 换发成功，
+   都会重新尝试发送 outbox 中尚未确认的项。
+6. **outbox 上限**：固定容量与 TTL，容量压力下优先保留当前选择与最近的
    selection，淘汰最旧的非当前项。
 
 旧版本（协议 1）插件仍可继续工作：驾驶舱按尽力而为方式接受其上报，顶栏会

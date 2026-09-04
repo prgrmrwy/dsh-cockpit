@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
+import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Logger, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
@@ -6,6 +6,8 @@ import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
 export class DevicesController {
+  private readonly logger = new Logger(DevicesController.name)
+
   constructor(
     @Inject(ConnectivityService) private readonly connectivity: ConnectivityService,
     @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
@@ -134,8 +136,9 @@ export class DevicesController {
       throw new HttpException(toError('bad-request', 'sessionId invalid'), HttpStatus.BAD_REQUEST)
     }
     try {
-      this.authorizeBridge(request, origin)
-      this.connectivity.bridgeSessionOpened(origin, sessionId as string | undefined, protocolVersion(body?.protocolVersion))
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.authorizeBridge(request, origin, bridgeProtocol)
+      this.connectivity.bridgeSessionOpened(origin, sessionId as string | undefined, bridgeProtocol)
       return { opened: true, accepted: true }
     } catch (cause) {
       throw toHttp(cause)
@@ -154,8 +157,9 @@ export class DevicesController {
       : typeof body.current === 'string' && body.current !== '' ? body.current : (() => { throw new HttpException(toError('bad-request', 'current invalid'), HttpStatus.BAD_REQUEST) })()
     const version = typeof body?.version === 'string' ? body.version : 'unknown'
     try {
-      this.authorizeBridge(request, origin)
-      this.connectivity.bridgeHello(origin, version, protocolVersion(body?.protocolVersion), current)
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.authorizeBridge(request, origin, bridgeProtocol)
+      this.connectivity.bridgeHello(origin, version, bridgeProtocol, current)
       return { helloed: true, accepted: true }
     } catch (cause) {
       throw toHttp(cause)
@@ -168,12 +172,21 @@ export class DevicesController {
    * carve-out that lets a header-bearing request skip the cookie check does
    * not, and must not, also let a header-less request skip both checks) — so
    * it is legitimately the legacy compatibility path, not an unauthenticated
-   * request, and must not be rejected here. */
-  private authorizeBridge(request: import('express').Request, origin: string): void {
+   * request, and must not be rejected here. Rejections are logged
+   * structurally (device/origin/protocol/reason) so "green dot stopped
+   * clearing" is diagnosable from the server log. */
+  private authorizeBridge(request: import('express').Request, origin: string, protocolVersion = 1): void {
     const token = request.headers[BRIDGE_CAPABILITY_HEADER]
     const capability = Array.isArray(token) ? token[0] : token
     if (capability === undefined) return
-    this.connectivity.validateBridgeCapability(origin, capability)
+    try {
+      this.connectivity.validateBridgeCapability(origin, capability)
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause)
+      const deviceId = this.connectivity.resolveBridgeDeviceId(origin)
+      this.logger.warn(`bridge callback rejected: device=${deviceId ?? 'unknown'} origin=${origin} protocolVersion=${protocolVersion} reason=${reason}`)
+      throw cause
+    }
   }
 }
 

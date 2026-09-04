@@ -11,6 +11,7 @@ class FakeRc2Client {
   constructor(readonly options: { endpoint: URL }) {}
   async probe() { return { ok: true, state: 'READY' as const, diagnostic: 'ok' } }
   async listSessions() { return [] }
+  async listWorkspaces() { return { items: [], archivedSessionIds: [] } }
 }
 
 class FakeDualEventStream extends EventEmitter {

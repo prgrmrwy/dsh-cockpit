@@ -8,8 +8,9 @@ window.__ModuleLoader__.load({
 		const inject = ["sessions"];
 		const BRIDGE_CONFIG_MESSAGE = "dsh-cockpit:bridge-config";
 		const DEVICE_ACTIVATED_MESSAGE = "dsh-cockpit:device-activated";
+		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.2.0";
+		const PLUGIN_VERSION = "0.2.1";
 		const PROTOCOL_VERSION = 2;
 		const FLUSH_DELAY_MS = 250;
 		const RETRY_BASE_MS = 500;
@@ -111,8 +112,23 @@ window.__ModuleLoader__.load({
 						run();
 					}, delay);
 				};
-				const fail = (status) => {
-					if (status === 401) helloReady = false;
+				/** Read the structured error code the cockpit returns, when present. */
+				const readErrorCode = async (response) => {
+					try {
+						const body = await response.json();
+						return typeof body.code === "string" ? body.code : void 0;
+					} catch {
+						return;
+					}
+				};
+				const isCapabilityFailure = (status, code) => status === 401 || status === 400 && code === "bridge-capability-invalid";
+				const fail = (status, code, activeConfig) => {
+					if (activeConfig !== void 0 && isCapabilityFailure(status, code)) {
+						helloReady = false;
+						try {
+							window.parent.postMessage({ type: CAPABILITY_EXPIRED_MESSAGE }, activeConfig.cockpitOrigin);
+						} catch {}
+					}
 					scheduleRetry();
 				};
 				const run = async () => {
@@ -136,12 +152,12 @@ window.__ModuleLoader__.load({
 								}, activeConfig);
 							} catch {
 								failed = true;
-								fail();
+								fail(void 0, void 0, activeConfig);
 								return;
 							}
 							if (!response.ok) {
 								failed = true;
-								fail(response.status);
+								fail(response.status, await readErrorCode(response), activeConfig);
 								return;
 							}
 							if (config !== activeConfig) {
@@ -165,12 +181,12 @@ window.__ModuleLoader__.load({
 								}, activeConfig);
 							} catch {
 								failed = true;
-								fail();
+								fail(void 0, void 0, activeConfig);
 								return;
 							}
 							if (!response.ok) {
 								failed = true;
-								fail(response.status);
+								fail(response.status, await readErrorCode(response), activeConfig);
 								return;
 							}
 							if (outbox.get(entry.key) === entry) outbox.delete(entry.key);

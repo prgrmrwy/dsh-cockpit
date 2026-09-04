@@ -77,9 +77,18 @@ Device Tab 上的绿色「已完成」提醒由驾驶舱服务端按**每个根�
   访问清除控件（键盘可达、不冒泡到设备切换），点击/激活即可清除该设备当前
   全部完成提醒——不依赖桥接插件是否安装或是否处于可靠协议。
 - **归档即处置**：会话被归档会清除其当前完成提醒；恢复一个空闲的已归档会话
-  不会凭空制造新提醒（除非它之后真的重新运行又空闲）。永久删除（而非归档）
-  才会清空该会话的运行、选择、已读协调与提醒状态。旧版本 DSH 若不提供归档
+  不会凭空制造新提醒（除非它之后真的重新运行又空闲）。归档集合在每次连接、
+  重连与手动刷新时以官方 `workspace.list` 快照重建基线，因此断线期间发生的
+  归档/恢复会在回来时被纠正，而不是留下幽灵提醒。旧版本 DSH 若不提供归档
   事件，驾驶舱也不会仅因一次 `session.list` 刷新中会话暂时缺席就当作已删除。
+- **`session-removed` 是 live detach 而非永久删除**：会话离开计数并清除其当前
+  提醒，但其运行轮次、已读协调与子代理分类会被保留；会话重新出现时（持久化
+  会话会以 cold idle 重新列出）不会制造提醒、也不会开新轮次——只有真正的重新
+  运行才会。rc.2 没有权威的「永久删除」事件，驾驶舱永不依据一次 `session.list`
+  缺席或 `session-removed` 本身推导删除。
+- **已知边界**：断线期间「开始并结束」的一次完成无法回读——事件流没有
+  cursor/replay，只能查到最终状态，此时提醒不会出现；顶栏状态点与人工清除
+  兜底照常工作。
 
 ## 桥接插件（可选）：与 DSH 的通信
 
@@ -110,6 +119,7 @@ iframe DOM，也拿不到它。有了插件后：
 | **会话选择** | 订阅官方 `sessions.list.current`，变化时**立即捕获**该 ID 入有界去重 outbox（不是定时器触发时才读），250ms 合并网络请求后逐个 `POST .../session-opened {sessionId, current, protocolVersion}`；仅服务端明确成功后才从 outbox 移除 | 校验能力 → 按 `Origin` 匹配设备 → 确认该会话当前 generation，随乱序到达的完成边缘收敛 |
 | **归档后清空** | `current` 变为 `undefined` 时上报 `{ current: null }` 并重置同值去重闩，之后恢复同一 ID 仍可再次确认 | 按会话精确处理，不清除其它会话状态 |
 | **失败重试** | 网络异常、401、其它非 2xx 均保留待确认状态，单飞、有上限指数退避重试；新选择、设备激活、成功 hello 都是恢复机会 | 静默失败不影响原生 DSH 页面 |
+| **capability 续签** | 收到 401 或结构化 `bridge-capability-invalid` 时，插件重置 hello 状态并向父页面 `postMessage { type: 'dsh-cockpit:capability-expired' }` 请求换发新能力 | 父页面在 **到期前**（15s 宽限）自动换发并重发 `bridge-config`；换发失败按 15s→2min 有上限退避重试，并按设备限频（5s 至多一次）——长时间停留在同一设备也不会静默失去精确已读确认 |
 
 - **端口不写死**：插件不再固定请求 `127.0.0.1:3090`——实际 Cockpit Origin 由
   父页面握手动态提供，因此驾驶舱运行在 `COCKPIT_PORT` 指定的**任意受支持端口**
@@ -213,9 +223,9 @@ fail-closed 拒绝停止或覆盖该进程。
 
 ## 验证（当前实现已通过的实测）
 
-- server vitest 104/104（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
-- web vitest 57/57（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级）
-- bridge vitest 13/13（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、DSH 页面不受失败影响）
+- server vitest 129/129（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、**基线-事件盲窗与缓冲回放、workspace.list 归档基线、live detach 软语义**、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
+- web vitest 60/60（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级、**capability 到期前自动续签与失效自愈、切换设备清理续签定时器**）
+- bridge vitest 15/15（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、**capability 失效识别与父页面续签请求**、DSH 页面不受失败影响）
 - 五包 typecheck + build 全绿（含 bridge host/client 双入口与 source map）
 - 真实浏览器验收（agent-browser + 隔离 Cockpit 实例 + 真实本机 DSH + 可控 fake DSH）：非默认端口部署、桥接 capability 签发与 Origin 校验、完成→打开、ack-before-edge、edge-before-ack、打开后立即归档、恢复不重新点亮、下一轮真正完成重新点亮、鼠标与键盘人工清除且不切换设备
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数

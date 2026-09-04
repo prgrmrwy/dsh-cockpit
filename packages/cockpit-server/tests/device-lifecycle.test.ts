@@ -12,6 +12,9 @@ class FakeProcess {
   kill(sig?: string): boolean { void sig; return true }
 }
 
+/** Flood count for the buffer-cap test: comfortably past EVENT_BUFFER_CAP. */
+const EVENT_BUFFER_FLOOD = 2_005
+
 const record = (overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
   deviceId: 'd1',
   displayName: 'VM A',
@@ -38,6 +41,7 @@ function device(
     createClient: async () => ({
       probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
       listSessions: async () => sessions ?? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+      listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
     }),
     createStream: () => ({
       on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
@@ -302,6 +306,7 @@ describe('device lifecycle', () => {
       createClient: async () => ({
         probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
         listSessions: async () => [],
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
       }),
       createStream: () => {
         const handlers = new Map<string, (...args: unknown[]) => void>()
@@ -497,6 +502,7 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
           // momentary host/session-list gap — NOT reported as idle or gone.
           return listCall === 1 ? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }] : []
         },
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
       }),
       createStream: () => ({
         on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
@@ -517,7 +523,7 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     ])
     // A subsequent baseline refresh that happens not to include s1 (e.g. a
     // transient host/session-list gap) must not clear or duplicate its
-    // reminder — only host/session-removed is authoritative for deletion.
+    // reminder — a list absence alone is never a deletion fact.
     await lifecycle.refresh()
     expect(lifecycle.current().sessionStatuses).toEqual([
       { state: 'done', kind: 'completed', count: 1 },
@@ -528,20 +534,350 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     await tunnel.disposeAll()
   })
 
-  it('permanent removal clears running, selection, ack and reminder state for that session', async () => {
+  it('a live detach (session-removed) clears reminders but keeps run lineage for reappearance', async () => {
     const { lifecycle, tunnel, emit } = device()
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
     for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
       await new Promise(r => setTimeout(r, 5))
     }
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // The user opened s1 (ack gen 1), then the session detached from the live
+    // registry (dispose) — treated as live detach, not permanent deletion.
     ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
     emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
     expect(lifecycle.current().sessionStatuses).toEqual([])
     expect(lifecycle.current().runningSessionCount).toBe(0)
-    // A fresh session reusing the same id (unlikely, but state must not leak)
-    // starts a clean baseline: first observation only records the bit.
+    // Reappearance as idle (cold persisted sessions are re-listed) must NOT
+    // manufacture a reminder or open a fresh generation.
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
     expect(lifecycle.current().sessionStatuses).toEqual([])
+    // A genuinely new run after detach starts a new generation; the old
+    // selection ack belongs to the old generation and must not suppress it.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a subagent detach keeps its classification so later status frames stay excluded', async () => {
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sa', origin: 'subagent' })
+    emit({ type: 'session-removed', deviceId: 'd1', sessionId: 'sa' })
+    // Even after the subagent detached, its status frames must not enter root
+    // running/completed counts.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sa', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sa', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a completion edge landing while the baseline RPC is in flight is not lost (blind window)', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let listCalled = false
+    let resolveList: ((sessions: { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]) => void) | undefined
+    const sessionsPromise = new Promise<{ sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]>(resolve => {
+      resolveList = resolve
+    })
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: () => {
+          listCalled = true
+          return sessionsPromise
+        },
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    // The streams are opened BEFORE the baseline RPC; wait until the RPC is
+    // actually in flight, then let the completion edge arrive during it.
+    for (let i = 0; i < 200 && !listCalled; i++) await new Promise(r => setTimeout(r, 5))
+    expect(listCalled).toBe(true)
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    // The snapshot was captured BEFORE the completion (the session was still
+    // running at that moment); the false edge only shows up on the stream.
+    resolveList!([{ sessionId: 's1', running: true, updatedAt: 1, blank: false }])
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    expect(lifecycle.current().state).toBe('READY')
+    // The buffered true→false edge was replayed over the running baseline: the
+    // reminder must be armed (not lost in the baseline→stream gap).
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a stale refresh baseline cannot roll back a newer in-flight event', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let listCall = 0
+    let resolveList: ((sessions: { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]) => void) | undefined
+    let pending: Promise<{ sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]> | undefined
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: () => {
+          listCall += 1
+          if (listCall === 1) return Promise.resolve([{ sessionId: 's1', running: true, updatedAt: 1, blank: false }])
+          // Manual refresh: a DELAYED response whose snapshot is already
+          // stale (says idle) while the live wire says s1 started running.
+          pending = new Promise(resolve => { resolveList = resolve })
+          return pending
+        },
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    void lifecycle.refresh()
+    for (let i = 0; i < 200 && pending === undefined; i++) await new Promise(r => setTimeout(r, 5))
+    // The newer event arrives while the snapshot RPC is still in flight.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    resolveList!([{ sessionId: 's1', running: false, updatedAt: 3, blank: false }])
+    for (let i = 0; i < 100 && listCall < 2; i++) await new Promise(r => setTimeout(r, 5))
+    // The stale "idle" snapshot must not roll the session back: the newer
+    // running=true event wins, and no false completion edge is manufactured.
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a refresh re-baselines the archive set (reconnecting after archive changes)', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let archiveCalls = 0
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => [{ sessionId: 's1', running: false, updatedAt: 2, blank: false }],
+        listWorkspaces: async () => {
+          archiveCalls += 1
+          // Connect: nothing archived. Refresh (reconnect): s1 got archived
+          // while we were away — workspace.list is the reconcile baseline.
+          return archiveCalls === 1
+            ? { items: [], archivedSessionIds: [] }
+            : { items: [], archivedSessionIds: ['s1'] }
+        },
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+    // Reconnect baseline reports s1 archived: the reminder must clear and the
+    // session must leave the counts (archived = disposed of in the UI).
+    await lifecycle.refresh()
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    // Restoring the session (not archived anymore) must NOT re-light the old
+    // reminder without a genuinely new run.
+    await lifecycle.refresh()
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('an archive event arriving during the baseline RPC is not rolled back by the stale snapshot', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let resolveList: ((value: { items: { workspaceId: string }[]; archivedSessionIds: string[] }) => void) | undefined
+    let pending: Promise<{ items: { workspaceId: string }[]; archivedSessionIds: string[] }> | undefined
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: async () => [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+        listWorkspaces: () => {
+          if (pending !== undefined) return pending
+          pending = new Promise(resolve => { resolveList = resolve })
+          return pending
+        },
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    // Refresh whose workspace.list response is delayed; while in flight the
+    // NEWER archived-sessions-changed event arrives.
+    void lifecycle.refresh()
+    for (let i = 0; i < 200 && pending === undefined; i++) await new Promise(r => setTimeout(r, 5))
+    emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1'] })
+    resolveList!({ items: [], archivedSessionIds: [] })
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 0; i++) await new Promise(r => setTimeout(r, 5))
+    // The buffered event (newer) wins over the stale baseline: s1 is archived,
+    // so its running bit must not count.
+    expect(lifecycle.current().runningSessionCount).toBe(0)
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a hung baseline aborts reconciliation and the connect attempt retries', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      baselineTimeoutMs: 60,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: () => new Promise(() => {}),
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    // The baseline never resolves; the 60ms timeout aborts reconciliation and
+    // the generation is torn down, so the device stays in CONNECTING.
+    await new Promise(r => setTimeout(r, 200))
+    expect(lifecycle.current().state).toBe('CONNECTING')
+    expect(lifecycle.current().runningSessionCount).toBe(0)
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a recovery baseline works through an event buffer over the cap without dropping the tail', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({
+      spawn: () => new FakeProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    let resolveList: ((sessions: { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]) => void) | undefined
+    const sessionsPromise = new Promise<{ sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]>(resolve => {
+      resolveList = resolve
+    })
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createClient: async () => ({
+        probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+        listSessions: () => sessionsPromise,
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+      }),
+      createStream: () => ({
+        on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
+        off: () => {},
+        open: async () => {},
+        dispose: () => {},
+      }),
+      onFacts: () => {},
+    })
+    const emit = (event: { type: string; [key: string]: unknown }) => handlers.get('event')?.(event)
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 200 && resolveList === undefined; i++) await new Promise(r => setTimeout(r, 5))
+    // Wait until the stream handler is registered AND the baseline RPC is in
+    // flight — only then do the emitted events reach the buffer.
+    for (let i = 0; i < 200 && handlers.get('event') === undefined; i++) await new Promise(r => setTimeout(r, 5))
+    expect(handlers.get('event')).toBeDefined()
+    // Flood the buffer far past its cap while the baseline hangs; the tail
+    // must survive and the reconciliation must still converge.
+    for (let index = 0; index < EVENT_BUFFER_FLOOD; index += 1) {
+      emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    }
+    resolveList!([{ sessionId: 's1', running: false, updatedAt: 2, blank: false }])
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    // After replay (base idle + buffered running) the session is running.
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'ongoing', kind: 'running', count: 1 },
+    ])
 
     await lifecycle.stop()
     await task
@@ -611,6 +947,7 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
             ? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }]
             : [{ sessionId: 's1', running: false, updatedAt: 2, blank: false }]
         },
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
       }),
       createStream: () => ({
         on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
@@ -662,6 +999,7 @@ describe('local device lifecycle', () => {
       createClient: async () => ({
         probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
         listSessions: async () => [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+        listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
       }),
       createStream: () => ({
         on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn) },
@@ -705,6 +1043,7 @@ function portReportingDevice(reported: [string, number][], overrides: Partial<De
     createClient: async () => ({
       probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
       listSessions: async () => [],
+      listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
     }),
     createStream: () => ({ on: () => {}, off: () => {}, open: async () => {}, dispose: () => {} }),
     onFacts: () => {},

@@ -52,6 +52,22 @@ export class Rc2Client {
     return value.items
   }
 
+  /** Official workspace baseline. `archivedSessionIds` is the reconnect
+   * baseline for host/archived-sessions-changed — the archive set is NOT
+   * replayed on events.host open, so a consumer must re-query it after every
+   * connection. Items are WorkspaceView projections (sessionIds, path,
+   * title, createdAt, updatedAt). */
+  async listWorkspaces(): Promise<{
+    items: readonly { workspaceId: string; path: string; title: string; sessionIds: readonly string[] }[]
+    archivedSessionIds: readonly string[]
+  }> {
+    const value = await this.call<{
+      items: readonly { workspaceId: string; path: string; title: string; sessionIds: readonly string[] }[]
+      archivedSessionIds: readonly string[]
+    }>('workspace.list', {})
+    return value
+  }
+
   #counter = 0
 }
 

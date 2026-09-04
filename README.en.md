@@ -97,11 +97,25 @@ the *next* genuinely new completion on the same session.
 - **Archiving is an explicit disposition**: archiving a session clears its
   current completion reminder; restoring an idle archived session does not
   manufacture a new reminder out of thin air (unless it genuinely runs and
-  goes idle again afterward). Only *permanent* deletion (not archiving) clears
-  a session's running, selection, acknowledgement and reminder state entirely.
-  On older DSH versions that do not emit an archive event, the cockpit never
-  infers deletion merely because a session is momentarily missing from one
+  goes idle again afterward). The archive set is re-baselined on every
+  connect, reconnect and manual refresh from the official `workspace.list`
+  snapshot, so archiving/restoring while the cockpit was disconnected is
+  corrected on return instead of lingering as ghost reminders. On older DSH
+  versions that do not emit an archive event, the cockpit never infers
+  deletion merely because a session is momentarily missing from one
   `session.list` refresh.
+- **`session-removed` is a live detach, not permanent deletion**: the session
+  leaves the counts and its current reminder, but its run generation,
+  acknowledgement state and subagent classification are kept; when the session
+  reappears (persisted sessions are re-listed as cold and idle), no reminder
+  is manufactured and no fresh generation opens — only a genuinely new run
+  does. rc.2 has no authoritative "permanently deleted" event, so the cockpit
+  never infers deletion from a momentary `session.list` absence or from
+  `session-removed` itself.
+- **Known boundary**: a session that starts and finishes entirely while the
+  cockpit is disconnected cannot be recovered — the event stream has no cursor
+  or replay, only the final state is queryable. The reminder then does not
+  appear; the top-bar dots and the manual clear keep working as usual.
 
 ## Bridge plugin (optional): talking to DSH
 
@@ -142,6 +156,7 @@ With the plugin installed:
 | **Session selection** | Subscribes to `sessions.list.current`; on change, the id is **captured immediately** into a bounded, deduplicated outbox (not re-read later when a timer fires); a 250 ms window only batches the network flush, then each entry is `POST`ed to `.../session-opened {sessionId, current, protocolVersion}`; an entry is removed from the outbox only after an explicit success response | Validates the capability → matches by `Origin` → acknowledges that session's current generation, converging with the completion edge in whichever order they arrive |
 | **Cleared after archive** | When `current` becomes `undefined`, the plugin reports `{ current: null }` and resets its same-value dedup latch, so restoring the same id later can be acknowledged again | Handled per-session without touching other sessions' state |
 | **Failure retry** | Network errors, 401s, and any other non-2xx response all keep the pending acknowledgement; retries are single-flight with a bounded exponential backoff; a new selection, device activation, or a successful hello are all recovery opportunities | Silent failure never disturbs the native DSH page |
+| **Capability renewal** | On a 401 or a structured `bridge-capability-invalid` response, the plugin resets its hello state and posts `{ type: 'dsh-cockpit:capability-expired' }` to the parent as a backstop request for a fresh capability | The parent renews the capability **before expiry** (15 s grace) and re-sends `bridge-config`; renewal failures retry with bounded backoff (15 s → 2 min) and are rate-limited to one request per device per 5 s, so staying on one device never silently loses precise acknowledgements |
 
 - **The port is no longer hardcoded**: the plugin does not fetch a fixed
   `127.0.0.1:3090` anymore — the real Cockpit origin is supplied dynamically by
@@ -160,6 +175,11 @@ With the plugin installed:
   is never disturbed; the outbox has a fixed capacity and TTL, preferring the
   current and most recent selections, so a long cockpit outage cannot grow it
   without bound.
+- **Capability renewal keeps a single device usable indefinitely**: the parent
+  renews the bridge capability before it expires and re-sends the handshake;
+  the plugin also asks for a renewal the moment it sees an invalid/expired
+  capability backstop, so a hidden iframe with throttled timers recovers on
+  its own. Renewal failures back off (15 s → 2 min) and are rate-limited.
 - **Older plugins keep working**: a device still running the legacy (protocol
   1) plugin continues to report best-effort; the top bar marks it as
   "connected but not on the reliable protocol" and points at the manual clear
@@ -281,19 +301,22 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Verification (measured against the current implementation)
 
-- server vitest 104/104 (registry atomicity / fail-closed corruption, SSH
+- server vitest 129/129 (registry atomicity / fail-closed corruption, SSH
   identity, conclusive tunnel teardown, event conversion including the archive
   set, device lifecycle including the generation state machine / ack-edge
-  convergence / archive-restore, bridge capability lifecycle and
-  authorization, delete confirmation gate, order normalisation, **a real
-  NestJS+Express integration test confirming the auth middleware actually
-  gates every `/api/*` route**)
-- web vitest 57/57 (mouse/keyboard/non-bubbling coverage for the Device Tab
+  convergence / archive-restore, **baseline→stream blind window and buffer
+  replay, workspace.list archive baseline, live-detach soft semantics**, bridge
+  capability lifecycle and authorization, delete confirmation gate, order
+  normalisation, **a real NestJS+Express integration test confirming the auth
+  middleware actually gates every `/api/*` route**)
+- web vitest 60/60 (mouse/keyboard/non-bubbling coverage for the Device Tab
   completion clear control, installed/not-installed bridge icon distinguished
-  by shape, Workbench bridge handshake and graceful degradation)
-- bridge vitest 13/13 (lossless rapid multi-select, archive-before-flush,
-  failure retry, outbox capacity/TTL, activation re-assertion, DSH page
-  unaffected by bridge failures)
+  by shape, Workbench bridge handshake and graceful degradation, **capability
+  renewal before expiry with bounded backoff and device-switch timer cleanup**)
+- bridge vitest 15/15 (lossless rapid multi-select, archive-before-flush,
+  failure retry, outbox capacity/TTL, activation re-assertion, **capability
+  failure detection and parent renewal request**, DSH page unaffected by
+  bridge failures)
 - typecheck + build green across all five packages (including the bridge's
   host/client dual entry points and source maps)
 - Real browser acceptance (agent-browser + an isolated cockpit instance + a
