@@ -158,6 +158,12 @@ describe('cockpit bridge client', () => {
       capability: 'rotated-capability',
     })
     await vi.advanceTimersByTimeAsync(0)
+    // A pure renewal must NOT restart the hello/re-assert current: it only
+    // rotates the credential. The bridge stays silent until real activation.
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await vi.advanceTimersByTimeAsync(0)
     expect(fetchMock.mock.calls[0]![0]).toBe(`${COCKPIT_ORIGIN}/api/bridge/hello`)
     expect(fetchMock.mock.calls[0]![1]!.headers).toMatchObject({
       'x-dsh-cockpit-bridge-capability': 'rotated-capability',
@@ -317,6 +323,27 @@ describe('cockpit bridge client', () => {
     // Still retried (bounded backoff), same as any other non-2xx.
     await vi.advanceTimersByTimeAsync(1_000)
     expect(bodiesFor('/api/bridge/session-opened')).toHaveLength(2)
+  })
+
+  it('a pure renewal config refreshes the capability without re-asserting the current selection', async () => {
+    // Regression for "green dot blinked and cleared by itself": a periodic
+    // capability renewal must NOT restart the hello, which would re-assert
+    // the still-open current id and wrongly acknowledge a completion the
+    // user never saw. Only a real activation re-asserts.
+    const { ctx, set } = fakeCtx({ current: 'a' })
+    const apply = await loadApply()
+    apply(ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    // Initial handshake: hello + re-assert of the already-open session.
+    expect(callsFor('/api/bridge/hello')).toHaveLength(1)
+    expect(callsFor('/api/bridge/session-opened')).toHaveLength(1)
+    fetchMock.mockClear()
+
+    // Renewal: same origin, fresh capability — no hello, no session-opened.
+    configure()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('uses single-flight bounded exponential retry for network failures', async () => {

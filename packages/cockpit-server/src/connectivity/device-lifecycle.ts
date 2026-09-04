@@ -564,6 +564,13 @@ export class DeviceLifecycle {
         // continues the same run identity and subagent status frames stay
         // excluded from root counts (session.list re-lists detached
         // persisted sessions as cold idle).
+        //
+        // The bridge selection snapshot is deliberately NOT touched here: the
+        // official DSH page masks `current` only while the session is off the
+        // list and restores it on re-listing, and the bridge reports that
+        // flow (`{current: null}` → back to the id). Clearing it proactively
+        // detached the completion-edge protection and let a later hello
+        // re-assertion wrongly read an unread completion.
         const state = this.#sessions.get(event.sessionId)
         if (state !== undefined) {
           state.running = false
@@ -571,7 +578,6 @@ export class DeviceLifecycle {
         }
         this.#pendingBySession.delete(event.sessionId)
         this.#archivedSessions.delete(event.sessionId)
-        if (this.#bridgeSelection === event.sessionId) this.#bridgeSelection = undefined
         break
       }
     }

@@ -544,12 +544,13 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     expect(lifecycle.current().sessionStatuses).toEqual([
       { state: 'done', kind: 'completed', count: 1 },
     ])
-    // The user opened s1 (ack gen 1), then the session detached from the live
-    // registry (dispose) — treated as live detach, not permanent deletion.
     ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
     emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
     expect(lifecycle.current().sessionStatuses).toEqual([])
     expect(lifecycle.current().runningSessionCount).toBe(0)
+    // The official DSH page masks `current` while the session is off the list
+    // and the bridge reports that as `{current: null}`.
+    ;(lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection(undefined)
     // Reappearance as idle (cold persisted sessions are re-listed) must NOT
     // manufacture a reminder or open a fresh generation.
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
@@ -561,6 +562,41 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     expect(lifecycle.current().sessionStatuses).toEqual([
       { state: 'ongoing', kind: 'running', count: 1 },
     ])
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
+  it('a detach keeps the selection snapshot: completion stays un-armed until the user actually leaves', async () => {
+    // Regression for "green dot blinked on and cleared by itself": the
+    // selection snapshot must be driven by the bridge's current flow, never
+    // cleared by session-removed nor re-asserted by a capability renewal.
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    const selection = lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }
+    selection.setBridgeSelection('s1')
+    // The session detaches while still selected; the snapshot must survive.
+    emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
+    // The DSH page kept S selected (current restores once re-listed); the
+    // session runs and completes while the user still has it open.
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    // Even later re-assertions of the same selection (e.g. a hello after a
+    // capability renewal) must not manufacture a removal either way.
+    selection.setBridgeSelection('s1')
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+    // The user actually closes the session: the bridge reports current:null.
+    selection.setBridgeSelection(undefined)
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
     expect(lifecycle.current().sessionStatuses).toEqual([
       { state: 'done', kind: 'completed', count: 1 },

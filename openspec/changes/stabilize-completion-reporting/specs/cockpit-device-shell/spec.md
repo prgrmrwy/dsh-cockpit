@@ -2,7 +2,7 @@
 
 ### Requirement: 归档与恢复不制造完成提醒
 
-系统 SHALL 将会话归档集合变化与会话 detach（live 移除）区分处理。归档 SHALL 清除该会话当前完成提醒，并且归档和恢复本身 MUST NOT 生成新的完成提醒或把已清除的提醒重新点亮；恢复的旧会话 SHALL 延续其既有运行轮次身份，而不是被视为刚完成的新会话。`host/session-removed` SHALL 被当作 live 会话从内存 registry detach 而非永久删除：系统 SHALL 清除该会话的完成提醒与计数呈现（与官方 UI 的移除语义一致），但 MUST 保留其运行轮次身份、已读协调状态与子代理分类知识；该会话重新出现时 MUST NOT 生成新的完成提醒，也不得被视为全新的观察对象。rc.2 协议没有权威的「永久删除」事件，系统 MUST NOT 依据一次 `session.list` 缺席或一次 `host/session-removed` 推导永久删除。
+系统 SHALL 将会话归档集合变化与会话 detach（live 移除）区分处理。归档 SHALL 清除该会话当前完成提醒，并且归档和恢复本身 MUST NOT 生成新的完成提醒或把已清除的提醒重新点亮；恢复的旧会话 SHALL 延续其既有运行轮次身份，而不是被视为刚完成的新会话。`host/session-removed` SHALL 被当作 live 会话从内存 registry detach 而非永久删除：系统 SHALL 清除该会话的完成提醒与计数呈现（与官方 UI 的移除语义一致），但 MUST 保留其运行轮次身份、已读协调状态与子代理分类知识；该会话重新出现时 MUST NOT 生成新的完成提醒，也不得被视为全新的观察对象。detach 本身 MUST NOT 清除桥接选择快照——官方 DSH 页面的 `current` 只在会话暂时缺席列表时被遮蔽、重新列出后恢复，选择快照 SHALL 由桥接的 current 上报流自然更新，系统 MUST NOT 自作主张清空或重申。rc.2 协议没有权威的「永久删除」事件，系统 MUST NOT 依据一次 `session.list` 缺席或一次 `host/session-removed` 推导永久删除。
 
 #### Scenario: 已读会话被归档后恢复
 - **WHEN** 一个已成功清除完成提醒的会话被归档，之后在没有新运行轮次的情况下恢复
@@ -18,11 +18,11 @@
 
 #### Scenario: 会话 detached（session-removed）
 - **WHEN** 系统收到 `host/session-removed`，会话从 live registry 移除
-- **THEN** 系统清除该会话当前完成提醒并不再计入运行/完成/待决策计数，但保留其运行轮次身份与已读协调状态，且不影响其它会话状态
+- **THEN** 系统清除该会话当前完成提醒并不再计入运行/完成/待决策计数，但保留其运行轮次身份与已读协调状态；若它恰是当前桥接选择，选择快照保持原状，等待桥接按 DSH 页面的 current 流上报（暂时消失则 `{current: null}`，重新列出则恢复该 ID）
 
 #### Scenario: 会话 detach 后重新出现
 - **WHEN** 一个已 detach 的会话随后再次出现在 `session.list` 中，且期间没有新的运行轮次
-- **THEN** 系统不生成完成提醒，也不将该会话视为全新的观察对象；其之后真正重新运行并完成时仍按既有轮次规则生成提醒
+- **THEN** 系统不生成完成提醒，也不将该会话视为全新的观察对象；其之后真正重新运行并完成时仍按既有轮次规则生成提醒，且完成边缘的未读判定继续以桥接上报的选择快照为准
 
 #### Scenario: 会话永久删除
 - **WHEN** 系统收到权威的会话永久删除事实（当前 rc.2 协议没有此类事件；该场景仅为将来协议保留语义，`session-removed` 与列表缺席均不得触发它）

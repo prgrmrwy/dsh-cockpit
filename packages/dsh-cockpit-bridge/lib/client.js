@@ -234,7 +234,6 @@ window.__ModuleLoader__.load({
 					const nextConfig = parseConfig(event);
 					if (nextConfig !== void 0 && (config === void 0 || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
 						config = nextConfig;
-						helloReady = false;
 						requestRun(0, true);
 						return;
 					}

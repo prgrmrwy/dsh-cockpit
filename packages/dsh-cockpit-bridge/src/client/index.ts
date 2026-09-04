@@ -309,9 +309,12 @@ export function apply(ctx: ClientContext): void {
       const nextConfig = parseConfig(event)
       if (nextConfig !== undefined && (config === undefined || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
         config = nextConfig
-        helloReady = false
-        // bridge-config doubles as activation/capability refresh: heartbeat,
-        // current snapshot and all retained acknowledgements are retried.
+        // A pure capability renewal must NOT re-assert the current selection:
+        // that would acknowledge a completion the user has not actually seen
+        // (the parent renews periodically while the user is elsewhere).
+        // helloReady is kept as-is: the initial handshake still runs the
+        // hello, but a later renewal only retries retained acknowledgements
+        // with the fresh capability. A real activation below re-asserts.
         requestRun(0, true)
         return
       }

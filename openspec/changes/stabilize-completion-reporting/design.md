@@ -28,7 +28,7 @@
 
 ### D1: capability 采用「父页面定时续签 + bridge 失效信号」双通道
 
-- **父页面定时续签**：Workbench 为当前设备保存 `expiresAt`，在 `expiresAt - 15s` 定时重新调用 capability 接口；成功后重发 `bridge-config` 握手并重置下一轮定时；失败按有上限指数退避（15s 起、2 分钟封顶）重试，期间不干扰工作台。定时器按 deviceId 管理，设备切换/禁用时清理；与既有「iframe load、device 激活、endpoint 变化」刷新路径共用同一「换发→重发握手」例程，避免多路径逻辑分叉。
+- **父页面定时续签**：Workbench 为当前设备保存 `expiresAt`，在 `expiresAt - 15s` 定时重新调用 capability 接口；成功后重发 `bridge-config` 握手并重置下一轮定时；失败按有上限指数退避（15s 起、2 分钟封顶）重试，期间不干扰工作台。定时器按 deviceId 管理，设备切换/禁用时清理；与既有「iframe load、device 激活、endpoint 变化」刷新路径共用同一「换发→重发握手」例程，避免多路径逻辑分叉。**续签是非用户动作**：bridge 收到纯 `bridge-config` 更新时只换 capability 并重试待确认项，不得重跑 hello/重申当前选择（那会把用户没看过的完成误清）；只有 `device-activated`（用户真的切回该设备）才重申当前选择。
 - **bridge 失效信号**：bridge 在 `/api/bridge/*` 收到 capability 失效类响应（401，或 400 且 body code 为 `bridge-capability-invalid`）时，向父页面 `postMessage({ type: 'dsh-cockpit:capability-expired' })` 并重置 `helloReady`；父页面收到后立即换发并重发握手。这覆盖「父页面定时器被后台标签页/隐藏 iframe 节流」的自愈路径，不需要浏览器定时器保证。
 - 服务端保持 TTL 60s 默认（实现常量），`issue` 幂等；换发不做 one-shot 作废（旧 token 到期自失效），避免竞态。
 - **Alternatives**：只靠父页面定时器（隐藏页面节流后无法自愈）；只靠 bridge 信号（首次失效前有最长 60s 的失效窗口无法提前规避）；把 TTL 调成 10 分钟（窗口变大、仍无自愈）。双通道同时覆盖「提前规避」与「失效后自愈」。
@@ -56,7 +56,7 @@
 
 ### D4: `host/session-removed` 建模为「live detach」，采用软保留
 
-- received `session-removed` 时：清除该会话的完成提醒（`completedGeneration`）与计数呈现（`running=false`、清 pending），**保留**其 generation/ack 轮次身份与 `#subagents` 分类知识；若 detach 的恰是当前桥接选择，清除选择快照（不撤销已确认的轮次）；从 `#archivedSessions` 中移除该 ID。
+- received `session-removed` 时：清除该会话的完成提醒（`completedGeneration`）与计数呈现（`running=false`、清 pending），**保留**其 generation/ack 轮次身份与 `#subagents` 分类知识；从 `#archivedSessions` 中移除该 ID。**不主动改动桥接选择快照**：官方 DSH 页面的 `current` 只在会话暂时缺席列表时被遮蔽、重新列出后恢复（上游 `buildListSnapshot` 的 mask 语义），选择快照交由桥接的 current 上报流自然更新（暂时消失 → `{current: null}`；重新列出 → 恢复该 ID）。主动清空会在「detach→完成」窗口去掉完成边缘保护，而后续任意 hello 重申会把用户没看的完成误清。
 - 会话重新出现在基线时：`#observeRunning` 按快照取值——空闲则无边缘、无提醒；真正重新运行则 `generation+1` 开始新轮，与归档恢复语义一致。
 - 为防 `#sessions` 无限增长（detach 频繁的设备，如本机 700+ 会话），对有界保留做保守淘汰：仅淘汰「非 running、无未读提醒、非当前桥接选择、非归档、且不在此次基线快照中」的最久未用条目（上限实现常量，如 2000）。
 - **Alternatives**：维持现状「removed 即清空」（与官方 UI 移除语义近似，但丢失轮次身份与子代理知识，且 spec/注释固化错误模型）；彻底不清理（无界）。软保留同时满足「detach 后重新出现不制造提醒」与「子代理分类不丢」。

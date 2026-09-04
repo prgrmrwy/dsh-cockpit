@@ -44,3 +44,9 @@
 - [x]  6.2 更新 bridge README 的协议说明（capability-expired 消息）
 - [x]  6.3 核查 `cockpit-device-shell`、`cockpit-workbench` 规范的 removed/归档/聚合表述与本次 delta 一致（含「会话永久删除」表述移除）
 - [ ] 6.4 全部通过后按 OpenSpec archive 流程收口（含验证记录与截图）
+## 7. 验收反馈修复（绿点闪烁）
+
+- [x] 7.1 服务端 `session-removed` 不再清空桥接选择快照：选择快照交由 bridge 的 current 上报流维护（官方 DSH current 仅暂被遮蔽、重列后恢复），避免「detach→完成」窗口丢失完成边缘保护
+- [x] 7.2 bridge 纯续签 `bridge-config` 不再重置 helloReady（不重跑 hello / 不重申 current）：只有真实 `device-activated` 才重申当前选择，杜绝「用户没看过却被误清」
+- [x] 7.3 回归测试：detach 保留选择快照后完成不点亮、bridge 纯续签 config 零请求、401/400 自愈路径不受影响
+- [x] 7.4 更新 spec delta 与 design（D1/D4 措辞）与上述语义一致；全套验证重跑通过（server 130/130、web 60/60、bridge 16/16）
