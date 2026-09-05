@@ -18,6 +18,8 @@ export interface WorkbenchProps {
   readonly onManageDevices?: () => void
   /** Issues a short-lived bridge capability through the same-origin shell API. */
   readonly requestBridgeCapability?: (deviceId: string) => Promise<BridgeCapabilityPayload>
+  /** Supplies a one-shot tokenized root only for a newly mounted generation. */
+  readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string }>
 }
 
 const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
@@ -49,7 +51,7 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability }: WorkbenchProps) {
+export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch }: WorkbenchProps) {
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
@@ -57,6 +59,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   const renewalTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; attempt: number }>>(new Map())
   const renewalInFlightRef = useRef<Set<string>>(new Set())
   const renewalRequestedAtRef = useRef<Map<string, number>>(new Map())
+  const launchRequestedRef = useRef<Set<string>>(new Set())
 
   const notifyActivated = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
@@ -212,14 +215,24 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   useEffect(() => {
     if (device === undefined || !device.enabled) return
     if (!registryRef.current.has(device.deviceId)) {
-      registryRef.current.set(device.deviceId, {
+      const initial: FrameInfo = {
         deviceId: device.deviceId,
-        url: device.endpoint ?? '',
+        url: requestWorkbenchLaunch === undefined ? device.endpoint ?? '' : '',
         state: device.state,
         diagnostic: device.diagnostic,
         lastUpdatedAt: device.lastUpdatedAt,
-      })
+      }
+      registryRef.current.set(device.deviceId, initial)
       setFrames([...registryRef.current.values()])
+      if (requestWorkbenchLaunch !== undefined && device.endpoint !== undefined && !launchRequestedRef.current.has(device.deviceId)) {
+        launchRequestedRef.current.add(device.deviceId)
+        void requestWorkbenchLaunch(device.deviceId).then(({ url }) => {
+          const frame = registryRef.current.get(device.deviceId)
+          if (frame === undefined) return
+          registryRef.current.set(device.deviceId, { ...frame, url })
+          setFrames([...registryRef.current.values()])
+        }).catch(() => {})
+      }
     } else {
       // Keep live status current on the already-created frame (reconnect etc).
       // The tunnel endpoint is reassigned on every reconnect (fresh random
@@ -238,7 +251,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         setFrames([...registryRef.current.values()])
       }
     }
-  }, [device])
+  }, [device, requestWorkbenchLaunch])
 
   // Device tab switches keep every iframe mounted, so the child page observes
   // no navigation or session-store change. Explicitly tell an already-loaded
@@ -247,6 +260,23 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   useEffect(() => {
     if (device !== undefined) notifyActivated(device.deviceId)
   }, [device?.deviceId])
+
+
+  const handleFrameLoad = (deviceId: string): void => {
+    const frame = registryRef.current.get(deviceId)
+    if (frame === undefined) return
+    try {
+      const loaded = new URL(frame.url)
+      if (loaded.searchParams.has('token')) {
+        loaded.search = ''
+        loaded.hash = ''
+        registryRef.current.set(deviceId, { ...frame, url: loaded.toString() })
+        setFrames([...registryRef.current.values()])
+        return
+      }
+    } catch { /* malformed endpoint stays covered by lifecycle diagnostics */ }
+    if (device?.deviceId === deviceId) notifyActivated(deviceId)
+  }
 
   if (device === undefined || frames.length === 0) {
     const noEnabledDevices = enabledDeviceIds !== undefined && enabledDeviceIds.length === 0
@@ -292,7 +322,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
               allow="clipboard-read; clipboard-write"
               className="workbench-iframe"
               data-workbench-device={frame.deviceId}
-              onLoad={() => { if (active) notifyActivated(frame.deviceId) }}
+              onLoad={() => { handleFrameLoad(frame.deviceId) }}
             />
             {offline && (
               <div

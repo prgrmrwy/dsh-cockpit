@@ -29,9 +29,11 @@ class FakeWindow {
   }
 }
 
-function fakeCtx(initial = { current: undefined }) {
+function fakeCtx(initial = { current: undefined }, initialPending?: ReadonlyMap<string, { sessionId: string; kind: 'approval' | 'question'; key: string }>) {
   const listeners = new Set<() => void>()
   let snapshot: SessionListStateLike = { ...initial }
+  let pending = initialPending
+  const pendingListeners = new Set<() => void>()
   let cleanup: (() => void) | undefined
   const ctx = {
     sessions: {
@@ -43,6 +45,10 @@ function fakeCtx(initial = { current: undefined }) {
         },
       },
     },
+    ...(pending === undefined ? {} : { uiSession: { pendingInteractions: {
+      getSnapshot: () => pending as ReadonlyMap<string, { sessionId: string; kind: 'approval' | 'question'; key: string }>,
+      subscribe: (fn: () => void) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
+    } } }),
     effect: (fn: () => () => void) => { cleanup = fn() },
   }
   return {
@@ -50,6 +56,10 @@ function fakeCtx(initial = { current: undefined }) {
     set: (current: string | undefined) => {
       snapshot = { current }
       for (const fn of [...listeners]) fn()
+    },
+    setPending: (next: ReadonlyMap<string, { sessionId: string; kind: 'approval' | 'question'; key: string }>) => {
+      pending = next
+      for (const fn of [...pendingListeners]) fn()
     },
     cleanup: () => { cleanup?.() },
   }
@@ -464,6 +474,32 @@ describe('cockpit bridge client', () => {
     expect(bodiesFor('/api/bridge/session-opened')).toEqual([
       { protocolVersion: 2, sessionId: 'current', current: 'current' },
     ])
+  })
+
+  it('publishes complete minimal pending snapshots on hello and changes', async () => {
+    const first = new Map([
+      ['question:q1', { sessionId: 's2', kind: 'question' as const, key: 'question:q1' }],
+      ['approval:a1', { sessionId: 's1', kind: 'approval' as const, key: 'approval:a1' }],
+    ])
+    const fixture = fakeCtx({ current: undefined }, first)
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(bodiesFor('/api/bridge/pending-snapshot')).toEqual([{
+      protocolVersion: 3,
+      seamVersion: 1,
+      items: [
+        { sessionId: 's1', kind: 'approval', key: 'approval:a1' },
+        { sessionId: 's2', kind: 'question', key: 'question:q1' },
+      ],
+    }])
+
+    fixture.setPending(new Map())
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)).toEqual({ protocolVersion: 3, seamVersion: 1, items: [] })
+    fixture.cleanup()
   })
 
   it('swallows persistent bridge failures and cleanup cancels pending work', async () => {

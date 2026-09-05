@@ -22,6 +22,9 @@ export interface DeviceRecord {
   readonly sshAlias?: string
   readonly remoteDshPort: number
   readonly localPort?: number
+  /** DSH 0.1.2 process launch token. Persisted by the cockpit only and never
+   * projected into DeviceStatusFacts or any read API. */
+  readonly dshLaunchToken?: string
   readonly enabled: boolean
   readonly order: number
 }
@@ -63,6 +66,9 @@ export interface DeviceStatusFacts {
   readonly state: DeviceState
   readonly runningSessionCount: number
   readonly pendingInteractionCount: number
+  /** Whether the current protocol source can authoritatively observe pending
+   * approval/question state. */
+  readonly pendingInteractionObservability: 'available' | 'unavailable'
   /** Official session-row status groups, non-zero only, ordered by official
    * priority (pending warning first, then active work). */
   readonly sessionStatuses: readonly SessionActivitySummary[]
@@ -122,6 +128,8 @@ export interface AddDeviceRequest {
   readonly sshAlias?: string
   readonly remoteDshPort: number
   readonly enabled?: boolean
+  /** Full loopback URL printed by DSH 0.1.2; accepted write-only. */
+  readonly dshLaunchUrl?: string
 }
 
 export interface UpdateDeviceRequest {
@@ -130,6 +138,10 @@ export interface UpdateDeviceRequest {
   readonly remoteDshPort?: number
   readonly enabled?: boolean
   readonly order?: number
+  /** Full loopback URL printed by DSH 0.1.2; accepted write-only. */
+  readonly dshLaunchUrl?: string
+  /** Explicitly removes a previously stored launch token. */
+  readonly clearDshLaunchToken?: boolean
 }
 
 export interface RemoveDeviceRequest {

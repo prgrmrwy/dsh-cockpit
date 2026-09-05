@@ -15,8 +15,9 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 
 - 驾驶舱按请求 `Origin` 匹配设备，**插件不需要知道自己是哪台设备**——它也不
   再假设驾驶舱固定跑在某个端口，实际 Origin 由父页面握手动态提供。
-- 只传会话选择标识与协议元数据——不读不传会话内容、settings、credentials、
-  provider token。
+- DSH 0.1.2 下同时订阅官方 `ctx.uiSession.pendingInteractions`，变化时只发送
+  当前完整的 `sessionId/kind/key` 集合；不注册 approval/question listener，不做决定，
+  不读不传交互内容、会话内容、settings、credentials 或 provider token。
 - 驾驶舱不可达时保留待确认队列并按退避重试，绝不影响 DSH 页面；outbox 有
   固定容量与 TTL，避免驾驶舱长期离线时无界增长。
 

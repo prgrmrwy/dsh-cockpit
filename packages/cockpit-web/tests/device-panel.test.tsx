@@ -23,7 +23,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   order: 0,
   state: 'READY',
   runningSessionCount: 0,
-  pendingInteractionCount: 0,
+  pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [],
   compatibility: 'SUPPORTED',
   lastUpdatedAt: 0,
@@ -109,6 +109,19 @@ describe('DevicePanel', () => {
     const link = screen.getByRole('link', { name: '添加第一台设备' })
     expect(link.getAttribute('href')).toBe('#device-form')
     expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()
+  })
+
+  it('submits the optional startup URL write-only and never pre-fills it on edit', async () => {
+    renderPanel([device()])
+    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: 'Typert' } })
+    fireEvent.change(screen.getByLabelText('SSH 别名'), { target: { value: 'typert-vm' } })
+    fireEvent.change(screen.getByLabelText('DSH 端口'), { target: { value: '3081' } })
+    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: 'http://127.0.0.1:3081/?token=opaque-token-value' } })
+    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
+    await waitFor(() => expect(apiMock.addDevice).toHaveBeenCalledWith(expect.objectContaining({ dshLaunchUrl: 'http://127.0.0.1:3081/?token=opaque-token-value' })))
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
+    expect((screen.getByLabelText('DSH 启动 URL') as HTMLInputElement).value).toBe('')
   })
 
   it('switches add fields, retains a failed draft, and exposes the busy state', async () => {

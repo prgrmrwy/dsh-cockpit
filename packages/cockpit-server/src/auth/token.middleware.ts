@@ -65,7 +65,7 @@ export function requiresToken(pathname: string): boolean {
 }
 
 function isBridgeCallback(pathname: string): boolean {
-  return pathname === '/api/bridge/hello' || pathname === '/api/bridge/session-opened'
+  return pathname === '/api/bridge/hello' || pathname === '/api/bridge/session-opened' || pathname === '/api/bridge/pending-snapshot'
 }
 
 export function parseCookie(header: string | undefined): Record<string, string> {

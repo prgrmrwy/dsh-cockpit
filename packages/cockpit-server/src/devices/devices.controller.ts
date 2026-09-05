@@ -69,6 +69,15 @@ export class DevicesController {
     }
   }
 
+  @Post('devices/:deviceId/workbench-launch')
+  async workbenchLaunch(@Param('deviceId') deviceId: string): Promise<{ url: string }> {
+    try {
+      return await this.connectivity.workbenchLaunch(decodeDeviceId(deviceId))
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
   @Post('devices/:deviceId/refresh')
   async refresh(@Param('deviceId') deviceId: string): Promise<{ refreshed: boolean }> {
     try {
@@ -140,6 +149,38 @@ export class DevicesController {
       this.authorizeBridge(request, origin, bridgeProtocol)
       this.connectivity.bridgeSessionOpened(origin, sessionId as string | undefined, bridgeProtocol)
       return { opened: true, accepted: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Compatible bridge publishes a complete minimal pending snapshot. */
+  @Post('bridge/pending-snapshot')
+  async bridgePendingSnapshot(
+    @Req() request: import('express').Request,
+    @Body() body: { protocolVersion?: unknown; seamVersion?: unknown; items?: unknown },
+  ): Promise<{ accepted: boolean }> {
+    const origin = requireOrigin(request)
+    try {
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.authorizeBridge(request, origin, bridgeProtocol)
+      if (body?.seamVersion !== 1 || !Array.isArray(body.items) || body.items.length > 512) {
+        throw new Error('pending snapshot invalid')
+      }
+      const seen = new Set<string>()
+      const items = body.items.map((value): { sessionId: string; kind: 'approval' | 'question'; key: string } => {
+        if (typeof value !== 'object' || value === null) throw new Error('pending snapshot item invalid')
+        const item = value as Record<string, unknown>
+        if (typeof item.sessionId !== 'string' || item.sessionId === '' || item.sessionId.length > 256
+          || (item.kind !== 'approval' && item.kind !== 'question')
+          || typeof item.key !== 'string' || item.key === '' || item.key.length > 512) throw new Error('pending snapshot item invalid')
+        const identity = item.sessionId + '\u0000' + item.key
+        if (seen.has(identity)) throw new Error('pending snapshot duplicate key')
+        seen.add(identity)
+        return { sessionId: item.sessionId, kind: item.kind, key: item.key }
+      })
+      this.connectivity.bridgePendingSnapshot(origin, items, bridgeProtocol)
+      return { accepted: true }
     } catch (cause) {
       throw toHttp(cause)
     }
@@ -218,6 +259,7 @@ function requireAdd(body: AddDeviceRequest): AddDeviceRequest {
     ...(body.kind === undefined ? {} : { kind: body.kind }),
     ...(body.sshAlias === undefined ? {} : { sshAlias: body.sshAlias }),
     ...(body?.enabled === undefined ? {} : { enabled: body.enabled }),
+    ...(body.dshLaunchUrl === undefined ? {} : { dshLaunchUrl: requireLaunchUrl(body.dshLaunchUrl) }),
   }
 }
 
@@ -244,7 +286,19 @@ function requireUpdate(body: UpdateDeviceRequest): UpdateDeviceRequest {
     if (!Number.isInteger(body.order)) throw new HttpException(toError('bad-request', 'order must be an integer'), HttpStatus.BAD_REQUEST)
     update.order = body.order
   }
+  if (body.dshLaunchUrl !== undefined) update.dshLaunchUrl = requireLaunchUrl(body.dshLaunchUrl)
+  if (body.clearDshLaunchToken !== undefined) {
+    if (typeof body.clearDshLaunchToken !== 'boolean') throw new HttpException(toError('bad-request', 'clearDshLaunchToken must be boolean'), HttpStatus.BAD_REQUEST)
+    update.clearDshLaunchToken = body.clearDshLaunchToken
+  }
   return update as UpdateDeviceRequest
+}
+
+function requireLaunchUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 2048) {
+    throw new HttpException(toError('bad-request', 'dshLaunchUrl invalid'), HttpStatus.BAD_REQUEST)
+  }
+  return value
 }
 
 function toError(code: string, message: string): ApiError { return { code, message } }

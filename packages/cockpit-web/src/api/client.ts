@@ -45,6 +45,7 @@ export const api = {
   removeDevice: (input: RemoveDeviceRequest) => request<{ removed: boolean; requiresConfirmation: boolean }>(`/devices/${encodeURIComponent(input.deviceId)}${input.confirmed ? '?confirmed=true' : ''}`, { method: 'DELETE' }),
   refreshDevice: (deviceId: string) => request<{ refreshed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/refresh`, { method: 'POST' }),
   reconnectDevice: (deviceId: string) => request<{ reconnecting: boolean }>(`/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: 'POST' }),
+  workbenchLaunch: (deviceId: string) => request<{ url: string }>(`/devices/${encodeURIComponent(deviceId)}/workbench-launch`, { method: 'POST' }),
   /** Marks every currently known completion generation for this device read. */
   ackCompleted: (deviceId: string) => request<{ acked: boolean }>(`/devices/${encodeURIComponent(deviceId)}/completed/ack`, { method: 'POST' }),
   /** Requests the short-lived capability used by the iframe bridge handshake. */

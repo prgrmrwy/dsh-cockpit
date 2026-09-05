@@ -31,6 +31,16 @@ describe('device registry', () => {
     expect(loaded.map(d => d.deviceId)).toEqual(['device-0', 'device-1'])
   })
 
+  it('persists a launch token only inside the protected device registry', async () => {
+    await registry.save([remote({ dshLaunchToken: 'opaque-launch-token' })])
+    expect((await new DeviceRegistry(dir).load())[0]?.dshLaunchToken).toBe('opaque-launch-token')
+    expect(await readFile(registry.file, 'utf8')).toContain('opaque-launch-token')
+    if (process.platform !== 'win32') {
+      const stat = await import('node:fs/promises').then(fs => fs.stat(registry.file))
+      expect(stat.mode & 0o777).toBe(0o600)
+    }
+  })
+
   it('writes 0600 and never leaves temp files after success', async () => {
     await registry.save([remote()])
     const entries = await import('node:fs/promises').then(fs => fs.readdir(dir))

@@ -33,6 +33,7 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     || typeof row.displayName !== 'string' || row.displayName === ''
     || (row.kind !== 'local' && row.kind !== 'remote')
     || typeof row.remoteDshPort !== 'number' || !Number.isInteger(row.remoteDshPort) || row.remoteDshPort < 1
+    || (row.dshLaunchToken !== undefined && (typeof row.dshLaunchToken !== 'string' || row.dshLaunchToken === ''))
     || typeof row.enabled !== 'boolean'
     || typeof row.order !== 'number' || !Number.isInteger(row.order)
   ) return undefined
@@ -48,6 +49,7 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     // is optional and a bad value simply means "no stable port yet", which the
     // next connection overwrites.
     ...(isValidLocalPort(row.localPort) ? { localPort: row.localPort } : {}),
+    ...(typeof row.dshLaunchToken === 'string' ? { dshLaunchToken: row.dshLaunchToken } : {}),
   }
   if (record.kind === 'remote' && record.sshAlias === undefined) return undefined
   return record

@@ -5,13 +5,15 @@ window.__ModuleLoader__.load({
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 		//#region src/client/index.ts
-		const inject = ["sessions"];
+		const inject = ["sessions", "uiSession"];
 		const BRIDGE_CONFIG_MESSAGE = "dsh-cockpit:bridge-config";
 		const DEVICE_ACTIVATED_MESSAGE = "dsh-cockpit:device-activated";
 		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
 		const PLUGIN_VERSION = "0.2.1";
 		const PROTOCOL_VERSION = 2;
+		const PENDING_PROTOCOL_VERSION = 3;
+		const PENDING_SEAM_VERSION = 1;
 		const FLUSH_DELAY_MS = 250;
 		const RETRY_BASE_MS = 500;
 		const RETRY_MAX_MS = 3e4;
@@ -49,7 +51,18 @@ window.__ModuleLoader__.load({
 				let flushTimer;
 				let retryTimer;
 				let lastSelection = ctx.sessions.list.getSnapshot().current;
+				let pendingDirty = ctx.uiSession !== void 0;
+				let pendingFingerprint = "";
 				const outbox = /* @__PURE__ */ new Map();
+				const pendingSnapshot = () => {
+					const source = ctx.uiSession?.pendingInteractions.getSnapshot();
+					if (source === void 0) return [];
+					return [...source.values()].filter((item) => item.kind === "approval" || item.kind === "question").map((item) => ({
+						sessionId: item.sessionId,
+						kind: item.kind,
+						key: item.key
+					})).sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key));
+				};
 				const currentKey = () => {
 					const current = ctx.sessions.list.getSnapshot().current;
 					return current === void 0 ? void 0 : current;
@@ -165,9 +178,34 @@ window.__ModuleLoader__.load({
 								return;
 							}
 							helloReady = true;
+							pendingDirty = ctx.uiSession !== void 0;
 							failureCount = 0;
 							const current = ctx.sessions.list.getSnapshot().current;
 							if (current !== void 0) enqueue(current);
+						}
+						if (pendingDirty && ctx.uiSession !== void 0) {
+							const items = pendingSnapshot();
+							const fingerprint = JSON.stringify(items);
+							let response;
+							try {
+								response = await post("/api/bridge/pending-snapshot", {
+									protocolVersion: PENDING_PROTOCOL_VERSION,
+									seamVersion: PENDING_SEAM_VERSION,
+									items
+								}, activeConfig);
+							} catch {
+								failed = true;
+								fail(void 0, void 0, activeConfig);
+								return;
+							}
+							if (!response.ok) {
+								failed = true;
+								fail(response.status, await readErrorCode(response), activeConfig);
+								return;
+							}
+							pendingFingerprint = fingerprint;
+							pendingDirty = false;
+							failureCount = 0;
 						}
 						purgeExpired();
 						while (!disposed && config === activeConfig && outbox.size > 0) {
@@ -230,6 +268,11 @@ window.__ModuleLoader__.load({
 					requestRun(FLUSH_DELAY_MS, true);
 				};
 				const unsubscribe = ctx.sessions.list.subscribe(onSelectionChange);
+				const unsubscribePending = ctx.uiSession?.pendingInteractions.subscribe(() => {
+					if (JSON.stringify(pendingSnapshot()) === pendingFingerprint) return;
+					pendingDirty = true;
+					requestRun(FLUSH_DELAY_MS, true);
+				});
 				const onMessage = (event) => {
 					const nextConfig = parseConfig(event);
 					if (nextConfig !== void 0 && (config === void 0 || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
@@ -240,6 +283,7 @@ window.__ModuleLoader__.load({
 					if (!isActivation(event, config)) return;
 					const current = ctx.sessions.list.getSnapshot().current;
 					if (current !== void 0) enqueue(current);
+					pendingDirty = ctx.uiSession !== void 0;
 					helloReady = false;
 					requestRun(0, true);
 				};
@@ -249,6 +293,7 @@ window.__ModuleLoader__.load({
 					clearFlushTimer();
 					clearRetryTimer();
 					unsubscribe();
+					unsubscribePending?.();
 					window.removeEventListener("message", onMessage);
 					outbox.clear();
 				};

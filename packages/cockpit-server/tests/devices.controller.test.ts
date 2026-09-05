@@ -147,6 +147,24 @@ describe('bridge session-opened / hello endpoints', () => {
     expect(bridgeHello).toHaveBeenCalledWith('http://127.0.0.1:4317', 'old-plugin', 1, undefined)
   })
 
+  it('validates pending snapshots before forwarding a replace operation', async () => {
+    const bridgePendingSnapshot = vi.fn()
+    const validateBridgeCapability = vi.fn()
+    const controller = new DevicesController({ bridgePendingSnapshot, validateBridgeCapability } as never, {} as never)
+    const req = request({ origin: 'http://127.0.0.1:4317', [BRIDGE_CAPABILITY_HEADER]: 'cap' })
+
+    await expect(controller.bridgePendingSnapshot(req, {
+      protocolVersion: 3,
+      seamVersion: 1,
+      items: [{ sessionId: 's1', kind: 'approval', key: 'approval:a1' }],
+    })).resolves.toEqual({ accepted: true })
+    expect(validateBridgeCapability).toHaveBeenCalled()
+    expect(bridgePendingSnapshot).toHaveBeenCalledWith('http://127.0.0.1:4317', [{ sessionId: 's1', kind: 'approval', key: 'approval:a1' }], 3)
+
+    await expect(controller.bridgePendingSnapshot(req, { protocolVersion: 3, seamVersion: 2, items: [] })).rejects.toMatchObject({ status: 400 })
+    await expect(controller.bridgePendingSnapshot(req, { protocolVersion: 3, seamVersion: 1, items: [{ sessionId: 's1', kind: 'bad', key: 'x' }] })).rejects.toMatchObject({ status: 400 })
+  })
+
   it('hello rejects a forged capability but accepts a request with no header (legacy path)', async () => {
     const validateBridgeCapability = vi.fn(() => { throw new Error('invalid or expired bridge capability') })
     const bridgeHello = vi.fn()

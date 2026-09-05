@@ -5,7 +5,8 @@ import { DeviceLifecycle } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
 import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
-import { Rc2Client } from './rc2-client.js'
+import { probeDshCarrier } from './protocol-client.js'
+import { dshIframeLaunchUrl, parseDshLaunchUrl } from './dsh-auth.js'
 import { resolveSshExecutable } from '../runtime/config.js'
 import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
 
@@ -29,10 +30,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#sshExecutable = resolveSshExecutable()
     this.#tunnels = new TunnelManager({
       sshExecutable: this.#sshExecutable,
-      readinessProbe: async (endpoint, _signal) => {
-        const client = new Rc2Client({ endpoint })
-        return client.probe()
-      },
+      readinessProbe: probeDshCarrier,
     })
     void this.#boot()
   }
@@ -98,6 +96,7 @@ export class ConnectivityService implements OnApplicationShutdown {
           state: facts.state,
           runningSessionCount: facts.runningSessionCount,
           pendingInteractionCount: facts.pendingInteractionCount,
+          pendingInteractionObservability: facts.pendingInteractionObservability,
           sessionStatuses: facts.sessionStatuses,
           ...(this.#bridgeSeenAt.has(facts.deviceId)
             ? { bridgeSeenAt: this.#bridgeSeenAt.get(facts.deviceId)! }
@@ -132,6 +131,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     remoteDshPort: number
     kind?: 'local' | 'remote'
     enabled?: boolean
+    dshLaunchUrl?: string
   }): Promise<DeviceRecord> {
     const kind = input.kind ?? 'remote'
     if (kind === 'remote') {
@@ -148,11 +148,13 @@ export class ConnectivityService implements OnApplicationShutdown {
       enabled: input.enabled ?? true,
       order: records.length,
       ...(kind === 'remote' ? { sshAlias: input.sshAlias! } : {}),
+      ...(input.dshLaunchUrl === undefined ? {} : { dshLaunchToken: parseDshLaunchUrl(input.dshLaunchUrl, input.remoteDshPort) }),
     }
     const next = [...records, record]
     await this.#registry.save(next)
     this.#attach(record)
-    return record
+    const { dshLaunchToken: _launchToken, ...publicRecord } = record
+    return publicRecord
   }
 
   async updateDevice(deviceId: string, update: {
@@ -161,6 +163,8 @@ export class ConnectivityService implements OnApplicationShutdown {
     remoteDshPort?: number
     enabled?: boolean
     order?: number
+    dshLaunchUrl?: string
+    clearDshLaunchToken?: boolean
   }): Promise<DeviceRecord> {
     const records = await this.#registry.load()
     const index = records.findIndex(r => r.deviceId === deviceId)
@@ -177,12 +181,17 @@ export class ConnectivityService implements OnApplicationShutdown {
       const identity = await probeSshIdentity(effectiveAlias, { sshExecutable: this.#sshExecutable })
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
+    if (update.dshLaunchUrl !== undefined && update.clearDshLaunchToken === true) throw new Error('cannot set and clear DSH launch token together')
+    const effectivePort = update.remoteDshPort ?? current.remoteDshPort
+    const launchToken = update.dshLaunchUrl === undefined ? current.dshLaunchToken : parseDshLaunchUrl(update.dshLaunchUrl, effectivePort)
+    const { dshLaunchToken: _priorLaunchToken, ...currentWithoutToken } = current
     const updated: DeviceRecord = {
-      ...current,
+      ...currentWithoutToken,
       displayName: update.displayName ?? current.displayName,
       ...(update.sshAlias === undefined ? {} : { sshAlias: update.sshAlias }),
       ...(update.remoteDshPort === undefined ? {} : { remoteDshPort: update.remoteDshPort }),
       ...(update.enabled === undefined ? {} : { enabled: update.enabled }),
+      ...(update.clearDshLaunchToken === true || launchToken === undefined ? {} : { dshLaunchToken: launchToken }),
     }
     const withoutUpdated = records.filter(record => record.deviceId !== deviceId)
     const targetIndex = update.order === undefined
@@ -193,7 +202,8 @@ export class ConnectivityService implements OnApplicationShutdown {
     const normalized = reordered.map((record, order): DeviceRecord => ({ ...record, order }))
     await this.#registry.save(normalized)
     const next = normalized.find(record => record.deviceId === deviceId)!
-    if (update.enabled !== undefined && update.enabled !== current.enabled) {
+    const authChanged = update.dshLaunchUrl !== undefined || update.clearDshLaunchToken === true
+    if ((update.enabled !== undefined && update.enabled !== current.enabled) || authChanged) {
       // stop() is terminal. Replace the lifecycle when the enabled bit flips;
       // reusing an aborted instance would make a later enable a no-op. A
       // disable also invalidates bridge presence: it describes a live page,
@@ -205,7 +215,8 @@ export class ConnectivityService implements OnApplicationShutdown {
     }
     for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
     this.events.publish(this.statuses())
-    return next
+    const { dshLaunchToken: _launchToken, ...publicRecord } = next
+    return publicRecord
   }
 
   async removeDevice(deviceId: string, confirmed: boolean): Promise<{ removed: boolean; requiresConfirmation: boolean }> {
@@ -240,6 +251,19 @@ export class ConnectivityService implements OnApplicationShutdown {
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     if (!lifecycle.current().enabled) throw new Error(`device ${deviceId} is disabled`)
     lifecycle.clearAllCompleted()
+  }
+
+  /** Returns a one-shot tokenized iframe URL without exposing it in status. */
+  async workbenchLaunch(deviceId: string): Promise<{ url: string }> {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    const facts = lifecycle.current()
+    if (facts.endpoint === undefined) throw new Error(`device ${deviceId} is not connected`)
+    if (lifecycle.protocolKind() === 'rc2') return { url: facts.endpoint }
+    const record = (await this.#registry.load()).find(candidate => candidate.deviceId === deviceId)
+    const url = dshIframeLaunchUrl(new URL(facts.endpoint), record?.dshLaunchToken)
+    if (url === undefined) throw new Error('DSH authentication required; paste the current dsh web startup URL')
+    return { url }
   }
 
   /** Issues a short-lived bridge capability after the shell (same-origin,
@@ -290,6 +314,14 @@ export class ConnectivityService implements OnApplicationShutdown {
     void protocolVersion
     const lifecycle = this.#lifecycleByOrigin(origin)
     lifecycle.setBridgeSelection(sessionId)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
+  }
+
+  /** Replace the typert bridge's complete pending snapshot. */
+  bridgePendingSnapshot(origin: string, items: readonly { sessionId: string; kind: 'approval' | 'question'; key: string }[], protocolVersion: number): void {
+    if (protocolVersion < 3) throw new Error('pending snapshot protocol unsupported')
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    lifecycle.setBridgePendingSnapshot(items)
     this.#recordBridgeSuccess(lifecycle.deviceId)
   }
 

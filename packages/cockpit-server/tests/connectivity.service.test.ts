@@ -147,6 +147,22 @@ describe('connectivity device updates', () => {
     await service.onApplicationShutdown()
   })
 
+  it('redacts launch tokens from add and update return values', async () => {
+    const { service } = await serviceFor([])
+    const added = await service.addDevice({ displayName: 'Local', kind: 'local', remoteDshPort: 3081, enabled: false, dshLaunchUrl: 'http://127.0.0.1:3081/?token=abcdefghijklmnop' })
+    expect(added).not.toHaveProperty('dshLaunchToken')
+    const updated = await service.updateDevice(added.deviceId, { dshLaunchUrl: 'http://127.0.0.1:3081/?token=qrstuvwxyzabcdef' })
+    expect(updated).not.toHaveProperty('dshLaunchToken')
+    await service.onApplicationShutdown()
+  })
+
+  it('never projects a persisted DSH launch token into device facts', async () => {
+    const { service } = await serviceFor([remote('a', 0, { dshLaunchToken: 'opaque-secret-value' })])
+    expect(JSON.stringify(service.statuses())).not.toContain('opaque-secret-value')
+    expect(service.statuses()[0]).not.toHaveProperty('dshLaunchToken')
+    await service.onApplicationShutdown()
+  })
+
   it('omits the outcome-unknown counter from device facts', async () => {
     const { service } = await serviceFor([remote('a', 0)])
 
@@ -264,7 +280,7 @@ describe('connectivity device updates', () => {
       enabled: false,
       state: 'DISABLED',
       runningSessionCount: 0,
-      pendingInteractionCount: 0,
+      pendingInteractionCount: 0, pendingInteractionObservability: 'available',
       sessionStatuses: [],
     }))
     expect(service.statuses()[0]).not.toHaveProperty('endpoint')
@@ -378,6 +394,9 @@ describe('connectivity device updates', () => {
     const port = registry.localPortWrites[0]![1]
     expect(port).not.toBe(49999)
     expect(registry.records[0]?.localPort).toBe(port)
+    for (let i = 0; i < 200 && service.statuses()[0]?.state !== 'READY'; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
     expect(service.statuses()[0]?.state).toBe('READY')
 
     await service.onApplicationShutdown()

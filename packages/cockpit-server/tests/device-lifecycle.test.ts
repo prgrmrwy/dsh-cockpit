@@ -82,11 +82,35 @@ describe('device lifecycle', () => {
       enabled: false,
       state: 'DISABLED',
       runningSessionCount: 0,
-      pendingInteractionCount: 0,
+      pendingInteractionCount: 0, pendingInteractionObservability: 'available',
       sessionStatuses: [],
     }))
     expect(lifecycle.current().endpoint).toBeUndefined()
     expect(tunnelConnectCalled).toBe(false)
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+
+  it('keeps typert pending unavailable until a compatible bridge snapshot replaces it', async () => {
+    const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
+    const tunnel = new TunnelManager({ spawn: () => new FakeProcess() as never, readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }) })
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      createProtocol: async () => ({
+        kind: 'typert',
+        client: { kind: 'typert', probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }), listSessions: async () => [], listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }) },
+        stream: { on: (name: string, fn: (event: { type: string; [key: string]: unknown }) => void) => { handlers.set(name, fn); return undefined as never }, off: () => undefined as never, open: async () => {}, dispose: () => {} },
+      }),
+      onFacts: () => {},
+    })
+    lifecycle.start()
+    for (let i = 0; i < 100 && lifecycle.current().state !== 'READY'; i += 1) await new Promise(resolve => setTimeout(resolve, 5))
+    expect(lifecycle.current()).toEqual(expect.objectContaining({ pendingInteractionCount: 0, pendingInteractionObservability: 'unavailable' }))
+    lifecycle.setBridgePendingSnapshot([{ sessionId: 's1', kind: 'approval', key: 'approval:a1' }])
+    expect(lifecycle.current()).toEqual(expect.objectContaining({ pendingInteractionCount: 1, pendingInteractionObservability: 'available' }))
+    lifecycle.setBridgePendingSnapshot([])
+    expect(lifecycle.current()).toEqual(expect.objectContaining({ pendingInteractionCount: 0, pendingInteractionObservability: 'available' }))
     await lifecycle.stop()
     await tunnel.disposeAll()
   })

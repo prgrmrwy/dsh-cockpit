@@ -42,10 +42,15 @@
 **标准 `dsh web` 即可，零改造。** 下文的[桥接插件（可选）](#桥接插件可选与-dsh-的通信)是设备侧的
 可选配套，不装不影响任何核心能力。
 
-驾驶舱只使用 rc.2 官方接口：`host.describe`、`session.list` 与
-`/api/events.mux`、`/api/events.host`。所需的状态信号
-（`host/session-status`、`approval/requested`、`question/requested` 及其
-`*/resolved`）官方事件流已全部覆盖。
+驾驶舱同时兼容 rc.2 官方接口（`host.describe`、`session.list`、
+`/api/events.mux`、`/api/events.host`）和 DSH 0.1.2 typert 接口
+（`session/list`、`/api/remote.mux` 上的 `$events` 与 `workspace/follow`）。
+0.1.2 开启浏览器认证时，在设备新增/编辑中粘贴该进程打印的完整启动 URL；
+驾驶舱只在自有 0600 原子设备存储中保存 launch token，cookie 仅在连接代内存中
+持有，绝不读取 `~/.dsh`、日志或 provider credential。
+
+rc.2 的 pending 继续来自 Host 事件；typert pending 只有兼容桥接插件提供当前完整
+快照后才标为可观测，否则 UI 明确显示“等待决策状态不可观测”，不会把未知当零。
 
 前提只有两条：
 
@@ -127,8 +132,10 @@ iframe DOM，也拿不到它。有了插件后：
 - **认证不依赖跨端口 Cookie**：`SameSite=Strict` 的持久 HttpOnly token 从不
   暴露给插件；父页面用自己的会话凭据换取一个绑定设备 Origin、短期有效、
   单一用途的能力串，通过请求头传给桥接调用，驾驶舱据此校验。
-- **只传会话标识与协议元数据**：不读、不传会话内容、settings、credentials、
-  provider token。
+- **只传最小状态标识与协议元数据**：0.1.2 兼容桥接还订阅官方
+  `uiSession.pendingInteractions`，仅上报当前完整的 `sessionId/kind/key` 集合；不注册
+  approval/question 决策 listener，不读、不传交互内容、会话内容、settings、
+  credentials 或 provider token。
 - **静默失败**：桥接不可达时保留待确认队列并按退避重试，绝不扰动 DSH 页面；
   outbox 有固定容量与 TTL，优先保留当前与最近选择，避免驾驶舱长期离线时
   无界增长。

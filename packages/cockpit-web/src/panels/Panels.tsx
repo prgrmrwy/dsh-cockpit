@@ -16,6 +16,7 @@ type DeviceForm = {
   readonly sshAlias: string
   readonly remoteDshPort: string
   readonly enabled: boolean
+  readonly dshLaunchUrl: string
 }
 
 const EMPTY_DEVICE_FORM: DeviceForm = {
@@ -24,6 +25,7 @@ const EMPTY_DEVICE_FORM: DeviceForm = {
   sshAlias: '',
   remoteDshPort: '3080',
   enabled: true,
+  dshLaunchUrl: '',
 }
 
 const STATE_LABELS: Record<DeviceStatusFacts['state'], string> = {
@@ -52,6 +54,7 @@ function draftFor(device: DeviceStatusFacts): DeviceForm {
     sshAlias: device.sshAlias ?? '',
     remoteDshPort: String(device.remoteDshPort),
     enabled: device.enabled,
+    dshLaunchUrl: '',
   }
 }
 
@@ -111,6 +114,7 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
         ...(form.kind === 'remote' ? { sshAlias: form.sshAlias } : {}),
         remoteDshPort: Number(form.remoteDshPort),
         enabled: form.enabled,
+        ...(form.dshLaunchUrl === '' ? {} : { dshLaunchUrl: form.dshLaunchUrl }),
       }
       if (mode.kind === 'edit') {
         await api.updateDevice(mode.deviceId, connectionFields)
@@ -297,6 +301,11 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
                   <input aria-label="DSH 端口" type="number" min={1} max={65535} value={form.remoteDshPort} onChange={event => setForm(current => ({ ...current, remoteDshPort: event.target.value }))} required />
                 </label>
                 <label>
+                  DSH 启动 URL（可选）
+                  <input aria-label="DSH 启动 URL" type="url" value={form.dshLaunchUrl} onChange={event => setForm(current => ({ ...current, dshLaunchUrl: event.target.value }))} placeholder="http://127.0.0.1:3081/?token=…" autoComplete="off" />
+                  <span className="field-hint">DSH 0.1.2 提示认证时，粘贴当前 dsh web 输出的完整启动 URL；保存后不会回显。</span>
+                </label>
+                <label>
                   <span>
                     <input aria-label="启用设备" type="checkbox" checked={form.enabled} onChange={event => setForm(current => ({ ...current, enabled: event.target.checked }))} />
                     {' '}启用设备
@@ -348,11 +357,13 @@ export function OverviewPanel({ devices, onClose, onSelect }: PanelProps & {
               <span className="panel-row-state">
                 {!device.enabled
                   ? '已禁用'
-                  : device.runningSessionCount > 0
-                    ? `进行中 ×${device.runningSessionCount}${device.pendingInteractionCount > 0 ? ` · 等待决策 ×${device.pendingInteractionCount}` : ''}`
-                    : device.pendingInteractionCount > 0
-                      ? `等待决策 ×${device.pendingInteractionCount}`
-                      : STATE_LABELS[device.state]}
+                  : device.pendingInteractionObservability === 'unavailable'
+                    ? `${device.runningSessionCount > 0 ? `进行中 ×${device.runningSessionCount} · ` : ''}等待决策状态不可观测`
+                    : device.runningSessionCount > 0
+                      ? `进行中 ×${device.runningSessionCount}${device.pendingInteractionCount > 0 ? ` · 等待决策 ×${device.pendingInteractionCount}` : ''}`
+                      : device.pendingInteractionCount > 0
+                        ? `等待决策 ×${device.pendingInteractionCount}`
+                        : STATE_LABELS[device.state]}
               </span>
             </li>
           ))}

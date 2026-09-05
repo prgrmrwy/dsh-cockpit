@@ -18,9 +18,9 @@
  * settings, credentials or content — only the session id of a user-initiated
  * selection crosses the bridge.
  */
-import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
+import type { Context } from '@deepseek-ai/cordis'
 
-export const inject = ['sessions']
+export const inject = ['sessions', 'uiSession']
 
 const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config'
 const DEVICE_ACTIVATED_MESSAGE = 'dsh-cockpit:device-activated'
@@ -28,6 +28,8 @@ const CAPABILITY_EXPIRED_MESSAGE = 'dsh-cockpit:capability-expired'
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
 const PLUGIN_VERSION = '0.2.1'
 const PROTOCOL_VERSION = 2
+const PENDING_PROTOCOL_VERSION = 3
+const PENDING_SEAM_VERSION = 1
 
 // These limits are deliberately implementation details rather than protocol.
 const FLUSH_DELAY_MS = 250
@@ -76,7 +78,14 @@ function isActivation(event: MessageEvent, config: BridgeConfig | undefined): bo
     && (event.data as { type?: unknown }).type === DEVICE_ACTIVATED_MESSAGE
 }
 
-export function apply(ctx: ClientContext): void {
+interface PendingInteraction { readonly sessionId: string; readonly kind: 'approval' | 'question'; readonly key: string }
+interface PendingObservable { getSnapshot(): ReadonlyMap<string, PendingInteraction>; subscribe(listener: () => void): () => void }
+type BridgeContext = Context & {
+  readonly sessions: { readonly list: { getSnapshot(): { readonly current?: string }; subscribe(listener: () => void): () => void } }
+  readonly uiSession: { readonly pendingInteractions: PendingObservable }
+}
+
+export function apply(ctx: BridgeContext): void {
   ctx.effect(() => {
     let config: BridgeConfig | undefined
     let helloReady = false
@@ -87,7 +96,19 @@ export function apply(ctx: ClientContext): void {
     let flushTimer: ReturnType<typeof setTimeout> | undefined
     let retryTimer: ReturnType<typeof setTimeout> | undefined
     let lastSelection = ctx.sessions.list.getSnapshot().current
+    let pendingDirty = ctx.uiSession !== undefined
+    let pendingFingerprint = ''
     const outbox = new Map<string, OutboxEntry>()
+
+
+    const pendingSnapshot = (): readonly PendingInteraction[] => {
+      const source = ctx.uiSession?.pendingInteractions.getSnapshot()
+      if (source === undefined) return []
+      return [...source.values()]
+        .filter(item => item.kind === 'approval' || item.kind === 'question')
+        .map(item => ({ sessionId: item.sessionId, kind: item.kind, key: item.key }))
+        .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key))
+    }
 
     const currentKey = (): string | undefined => {
       const current = ctx.sessions.list.getSnapshot().current
@@ -226,11 +247,37 @@ export function apply(ctx: ClientContext): void {
             return
           }
           helloReady = true
+          pendingDirty = ctx.uiSession !== undefined
           failureCount = 0
           // A successful hello is a recovery point. Re-asserting the current
           // selection also recreates an ack that may have expired from outbox.
           const current = ctx.sessions.list.getSnapshot().current
           if (current !== undefined) enqueue(current)
+        }
+
+        if (pendingDirty && ctx.uiSession !== undefined) {
+          const items = pendingSnapshot()
+          const fingerprint = JSON.stringify(items)
+          let response: Response
+          try {
+            response = await post('/api/bridge/pending-snapshot', {
+              protocolVersion: PENDING_PROTOCOL_VERSION,
+              seamVersion: PENDING_SEAM_VERSION,
+              items,
+            }, activeConfig)
+          } catch {
+            failed = true
+            fail(undefined, undefined, activeConfig)
+            return
+          }
+          if (!response.ok) {
+            failed = true
+            fail(response.status, await readErrorCode(response), activeConfig)
+            return
+          }
+          pendingFingerprint = fingerprint
+          pendingDirty = false
+          failureCount = 0
         }
 
         purgeExpired()
@@ -305,6 +352,12 @@ export function apply(ctx: ClientContext): void {
     }
 
     const unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
+    const unsubscribePending = ctx.uiSession?.pendingInteractions.subscribe(() => {
+      const fingerprint = JSON.stringify(pendingSnapshot())
+      if (fingerprint === pendingFingerprint) return
+      pendingDirty = true
+      requestRun(FLUSH_DELAY_MS, true)
+    })
     const onMessage = (event: MessageEvent): void => {
       const nextConfig = parseConfig(event)
       if (nextConfig !== undefined && (config === undefined || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
@@ -321,6 +374,7 @@ export function apply(ctx: ClientContext): void {
       if (!isActivation(event, config)) return
       const current = ctx.sessions.list.getSnapshot().current
       if (current !== undefined) enqueue(current)
+      pendingDirty = ctx.uiSession !== undefined
       helloReady = false
       requestRun(0, true)
     }
@@ -331,6 +385,7 @@ export function apply(ctx: ClientContext): void {
       clearFlushTimer()
       clearRetryTimer()
       unsubscribe()
+      unsubscribePending?.()
       window.removeEventListener('message', onMessage)
       outbox.clear()
     }

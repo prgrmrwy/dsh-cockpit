@@ -121,6 +121,9 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
                   aria-label="未检测到桥接插件"
                 ><BridgeIcon variant="disconnected" /></span>
               )}
+              {device.pendingInteractionObservability === 'unavailable' && (
+                <span className="bridge-hint" data-pending-observability="unavailable" title="等待决策状态不可观测" aria-label="等待决策状态不可观测">?</span>
+              )}
               {device.sessionStatuses.length > 0 && (
                 <span className="topbar-sessions" data-cockpit-session-statuses={device.deviceId}>
                   {device.sessionStatuses.map(status => (

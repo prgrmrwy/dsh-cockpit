@@ -8,7 +8,7 @@ afterEach(cleanup)
 
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
-  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0,
+  state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
   ...overrides,
 })
@@ -25,6 +25,17 @@ describe('workbench', () => {
     // Chrome 136+ tightened the default allowlist of clipboard-read/write to
     // `self`; the cross-origin workbench iframe must declare them explicitly.
     expect(frame!.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
+  })
+
+  it('uses a tokenized root once then scrubs the steady iframe src', async () => {
+    const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque' })
+    const { container } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+    // jsdom fires iframe load synchronously for the assigned token URL, so the
+    // component has already scrubbed its steady src by the time we observe it.
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    expect(requestWorkbenchLaunch).toHaveBeenCalledWith('d1')
   })
 
   it('keeps the iframe alive across device switches', () => {

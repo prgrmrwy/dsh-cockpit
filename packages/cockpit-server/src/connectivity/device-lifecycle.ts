@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common'
 import type { CockpitEvent, DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
+import { createDeviceProtocol, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
 import { TunnelManager } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 
@@ -24,6 +25,7 @@ export interface LiveDeviceFacts {
   readonly state: DeviceState
   readonly runningSessionCount: number
   readonly pendingInteractionCount: number
+  readonly pendingInteractionObservability: 'available' | 'unavailable'
   readonly sessionStatuses: readonly SessionActivitySummary[]
   readonly compatibility: 'SUPPORTED' | 'EXPERIMENTAL' | 'INCOMPATIBLE'
   readonly lastUpdatedAt: number
@@ -50,6 +52,8 @@ export interface DeviceLifecycleOptions {
   readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   /** Test seam for the dual event stream (defaults to a real DualEventStream). */
   readonly createStream?: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
+  /** Production protocol factory; legacy client/stream seams remain for focused tests. */
+  readonly createProtocol?: (endpoint: URL, record: DeviceRecord) => Promise<{ readonly kind: 'rc2' | 'typert'; readonly client: DeviceProtocolClient; readonly stream: DeviceProtocolStream }>
 }
 
 export class DeviceLifecycle {
@@ -62,6 +66,7 @@ export class DeviceLifecycle {
   readonly #baselineTimeoutMs: number
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
+  readonly #createProtocol: NonNullable<DeviceLifecycleOptions['createProtocol']>
   readonly #log = new Logger(DeviceLifecycle.name)
   readonly #abort = new AbortController()
   #runAbort: AbortController | undefined
@@ -108,8 +113,10 @@ export class DeviceLifecycle {
   #stateExplicit: DeviceState
   #diagnostic = ''
   #endpoint: URL | undefined
-  #stream: Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
-  #client: Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'> | undefined
+  #stream: Pick<DeviceProtocolStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
+  #client: Pick<DeviceProtocolClient, 'probe' | 'listSessions' | 'listWorkspaces'> | undefined
+  #protocolKind: 'rc2' | 'typert' = 'rc2'
+  #bridgePendingAvailable = false
   #task: Promise<void> | undefined
   #stopped = false
 
@@ -125,7 +132,15 @@ export class DeviceLifecycle {
     this.#baselineTimeoutMs = options.baselineTimeoutMs ?? 5_000
     this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
     this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
+    this.#createProtocol = options.createProtocol ?? (async (endpoint, record) => {
+      if (options.createClient !== undefined || options.createStream !== undefined) {
+        return { kind: 'rc2' as const, client: await this.#createClient(endpoint) as DeviceProtocolClient, stream: this.#createStream(endpoint) as unknown as DeviceProtocolStream }
+      }
+      return createDeviceProtocol({ endpoint, deviceId: this.deviceId, ...(record.dshLaunchToken === undefined ? {} : { launchToken: record.dshLaunchToken }) })
+    })
   }
+
+  protocolKind(): 'rc2' | 'typert' { return this.#protocolKind }
 
   /** Facts currently aggregated for this device. */
   current(): LiveDeviceFacts {
@@ -140,6 +155,7 @@ export class DeviceLifecycle {
       state: this.#stateExplicit,
       runningSessionCount: this.#runningSessionIds().size,
       pendingInteractionCount: this.#totalPendingKeys(),
+      pendingInteractionObservability: this.#protocolKind === 'rc2' || this.#bridgePendingAvailable ? 'available' : 'unavailable',
       sessionStatuses: this.#sessionStatuses(),
       compatibility: this.#stateExplicit === 'READY' || this.#stateExplicit === 'DEGRADED' ? 'SUPPORTED' : 'INCOMPATIBLE',
       lastUpdatedAt: Date.now(),
@@ -340,6 +356,17 @@ export class DeviceLifecycle {
     this.clearCompleted(sessionId)
   }
 
+  /** Replace the compatible typert bridge's complete pending snapshot. */
+  setBridgePendingSnapshot(items: readonly { sessionId: string; kind: 'approval' | 'question'; key: string }[]): void {
+    if (this.#protocolKind !== 'typert') return
+    this.#pendingBySession.clear()
+    for (const item of items) {
+      if (!this.#subagents.has(item.sessionId)) this.#trackInteraction(item.sessionId, item.key, item.kind, false)
+    }
+    this.#bridgePendingAvailable = true
+    this.#emitFacts()
+  }
+
   start(): void {
     if (!this.#record.enabled || this.#stopped || this.#task !== undefined) return
     this.#task = this.#run()
@@ -362,6 +389,8 @@ export class DeviceLifecycle {
     this.#sessions.clear()
     this.#subagents.clear()
     this.#pendingBySession.clear()
+    this.#bridgePendingAvailable = false
+    this.#protocolKind = 'rc2'
     this.#archivedSessions.clear()
     this.#bridgeSelection = undefined
     if (!this.#record.enabled) this.#setState('DISABLED', 'device disabled')
@@ -465,7 +494,20 @@ export class DeviceLifecycle {
    * be lost forever. With subscribe-first, those edges are buffered and
    * replayed after the baseline in arrival order. */
   async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<boolean> {
-    this.#client = await this.#createClient(endpoint)
+    let protocol: Awaited<ReturnType<NonNullable<DeviceLifecycleOptions['createProtocol']>>>
+    try {
+      protocol = await this.#createProtocol(endpoint, this.#record)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause)
+      this.#setState(message.includes('NON_DSH_SERVICE') ? 'NON_DSH_SERVICE' : 'DSH_UNAVAILABLE', message)
+      await onFailure?.()
+      this.#endpoint = undefined
+      return false
+    }
+    this.#protocolKind = protocol.kind
+    this.#bridgePendingAvailable = protocol.kind === 'rc2'
+    this.#pendingBySession.clear()
+    this.#client = protocol.client
     const probe = await this.#client.probe()
     if (!probe.ok) {
       this.#setState(probe.state, probe.diagnostic)
@@ -473,7 +515,7 @@ export class DeviceLifecycle {
       this.#endpoint = undefined
       return false
     }
-    this.#stream = this.#createStream(endpoint)
+    this.#stream = protocol.stream
     this.#stream.on('event', event => this.#onStreamEvent(event))
     this.#buffering = true
     try {
@@ -625,7 +667,7 @@ export class DeviceLifecycle {
       }
       this.#lastBaselineSeen = new Set(sessions.map(s => s.sessionId))
       this.#refreshSubagents(sessions)
-      this.#pendingBySession.clear()
+      if (this.#protocolKind === 'rc2') this.#pendingBySession.clear()
       this.#syncSessions(sessions)
       this.#replayBuffer()
       this.#pruneSessions()
