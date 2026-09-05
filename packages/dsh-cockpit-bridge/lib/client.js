@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
 		const DEVICE_ACTIVATED_MESSAGE = "dsh-cockpit:device-activated";
 		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.2.1";
+		const PLUGIN_VERSION = "0.3.0";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;

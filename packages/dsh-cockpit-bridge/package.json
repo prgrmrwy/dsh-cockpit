@@ -1,6 +1,6 @@
 {
   "name": "dsh-cockpit-bridge",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Cockpit bridge: reports session-open selections from the official DSH web client to the local dsh-cockpit so completion reminders clear exactly like the official select did",
   "license": "MIT",
   "type": "module",

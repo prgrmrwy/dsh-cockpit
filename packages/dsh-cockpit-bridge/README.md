@@ -23,7 +23,7 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 
 ## 协议版本 2（可靠确认）
 
-当前版本实现协议 v2（插件版本 0.2.1）：
+当前版本实现 selection 协议 v2 与 pending snapshot 协议 v3（插件版本 0.3.0）：
 
 1. **父页面握手**：驾驶舱父页面在 iframe `load`、设备被激活、或能力需要刷新
    时，通过精确 `targetOrigin` 向 iframe `postMessage`：
