@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import WebSocket from 'ws'
 import type { CockpitEvent, DeviceState } from '@dsh-cockpit/shared'
-import { exchangeDshLaunchToken, isDshAuthenticationRequired } from './dsh-auth.js'
+import { exchangeDshLaunchToken, inspectDshCookie, isDshAuthenticationRequired, type DshCookieSession } from './dsh-auth.js'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 
 export interface SessionRow {
@@ -39,18 +39,55 @@ export interface DeviceProtocolStream {
   dispose(): void | Promise<void>
 }
 
+export interface AcceptedProtocolAuth {
+  readonly launchToken?: string
+  readonly cookie: string
+  readonly authority: string
+  readonly expiresAt: number
+}
+
 export interface DeviceProtocolAdapter {
   readonly kind: 'rc2' | 'typert'
   readonly client: DeviceProtocolClient
   readonly stream: DeviceProtocolStream
+  readonly auth?: AcceptedProtocolAuth
+}
+
+export interface PersistedProtocolCookie {
+  readonly cookie: string
+  readonly authority: string
+  readonly expiresAt: number
+}
+
+export interface RecoveredProtocolAuth {
+  readonly launchToken: string
 }
 
 export interface CreateProtocolOptions {
   readonly endpoint: URL
   readonly deviceId: string
   readonly launchToken?: string
+  readonly persistedCookie?: PersistedProtocolCookie
+  readonly recoverAuth?: () => Promise<RecoveredProtocolAuth | string | undefined>
   readonly fetch?: typeof fetch
   readonly createSocket?: (url: URL, headers: Record<string, string>) => WebSocket
+}
+
+export class DshAuthenticationRequiredError extends Error {
+  constructor() {
+    super('DSH authentication required; paste the current dsh web startup URL')
+    this.name = 'DshAuthenticationRequiredError'
+  }
+}
+
+export class HttpStatusError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'HttpStatusError'
+  }
 }
 
 /** The tunnel readiness gate accepts only a proven rc.2 RPC endpoint or the
@@ -82,32 +119,96 @@ export async function createDeviceProtocol(options: CreateProtocolOptions): Prom
       stream: new DualEventStream({ endpoint: options.endpoint, deviceId: options.deviceId }),
     }
   }
-  let root: Response
+
+  const root = await fetchResponse(doFetch, new URL('/', options.endpoint), { method: 'GET', redirect: 'manual' })
+  const rootBody = await root.text()
+  if (!isDshAuthenticationRequired(root.status, rootBody)) {
+    if (root.status === 401) throw new Error('NON_DSH_SERVICE: endpoint returned a non-DSH authentication challenge')
+    throw new HttpStatusError(rc2Probe.diagnostic, root.status)
+  }
+
+  const persisted = options.persistedCookie
+  if (persisted !== undefined && inspectDshCookie(persisted.cookie, persisted.authority, persisted.expiresAt)
+    && persisted.authority === options.endpoint.host) {
+    try {
+      return await createProbedTypertAdapter(options, persisted, options.launchToken, doFetch)
+    } catch (cause) {
+      if (!isAuthenticationRejection(cause)) throw cause
+    }
+  }
+
+  if (options.launchToken !== undefined) {
+    try {
+      const session = await exchangeLaunchToken(options.endpoint, options.launchToken, doFetch)
+      return await createProbedTypertAdapter(options, session, options.launchToken, doFetch)
+    } catch (cause) {
+      if (!isAuthenticationRejection(cause)) throw cause
+    }
+  }
+
+  if (options.recoverAuth !== undefined) {
+    const recovered = await options.recoverAuth()
+    const launchToken = typeof recovered === 'string' ? recovered : recovered?.launchToken
+    if (launchToken !== undefined && launchToken !== options.launchToken) {
+      const session = await exchangeLaunchToken(options.endpoint, launchToken, doFetch)
+      return await createProbedTypertAdapter(options, session, launchToken, doFetch)
+    }
+  }
+
+  throw new DshAuthenticationRequiredError()
+}
+
+async function createProbedTypertAdapter(
+  options: CreateProtocolOptions,
+  session: PersistedProtocolCookie,
+  launchToken: string | undefined,
+  doFetch: typeof fetch,
+): Promise<DeviceProtocolAdapter> {
+  const stream = new TypertEventStream({
+    endpoint: options.endpoint,
+    deviceId: options.deviceId,
+    cookie: session.cookie,
+    fetch: doFetch,
+    ...(options.createSocket === undefined ? {} : { createSocket: options.createSocket }),
+  })
+  const client = new TypertClient(options.endpoint, session.cookie, stream, doFetch)
+  await client.listSessions()
+  return {
+    kind: 'typert',
+    client,
+    stream,
+    auth: {
+      ...(launchToken === undefined ? {} : { launchToken }),
+      cookie: session.cookie,
+      authority: session.authority,
+      expiresAt: session.expiresAt,
+    },
+  }
+}
+
+async function exchangeLaunchToken(endpoint: URL, launchToken: string, doFetch: typeof fetch): Promise<DshCookieSession> {
+  return exchangeDshLaunchToken(endpoint, launchToken, {
+    fetch: async (input, init) => {
+      const response = await fetchResponse(doFetch, input, init)
+      if (response.status === 401 || response.status === 403) {
+        throw new HttpStatusError('DSH authentication exchange HTTP ' + String(response.status), response.status)
+      }
+      return response
+    },
+  })
+}
+
+async function fetchResponse(doFetch: typeof fetch, input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {
   try {
-    root = await doFetch(new URL('/', options.endpoint), { method: 'GET', redirect: 'manual' })
+    return await doFetch(input, init)
   } catch (cause) {
+    if (cause instanceof HttpStatusError) throw cause
     throw new Error(cause instanceof Error ? cause.message : 'DSH endpoint unavailable', { cause })
   }
-  const rootBody = await root.text()
-  if (root.status === 401) {
-    if (!isDshAuthenticationRequired(root.status, rootBody)) {
-      throw new Error('NON_DSH_SERVICE: endpoint returned a non-DSH authentication challenge')
-    }
-    if (options.launchToken === undefined) {
-      throw new Error('DSH authentication required; paste the current dsh web startup URL')
-    }
-    const session = await exchangeDshLaunchToken(options.endpoint, options.launchToken, { fetch: doFetch })
-    const stream = new TypertEventStream({
-      endpoint: options.endpoint,
-      deviceId: options.deviceId,
-      cookie: session.cookie,
-      fetch: doFetch,
-      ...(options.createSocket === undefined ? {} : { createSocket: options.createSocket }),
-    })
-    const client = new TypertClient(options.endpoint, session.cookie, stream, doFetch)
-    return { kind: 'typert', client, stream }
-  }
-  throw new Error(rc2Probe.diagnostic)
+}
+
+function isAuthenticationRejection(cause: unknown): boolean {
+  return cause instanceof HttpStatusError && cause.status === 401
 }
 
 interface RpcResult<T> {
@@ -134,7 +235,7 @@ export class TypertClient implements DeviceProtocolClient {
       headers: { 'content-type': 'application/json', accept: 'application/json', cookie: this.cookie },
       body: JSON.stringify({ type: 'client-request', rpcId, method, payload: { args } }),
     })
-    if (!response.ok) throw new Error('typert ' + method + ' HTTP ' + String(response.status))
+    if (!response.ok) throw new HttpStatusError('typert ' + method + ' HTTP ' + String(response.status), response.status)
     const body = await response.json() as RpcResult<T>
     if (body.type !== 'server-response' || body.rpcId !== rpcId || body.result?.ok !== true) {
       const error = body.result?.error

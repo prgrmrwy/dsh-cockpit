@@ -10,6 +10,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
+  dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1,
   ...overrides,
 })
 
@@ -28,7 +29,7 @@ describe('workbench', () => {
   })
 
   it('uses a tokenized root once then scrubs the steady iframe src', async () => {
-    const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque' })
+    const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
     const { container } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
@@ -36,6 +37,68 @@ describe('workbench', () => {
     // component has already scrubbed its steady src by the time we observe it.
     await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
     expect(requestWorkbenchLaunch).toHaveBeenCalledWith('d1')
+  })
+
+  it('does not reauthenticate when server cookie reuse keeps the auth generation stable', async () => {
+    const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
+    const { rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+
+    rerender(<Workbench device={device({ lastUpdatedAt: 1, diagnostic: 'reconnected with cookie' })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+  })
+
+  it('navigates once when auth generation increases and never retries that generation', async () => {
+    const requestWorkbenchLaunch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=recovered', authGeneration: 2 })
+    const { container, rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+
+    rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 1 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(frame.getAttribute('src')).toContain('token=recovered'))
+    frame.dispatchEvent(new Event('load'))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+
+    rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 2, diagnostic: 'still ready' })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not loop after a launch failure until a higher generation arrives', async () => {
+    const requestWorkbenchLaunch = vi.fn()
+      .mockRejectedValueOnce(new Error('launch unavailable'))
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=new', authGeneration: 2 })
+    const { rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+
+    rerender(<Workbench device={device({ state: 'CONNECTING', lastUpdatedAt: 1 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    rerender(<Workbench device={device({ state: 'READY', lastUpdatedAt: 2 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1)
+
+    rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 3 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2))
+  })
+
+  it('ignores a stale launch response after the generation advances', async () => {
+    let resolveFirst!: (value: { url: string; authGeneration: number }) => void
+    const first = new Promise<{ url: string; authGeneration: number }>(resolve => { resolveFirst = resolve })
+    const requestWorkbenchLaunch = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=current', authGeneration: 2 })
+    const { container, rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 1 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2))
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    await waitFor(() => expect(frame.getAttribute('src')).toContain('token=current'))
+    frame.dispatchEvent(new Event('load'))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+
+    resolveFirst({ url: 'http://127.0.0.1:51688/?token=stale', authGeneration: 1 })
+    await Promise.resolve()
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
   })
 
   it('keeps the iframe alive across device switches', () => {

@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common'
 import type { CockpitEvent, DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
-import { createDeviceProtocol, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
+import { createDeviceProtocol, DshAuthenticationRequiredError, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
 import { TunnelManager } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 
@@ -31,6 +31,11 @@ export interface LiveDeviceFacts {
   readonly lastUpdatedAt: number
   readonly diagnostic?: string
   readonly endpoint?: string
+  readonly dshAuthConfigured: boolean
+  readonly dshAuthState: 'not-configured' | 'ready' | 'recovery-required'
+  readonly dshAuthAutoDiscovery: boolean
+  readonly dshAuthGeneration: number
+  readonly dshAuthExpiresAt?: number
 }
 
 /** One device's connection lifecycle. Owns exactly one tunnel generation and
@@ -53,7 +58,9 @@ export interface DeviceLifecycleOptions {
   /** Test seam for the dual event stream (defaults to a real DualEventStream). */
   readonly createStream?: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   /** Production protocol factory; legacy client/stream seams remain for focused tests. */
-  readonly createProtocol?: (endpoint: URL, record: DeviceRecord) => Promise<{ readonly kind: 'rc2' | 'typert'; readonly client: DeviceProtocolClient; readonly stream: DeviceProtocolStream }>
+  readonly createProtocol?: (endpoint: URL, record: DeviceRecord, signal?: AbortSignal) => Promise<{ readonly kind: 'rc2' | 'typert'; readonly client: DeviceProtocolClient; readonly stream: DeviceProtocolStream; readonly auth?: { readonly launchToken?: string; readonly cookie: string; readonly authority: string; readonly expiresAt: number } }>
+  readonly recoverAuth?: (record: DeviceRecord, signal: AbortSignal) => Promise<string | undefined>
+  readonly onAuthAccepted?: (deviceId: string, expectedGeneration: number, auth: { readonly launchToken?: string; readonly cookie: string; readonly authority: string; readonly expiresAt: number }) => Promise<DeviceRecord | undefined>
 }
 
 export class DeviceLifecycle {
@@ -67,6 +74,8 @@ export class DeviceLifecycle {
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #createProtocol: NonNullable<DeviceLifecycleOptions['createProtocol']>
+  readonly #recoverAuth: NonNullable<DeviceLifecycleOptions['recoverAuth']>
+  readonly #onAuthAccepted: DeviceLifecycleOptions['onAuthAccepted']
   readonly #log = new Logger(DeviceLifecycle.name)
   readonly #abort = new AbortController()
   #runAbort: AbortController | undefined
@@ -119,6 +128,8 @@ export class DeviceLifecycle {
   #bridgePendingAvailable = false
   #task: Promise<void> | undefined
   #stopped = false
+  #connectionGeneration = 0
+  #authRecoveryRequired = false
 
   constructor(options: DeviceLifecycleOptions) {
     this.deviceId = options.record.deviceId
@@ -132,11 +143,21 @@ export class DeviceLifecycle {
     this.#baselineTimeoutMs = options.baselineTimeoutMs ?? 5_000
     this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
     this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
-    this.#createProtocol = options.createProtocol ?? (async (endpoint, record) => {
+    this.#recoverAuth = options.recoverAuth ?? (async () => undefined)
+    this.#onAuthAccepted = options.onAuthAccepted
+    this.#createProtocol = options.createProtocol ?? (async (endpoint, record, signal) => {
       if (options.createClient !== undefined || options.createStream !== undefined) {
         return { kind: 'rc2' as const, client: await this.#createClient(endpoint) as DeviceProtocolClient, stream: this.#createStream(endpoint) as unknown as DeviceProtocolStream }
       }
-      return createDeviceProtocol({ endpoint, deviceId: this.deviceId, ...(record.dshLaunchToken === undefined ? {} : { launchToken: record.dshLaunchToken }) })
+      const auth = record.dshAuth
+      const launchToken = auth?.launchToken ?? record.dshLaunchToken
+      return createDeviceProtocol({
+        endpoint,
+        deviceId: this.deviceId,
+        ...(launchToken === undefined ? {} : { launchToken }),
+        ...(auth?.serverCookie === undefined ? {} : { persistedCookie: { cookie: auth.serverCookie, authority: auth.cookieAuthority!, expiresAt: auth.cookieExpiresAt! } }),
+        ...(auth?.autoDiscovery !== 'ohmydsh-log' ? {} : { recoverAuth: async () => this.#recoverAuth(record, signal ?? this.#abort.signal) }),
+      })
     })
   }
 
@@ -161,6 +182,11 @@ export class DeviceLifecycle {
       lastUpdatedAt: Date.now(),
       ...(this.#diagnostic === '' ? {} : { diagnostic: this.#diagnostic }),
       ...(this.#endpoint === undefined ? {} : { endpoint: this.#endpoint.toString() }),
+      dshAuthConfigured: this.#record.dshAuth?.launchToken !== undefined || this.#record.dshAuth?.serverCookie !== undefined || this.#record.dshLaunchToken !== undefined,
+      dshAuthState: this.#authRecoveryRequired ? 'recovery-required' : (this.#record.dshAuth !== undefined || this.#record.dshLaunchToken !== undefined ? 'ready' : 'not-configured'),
+      dshAuthAutoDiscovery: this.#record.dshAuth?.autoDiscovery === 'ohmydsh-log',
+      dshAuthGeneration: this.#record.dshAuth?.generation ?? (this.#record.dshLaunchToken === undefined ? 0 : 1),
+      ...(this.#record.dshAuth?.cookieExpiresAt === undefined ? {} : { dshAuthExpiresAt: this.#record.dshAuth.cookieExpiresAt }),
     }
   }
 
@@ -373,6 +399,7 @@ export class DeviceLifecycle {
   }
 
   updateRecord(record: DeviceRecord): void {
+    if ((record.dshAuth?.generation ?? 0) !== (this.#record.dshAuth?.generation ?? 0)) this.#authRecoveryRequired = false
     this.#record = record
   }
 
@@ -465,12 +492,13 @@ export class DeviceLifecycle {
    * waiting for a disconnect that will never arrive. */
   async #connectOnce(): Promise<boolean> {
     if (this.#abort.signal.aborted) throw new Error('aborted')
+    const connectionGeneration = ++this.#connectionGeneration
     if (this.#record.kind === 'local') {
       // This Mac: no tunnel. The DSH runs on the machine itself, so we target
       // the loopback port directly. Everything else (probe, baseline, streams)
       // is identical to a remote device.
       this.#endpoint = new URL(`http://127.0.0.1:${this.#record.remoteDshPort}`)
-      return this.#connectRc2(this.#endpoint, undefined)
+      return this.#connectRc2(this.#endpoint, undefined, connectionGeneration)
     }
     const handle = await this.#tunnels.connect({
       deviceId: this.deviceId,
@@ -482,7 +510,7 @@ export class DeviceLifecycle {
     })
     this.#endpoint = handle.endpoint
     if (handle.localPort !== this.#record.localPort) this.#onLocalPort?.(this.deviceId, handle.localPort)
-    return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() })
+    return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() }, connectionGeneration)
   }
 
   /** Shared probe/baseline/stream wiring for local and remote endpoints.
@@ -493,17 +521,39 @@ export class DeviceLifecycle {
    * happens while session.list/workspace.list are in flight would otherwise
    * be lost forever. With subscribe-first, those edges are buffered and
    * replayed after the baseline in arrival order. */
-  async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined): Promise<boolean> {
+  async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined, connectionGeneration: number): Promise<boolean> {
     let protocol: Awaited<ReturnType<NonNullable<DeviceLifecycleOptions['createProtocol']>>>
     try {
-      protocol = await this.#createProtocol(endpoint, this.#record)
+      protocol = await this.#createProtocol(endpoint, this.#record, this.#runAbort?.signal ?? this.#abort.signal)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
+      this.#authRecoveryRequired = cause instanceof DshAuthenticationRequiredError
       this.#setState(message.includes('NON_DSH_SERVICE') ? 'NON_DSH_SERVICE' : 'DSH_UNAVAILABLE', message)
       await onFailure?.()
       this.#endpoint = undefined
       return false
     }
+    if (connectionGeneration !== this.#connectionGeneration || this.#runAbort?.signal.aborted === true) {
+      await protocol.stream.dispose()
+      await onFailure?.()
+      return false
+    }
+    if (protocol.auth !== undefined && this.#onAuthAccepted !== undefined) {
+      const accepted = await this.#onAuthAccepted(this.deviceId, this.#record.dshAuth?.generation ?? (this.#record.dshLaunchToken === undefined ? 0 : 1), protocol.auth)
+      if (accepted === undefined) {
+        await protocol.stream.dispose()
+        await onFailure?.()
+        this.#endpoint = undefined
+        return false
+      }
+      if (connectionGeneration !== this.#connectionGeneration || Boolean(this.#runAbort?.signal.aborted)) {
+        await protocol.stream.dispose()
+        await onFailure?.()
+        return false
+      }
+      this.#record = accepted
+    }
+    this.#authRecoveryRequired = false
     this.#protocolKind = protocol.kind
     this.#bridgePendingAvailable = protocol.kind === 'rc2'
     this.#pendingBySession.clear()

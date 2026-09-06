@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import { exchangeDshLaunchToken, parseDshLaunchUrl } from '../src/connectivity/dsh-auth.js'
-import { createDeviceProtocol, TypertClient, TypertEventStream } from '../src/connectivity/protocol-client.js'
+import { createDeviceProtocol, HttpStatusError, TypertClient, TypertEventStream } from '../src/connectivity/protocol-client.js'
 
 class FakeSocket extends EventEmitter {
   readyState = 1
@@ -12,6 +13,16 @@ class FakeSocket extends EventEmitter {
 
 function response(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(typeof body === 'string' ? body : JSON.stringify(body), { status, headers })
+}
+
+const authChallenge = 'dsh web authentication required; reopen the URL printed by dsh web.'
+const endpoint = new URL('http://127.0.0.1:3081')
+const cookieName = 'dsh-auth-' + createHash('sha256').update(endpoint.host).digest('base64url')
+const persistedCookie = { cookie: cookieName + '=persisted', authority: endpoint.host, expiresAt: Date.now() + 60_000 }
+
+function sessionListResponse(init?: RequestInit): Response {
+  const rpcId = JSON.parse(String(init?.body)).rpcId
+  return response({ type: 'server-response', rpcId, result: { ok: true, value: { items: [] } } })
 }
 
 describe('DSH 0.1.2 authentication', () => {
@@ -28,7 +39,7 @@ describe('DSH 0.1.2 authentication', () => {
       'set-cookie': 'dsh-auth-authority=signed; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict',
     })) as unknown as typeof fetch
     await expect(exchangeDshLaunchToken(new URL('http://127.0.0.1:3081'), 'abcdefghijklmnop', { fetch: fetcher }))
-      .resolves.toEqual({ cookie: 'dsh-auth-authority=signed', cleanUrl: new URL('http://127.0.0.1:3081/') })
+      .resolves.toEqual(expect.objectContaining({ cookie: 'dsh-auth-authority=signed', cleanUrl: new URL('http://127.0.0.1:3081/'), authority: '127.0.0.1:3081' }))
     expect(fetcher).toHaveBeenCalledWith(new URL('http://127.0.0.1:3081/?token=abcdefghijklmnop'), expect.objectContaining({ redirect: 'manual' }))
   })
 })
@@ -51,7 +62,7 @@ describe('protocol classification fixtures', () => {
         const target = String(url)
         if (target.endsWith('/api/host.describe')) return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
         if (target === 'http://127.0.0.1:3081/') return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
-        if (target.includes('/?token=')) return response('', 303, { location: '/', 'set-cookie': 'dsh-auth-authority=signed; HttpOnly' })
+        if (target.includes('/?token=')) return response('', 303, { location: '/', 'set-cookie': 'dsh-auth-authority=signed; Max-Age=2592000; HttpOnly' })
         if (target.endsWith('/api/session/list')) {
           const rpcId = JSON.parse(String(init?.body)).rpcId
           return response({ type: 'server-response', rpcId, result: { ok: true, value: { items: [] } } })
@@ -68,9 +79,123 @@ describe('protocol classification fixtures', () => {
       globalThis.fetch = originalFetch
     }
   })
+
+  it('reuses an authority-matched unexpired cookie before the stored launch token', async () => {
+    const recoverAuth = vi.fn()
+    const fetcher = vi.fn(async (url, init) => {
+      const target = String(url)
+      if (target === new URL('/', endpoint).href) return response(authChallenge, 401)
+      if (target.endsWith('/api/session/list')) {
+        expect(init?.headers).toEqual(expect.objectContaining({ cookie: persistedCookie.cookie }))
+        return sessionListResponse(init)
+      }
+      throw new Error('unexpected request ' + target)
+    }) as unknown as typeof fetch
+
+    const adapter = await createDeviceProtocol({
+      endpoint, deviceId: 'cookie-first', persistedCookie, launchToken: 'abcdefghijklmnop', recoverAuth, fetch: fetcher,
+    })
+
+    expect(adapter).toMatchObject({ kind: 'typert', auth: persistedCookie })
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes('?token='))).toBe(false)
+    expect(recoverAuth).not.toHaveBeenCalled()
+  })
+
+  it('exchanges the stored token after an expired cookie and returns accepted auth metadata', async () => {
+    const recovered = vi.fn()
+    const fetcher = vi.fn(async (url, init) => {
+      const target = String(url)
+      if (target === new URL('/', endpoint).href) return response(authChallenge, 401)
+      if (target.includes('/?token=abcdefghijklmnop')) return response('', 303, {
+        location: '/', 'set-cookie': cookieName + '=renewed; Max-Age=60; HttpOnly',
+      })
+      if (target.endsWith('/api/session/list')) return sessionListResponse(init)
+      throw new Error('unexpected request ' + target)
+    }) as unknown as typeof fetch
+
+    const adapter = await createDeviceProtocol({
+      endpoint,
+      deviceId: 'stored-token',
+      persistedCookie: { ...persistedCookie, expiresAt: Date.now() - 1 },
+      launchToken: 'abcdefghijklmnop',
+      recoverAuth: recovered,
+      fetch: fetcher,
+    })
+
+    expect(adapter.auth).toEqual(expect.objectContaining({
+      launchToken: 'abcdefghijklmnop', cookie: cookieName + '=renewed', authority: endpoint.host,
+    }))
+    expect(adapter.auth?.expiresAt).toBeGreaterThan(Date.now())
+    expect(recovered).not.toHaveBeenCalled()
+  })
+
+  it('invokes recovery only after a cookie or token receives HTTP 401', async () => {
+    const recoverAuth = vi.fn(async () => ({ launchToken: 'qrstuvwxyzABCDEF' }))
+    const fetcher = vi.fn(async (url, init) => {
+      const target = String(url)
+      if (target === new URL('/', endpoint).href) return response(authChallenge, 401)
+      if (target.endsWith('/api/session/list') && (init?.headers as Record<string, string>).cookie === persistedCookie.cookie) return response('', 401)
+      if (target.includes('/?token=abcdefghijklmnop')) return response('', 401)
+      if (target.includes('/?token=qrstuvwxyzABCDEF')) return response('', 303, {
+        location: '/', 'set-cookie': cookieName + '=recovered; Max-Age=60; HttpOnly',
+      })
+      if (target.endsWith('/api/session/list')) return sessionListResponse(init)
+      throw new Error('unexpected request ' + target)
+    }) as unknown as typeof fetch
+
+    const adapter = await createDeviceProtocol({
+      endpoint, deviceId: 'recovery', persistedCookie, launchToken: 'abcdefghijklmnop', recoverAuth, fetch: fetcher,
+    })
+
+    expect(recoverAuth).toHaveBeenCalledTimes(1)
+    expect(adapter.auth).toEqual(expect.objectContaining({ launchToken: 'qrstuvwxyzABCDEF', cookie: cookieName + '=recovered' }))
+  })
+
+  it.each([
+    ['forbidden', async () => response('', 403)],
+    ['network', async () => { throw new Error('socket reset') }],
+    ['protocol', async () => response({ unexpected: true })],
+  ])('does not invoke recovery for %s cookie probe failures', async (_label, failure) => {
+    const recoverAuth = vi.fn()
+    const fetcher = vi.fn(async (url, init) => {
+      const target = String(url)
+      if (target === new URL('/', endpoint).href) return response(authChallenge, 401)
+      if (target.endsWith('/api/session/list')) return failure()
+      throw new Error('unexpected request ' + target + String(init?.method))
+    }) as unknown as typeof fetch
+
+    await expect(createDeviceProtocol({ endpoint, deviceId: 'no-recovery', persistedCookie, recoverAuth, fetch: fetcher })).rejects.toThrow()
+    expect(recoverAuth).not.toHaveBeenCalled()
+  })
+
+  it('does not invoke recovery for a generic root 401 or token exchange 403/network/protocol failures', async () => {
+    const genericRecovery = vi.fn()
+    const genericFetch = vi.fn(async () => response('login required', 401)) as unknown as typeof fetch
+    await expect(createDeviceProtocol({ endpoint, deviceId: 'generic', recoverAuth: genericRecovery, fetch: genericFetch })).rejects.toThrow('NON_DSH_SERVICE')
+    expect(genericRecovery).not.toHaveBeenCalled()
+
+    for (const tokenFailure of [
+      async () => response('', 403),
+      async () => { throw new Error('socket reset') },
+      async () => response('', 200),
+    ]) {
+      const recoverAuth = vi.fn()
+      const fetcher = vi.fn(async url => String(url) === new URL('/', endpoint).href ? response(authChallenge, 401) : tokenFailure()) as unknown as typeof fetch
+      await expect(createDeviceProtocol({ endpoint, deviceId: 'token-failure', launchToken: 'abcdefghijklmnop', recoverAuth, fetch: fetcher })).rejects.toThrow()
+      expect(recoverAuth).not.toHaveBeenCalled()
+    }
+  })
 })
 
 describe('typert unary and Remote mux', () => {
+  it('throws a typed HTTP status error for unary failures', async () => {
+    const fetcher = vi.fn(async () => response('', 403)) as unknown as typeof fetch
+    const client = new TypertClient(endpoint, 'cookie=value', { workspaceBaseline: vi.fn() } as never, fetcher)
+    const error = await client.listSessions().catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(HttpStatusError)
+    expect(error).toMatchObject({ status: 403 })
+  })
+
   it('sends session/list with args._request and validates the server envelope', async () => {
     const fetcher = vi.fn(async (_url, init) => {
       const request = JSON.parse(String(init?.body))

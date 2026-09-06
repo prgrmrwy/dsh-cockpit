@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import type { DeviceRecord } from '@dsh-cockpit/shared'
+import type { DeviceRecord, DshAuthMaterial } from '@dsh-cockpit/shared'
 
 const FILE_NAME = 'devices.json'
 const DIR_MODE = 0o700
@@ -25,6 +25,37 @@ function isValidLocalPort(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 65535
 }
 
+function validateDshAuth(value: unknown, legacyToken: unknown): DshAuthMaterial | undefined | null {
+  if (value === undefined) {
+    if (typeof legacyToken !== 'string') return undefined
+    return { version: 1, launchToken: legacyToken, autoDiscovery: 'disabled', updatedAt: 0, generation: 1 }
+  }
+  if (typeof value !== 'object' || value === null) return null
+  const auth = value as Record<string, unknown>
+  if (auth.version !== 1
+    || (auth.launchToken !== undefined && (typeof auth.launchToken !== 'string' || auth.launchToken === ''))
+    || (auth.serverCookie !== undefined && (typeof auth.serverCookie !== 'string' || auth.serverCookie === ''))
+    || (auth.cookieAuthority !== undefined && (typeof auth.cookieAuthority !== 'string' || auth.cookieAuthority === ''))
+    || (auth.cookieExpiresAt !== undefined && (!Number.isSafeInteger(auth.cookieExpiresAt) || Number(auth.cookieExpiresAt) <= 0))
+    || (auth.autoDiscovery !== 'disabled' && auth.autoDiscovery !== 'ohmydsh-log')
+    || !Number.isSafeInteger(auth.updatedAt) || Number(auth.updatedAt) < 0
+    || !Number.isSafeInteger(auth.generation) || Number(auth.generation) < 0) return null
+  if ((auth.serverCookie === undefined) !== (auth.cookieAuthority === undefined)
+    || (auth.serverCookie === undefined) !== (auth.cookieExpiresAt === undefined)) return null
+  return {
+    version: 1,
+    ...(typeof auth.launchToken === 'string' ? { launchToken: auth.launchToken } : {}),
+    ...(typeof auth.serverCookie === 'string' ? {
+      serverCookie: auth.serverCookie,
+      cookieAuthority: auth.cookieAuthority as string,
+      cookieExpiresAt: auth.cookieExpiresAt as number,
+    } : {}),
+    autoDiscovery: auth.autoDiscovery,
+    updatedAt: auth.updatedAt as number,
+    generation: auth.generation as number,
+  }
+}
+
 function validateDevice(value: unknown): DeviceRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const row = value as Record<string, unknown>
@@ -37,6 +68,8 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     || typeof row.enabled !== 'boolean'
     || typeof row.order !== 'number' || !Number.isInteger(row.order)
   ) return undefined
+  const dshAuth = validateDshAuth(row.dshAuth, row.dshLaunchToken)
+  if (dshAuth === null) return undefined
   const record: DeviceRecord = {
     deviceId: row.deviceId,
     displayName: row.displayName,
@@ -50,6 +83,7 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     // next connection overwrites.
     ...(isValidLocalPort(row.localPort) ? { localPort: row.localPort } : {}),
     ...(typeof row.dshLaunchToken === 'string' ? { dshLaunchToken: row.dshLaunchToken } : {}),
+    ...(dshAuth === undefined ? {} : { dshAuth }),
   }
   if (record.kind === 'remote' && record.sshAlias === undefined) return undefined
   return record
@@ -111,12 +145,53 @@ export class DeviceRegistry {
    * tunnel was still coming up. */
   async updateLocalPort(deviceId: string, localPort: number): Promise<void> {
     if (!isValidLocalPort(localPort)) throw new DeviceRegistryError('INVALID', `invalid local port ${localPort}`)
-    await this.#serialize(async () => {
-      const devices = await this.load()
-      const target = devices.find(device => device.deviceId === deviceId)
-      if (target === undefined || target.localPort === localPort) return
-      await this.#writeFile(devices.map(device => (device.deviceId === deviceId ? { ...device, localPort } : device)))
+    await this.mutateDevice(deviceId, target => target.localPort === localPort ? target : { ...target, localPort })
+  }
+
+  /** Serialized atomic whole-registry mutation. The callback observes the
+   * latest durable snapshot, so configuration writes cannot overwrite auth
+   * accepted by a concurrent connection generation. */
+  async mutateDevices(update: (current: readonly DeviceRecord[]) => readonly DeviceRecord[]): Promise<readonly DeviceRecord[]> {
+    return this.#serialize(async () => {
+      const current = await this.load()
+      const next = update(current)
+      for (const device of next) {
+        if (validateDevice(device) === undefined) throw new DeviceRegistryError('INVALID', `invalid device record ${device.deviceId}`)
+      }
+      await this.#writeFile(next)
+      return next
     })
+  }
+
+  /** Serialized atomic device mutation used by configuration and auth recovery.
+   * Undefined from the updater is a no-op; an unknown/deleted device also loses
+   * races safely without recreating it. */
+  async mutateDevice(deviceId: string, update: (current: DeviceRecord) => DeviceRecord | undefined): Promise<DeviceRecord | undefined> {
+    return this.#serialize(async () => {
+      const devices = await this.load()
+      const index = devices.findIndex(device => device.deviceId === deviceId)
+      if (index < 0) return undefined
+      const next = update(devices[index]!)
+      if (next === undefined || next === devices[index]) return devices[index]
+      if (validateDevice(next) === undefined) throw new DeviceRegistryError('INVALID', `invalid device record ${deviceId}`)
+      const replaced = [...devices]
+      replaced[index] = next
+      await this.#writeFile(replaced)
+      return next
+    })
+  }
+
+  /** Compare-and-swap a successfully recovered auth generation. */
+  async commitRecoveredAuth(deviceId: string, expectedGeneration: number, auth: DshAuthMaterial, requireDiscovery = false): Promise<DeviceRecord | undefined> {
+    let committed = false
+    const result = await this.mutateDevice(deviceId, current => {
+      if (!current.enabled || current.dshAuth?.generation !== expectedGeneration
+        || (requireDiscovery && current.dshAuth.autoDiscovery !== 'ohmydsh-log')) return undefined
+      committed = true
+      const { dshLaunchToken: _legacy, ...withoutLegacy } = current
+      return { ...withoutLegacy, ...(auth.launchToken === undefined ? {} : { dshLaunchToken: auth.launchToken }), dshAuth: auth }
+    })
+    return committed ? result : undefined
   }
 
   async #writeFile(devices: readonly DeviceRecord[]): Promise<void> {

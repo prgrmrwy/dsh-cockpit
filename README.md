@@ -45,9 +45,17 @@
 驾驶舱同时兼容 rc.2 官方接口（`host.describe`、`session.list`、
 `/api/events.mux`、`/api/events.host`）和 DSH 0.1.2 typert 接口
 （`session/list`、`/api/remote.mux` 上的 `$events` 与 `workspace/follow`）。
-0.1.2 开启浏览器认证时，在设备新增/编辑中粘贴该进程打印的完整启动 URL；
-驾驶舱只在自有 0600 原子设备存储中保存 launch token，cookie 仅在连接代内存中
-持有，绝不读取 `~/.dsh`、日志或 provider credential。
+0.1.2 开启浏览器认证时，可在设备新增/编辑中粘贴该进程打印的完整启动 URL。
+驾驶舱把 launch token 与 DSH 官方签发的 authority-bound cookie 保存在自有 0600
+原子设备存储中：重连先复用仍有效的 cookie，过期或被撤销后再用当前 token 静默
+签发。设备页只显示“未配置 / 已配置 / 需更新”等非敏感状态，不回显任何材料。
+
+若设备由 ohmydsh 后台启动，用户还可**逐设备、显式开启**自动恢复。开启后仅在标准
+DSH 认证挑战且现有材料均失败时，驾驶舱读取本机固定的
+`${DSH_HOME:-$HOME/.dsh}/dsh.log`，或通过既有 BatchMode SSH 身份执行固定只读命令
+读取远端同一标准日志的有界尾部，从最新匹配登记端口的官方 URL 提取 token。
+该能力默认关闭，不接受自定义路径/命令，不扫描其它文件，不读取 `.credentials.yaml`、
+provider credential、会话内容或其它日志；失败时安全回退为人工粘贴。
 
 rc.2 的 pending 继续来自 Host 事件；typert pending 只有兼容桥接插件提供当前完整
 快照后才标为可观测，否则 UI 明确显示“等待决策状态不可观测”，不会把未知当零。

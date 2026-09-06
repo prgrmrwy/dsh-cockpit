@@ -18,8 +18,8 @@ export interface WorkbenchProps {
   readonly onManageDevices?: () => void
   /** Issues a short-lived bridge capability through the same-origin shell API. */
   readonly requestBridgeCapability?: (deviceId: string) => Promise<BridgeCapabilityPayload>
-  /** Supplies a one-shot tokenized root only for a newly mounted generation. */
-  readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string }>
+  /** Supplies a one-shot tokenized root and the auth generation it represents. */
+  readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string; authGeneration: number }>
 }
 
 const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
@@ -59,7 +59,14 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   const renewalTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; attempt: number }>>(new Map())
   const renewalInFlightRef = useRef<Set<string>>(new Set())
   const renewalRequestedAtRef = useRef<Map<string, number>>(new Map())
-  const launchRequestedRef = useRef<Set<string>>(new Set())
+  /** One tokenized navigation attempt per device + endpoint origin + auth
+   * generation. Entries are recorded before starting the request so failures,
+   * StrictMode effects and iframe load events cannot create refresh loops. */
+  const launchAttemptsRef = useRef<Set<string>>(new Set())
+  const latestLaunchGenerationRef = useRef<Map<string, number>>(new Map())
+  /** Current endpoint/generation target per device. A late response must still
+   * match it before it may update that device's mounted frame. */
+  const launchTargetRef = useRef<Map<string, string>>(new Map())
 
   const notifyActivated = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
@@ -207,6 +214,11 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       if (enabled.has(deviceId)) continue
       registryRef.current.delete(deviceId)
       iframeRefs.current.delete(deviceId)
+      launchTargetRef.current.delete(deviceId)
+      latestLaunchGenerationRef.current.delete(deviceId)
+      for (const key of launchAttemptsRef.current) {
+        if (key.startsWith(`${deviceId}\u0000`)) launchAttemptsRef.current.delete(key)
+      }
       changed = true
     }
     if (changed) setFrames([...registryRef.current.values()])
@@ -214,44 +226,95 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
 
   useEffect(() => {
     if (device === undefined || !device.enabled) return
-    if (!registryRef.current.has(device.deviceId)) {
-      const initial: FrameInfo = {
+    const prior = registryRef.current.get(device.deviceId)
+    if (prior === undefined) {
+      registryRef.current.set(device.deviceId, {
         deviceId: device.deviceId,
         url: requestWorkbenchLaunch === undefined ? device.endpoint ?? '' : '',
         state: device.state,
         diagnostic: device.diagnostic,
         lastUpdatedAt: device.lastUpdatedAt,
-      }
-      registryRef.current.set(device.deviceId, initial)
+      })
       setFrames([...registryRef.current.values()])
-      if (requestWorkbenchLaunch !== undefined && device.endpoint !== undefined && !launchRequestedRef.current.has(device.deviceId)) {
-        launchRequestedRef.current.add(device.deviceId)
-        void requestWorkbenchLaunch(device.deviceId).then(({ url }) => {
-          const frame = registryRef.current.get(device.deviceId)
-          if (frame === undefined) return
-          registryRef.current.set(device.deviceId, { ...frame, url })
-          setFrames([...registryRef.current.values()])
-        }).catch(() => {})
-      }
-    } else {
-      // Keep live status current on the already-created frame (reconnect etc).
-      // The tunnel endpoint is reassigned on every reconnect (fresh random
-      // loopback port), so the iframe must follow the live endpoint — otherwise
-      // it would keep loading the OLD dead port after a successful reconnect.
-      const prior = registryRef.current.get(device.deviceId)!
-      const updated: FrameInfo = {
-        ...prior,
-        url: device.endpoint ?? prior.url,
-        state: device.state,
-        diagnostic: device.diagnostic,
-        lastUpdatedAt: device.lastUpdatedAt,
-      }
-      registryRef.current.set(device.deviceId, updated)
-      if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt) {
-        setFrames([...registryRef.current.values()])
+      return
+    }
+
+    // Keep live status current without assigning the endpoint on every SSE
+    // update: assigning an equivalent clean URL would reload the native page.
+    // A genuinely new tunnel origin still replaces the dead endpoint.
+    let url = prior.url
+    if (device.endpoint !== undefined) {
+      try {
+        if (url === '' || new URL(url).origin !== new URL(device.endpoint).origin) url = device.endpoint
+      } catch {
+        url = device.endpoint
       }
     }
+    const updated: FrameInfo = {
+      ...prior,
+      url,
+      state: device.state,
+      diagnostic: device.diagnostic,
+      lastUpdatedAt: device.lastUpdatedAt,
+    }
+    registryRef.current.set(device.deviceId, updated)
+    if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt) {
+      setFrames([...registryRef.current.values()])
+    }
   }, [device, requestWorkbenchLaunch])
+
+  useEffect(() => {
+    if (
+      requestWorkbenchLaunch === undefined
+      || device === undefined
+      || !device.enabled
+      || device.endpoint === undefined
+      || (device.state !== 'READY' && device.state !== 'DEGRADED')
+    ) return
+
+    let origin: string
+    try {
+      origin = new URL(device.endpoint).origin
+    } catch {
+      return
+    }
+    const generation = device.dshAuthGeneration
+    const latestGeneration = latestLaunchGenerationRef.current.get(device.deviceId)
+    if (latestGeneration !== undefined && generation < latestGeneration) return
+    if (latestGeneration === undefined || generation > latestGeneration) {
+      latestLaunchGenerationRef.current.set(device.deviceId, generation)
+    }
+    const attemptKey = `${device.deviceId}\u0000${origin}\u0000${generation}`
+    launchTargetRef.current.set(device.deviceId, attemptKey)
+    if (launchAttemptsRef.current.has(attemptKey)) return
+    launchAttemptsRef.current.add(attemptKey)
+
+    void requestWorkbenchLaunch(device.deviceId).then(({ url, authGeneration }) => {
+      if (launchTargetRef.current.get(device.deviceId) !== attemptKey) return
+      // The response is useful only for the exact endpoint/auth generation that
+      // caused it. Later lifecycle results must not overwrite a newer frame.
+      if (authGeneration !== generation) return
+      try {
+        if (new URL(url).origin !== origin) return
+      } catch {
+        return
+      }
+      const frame = registryRef.current.get(device.deviceId)
+      if (frame === undefined) return
+      registryRef.current.set(device.deviceId, { ...frame, url })
+      setFrames([...registryRef.current.values()])
+    }).catch(() => {
+      // This tuple remains attempted. Connectivity diagnostics provide the
+      // recovery path; retrying the same generation would create a load loop.
+    })
+  }, [
+    device?.deviceId,
+    device?.dshAuthGeneration,
+    device?.enabled,
+    device?.endpoint,
+    device?.state,
+    requestWorkbenchLaunch,
+  ])
 
   // Device tab switches keep every iframe mounted, so the child page observes
   // no navigation or session-store change. Explicitly tell an already-loaded

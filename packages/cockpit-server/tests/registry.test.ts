@@ -41,6 +41,32 @@ describe('device registry', () => {
     }
   })
 
+  it('migrates a legacy launch token in memory with discovery disabled', async () => {
+    await writeFile(registry.file, JSON.stringify({ version: 1, devices: [remote({ dshLaunchToken: 'legacy-token-abcdef' })] }))
+    const loaded = await registry.load()
+    expect(loaded[0]?.dshAuth).toEqual({ version: 1, launchToken: 'legacy-token-abcdef', autoDiscovery: 'disabled', updatedAt: 0, generation: 1 })
+  })
+
+  it('fails closed on a partial or unsupported private auth record', async () => {
+    for (const dshAuth of [
+      { version: 2 },
+      { version: 1, serverCookie: 'secret', autoDiscovery: 'disabled', updatedAt: 0, generation: 1 },
+      { version: 1, autoDiscovery: 'anywhere', updatedAt: 0, generation: 1 },
+    ]) {
+      await writeFile(registry.file, JSON.stringify({ version: 1, devices: [remote({ dshAuth: dshAuth as never })] }))
+      await expect(registry.load()).rejects.toBeInstanceOf(DeviceRegistryError)
+    }
+  })
+
+  it('CAS commits recovered auth only for the expected enabled opt-in generation', async () => {
+    const original = remote({ dshAuth: { version: 1, launchToken: 'old-token-abcdef', autoDiscovery: 'ohmydsh-log', updatedAt: 1, generation: 2 } })
+    await registry.save([original])
+    const recovered = { version: 1 as const, launchToken: 'new-token-abcdef', serverCookie: 'cookie=value', cookieAuthority: '127.0.0.1:3080', cookieExpiresAt: Date.now() + 10_000, autoDiscovery: 'ohmydsh-log' as const, updatedAt: 2, generation: 3 }
+    await expect(registry.commitRecoveredAuth('device-1', 1, recovered)).resolves.toBeUndefined()
+    await expect(registry.commitRecoveredAuth('device-1', 2, recovered)).resolves.toMatchObject({ dshAuth: recovered })
+    expect((await registry.load())[0]?.dshAuth).toEqual(recovered)
+  })
+
   it('writes 0600 and never leaves temp files after success', async () => {
     await registry.save([remote()])
     const entries = await import('node:fs/promises').then(fs => fs.readdir(dir))

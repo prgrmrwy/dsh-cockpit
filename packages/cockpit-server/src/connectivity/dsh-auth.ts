@@ -1,9 +1,14 @@
+import { createHash } from 'node:crypto'
+
 const AUTH_REQUIRED_BODY = 'dsh web authentication required; reopen the URL printed by dsh web.'
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,256}$/u
+const COOKIE_PREFIX = 'dsh-auth-'
 
 export interface DshCookieSession {
   readonly cookie: string
   readonly cleanUrl: URL
+  readonly authority: string
+  readonly expiresAt: number
 }
 
 /** Parse the write-only URL printed by DSH 0.1.2. Only its opaque token crosses
@@ -56,11 +61,45 @@ export async function exchangeDshLaunchToken(
   const rawCookies = typeof response.headers.getSetCookie === 'function'
     ? response.headers.getSetCookie()
     : [response.headers.get('set-cookie')].filter((value): value is string => value !== null)
-  const cookie = rawCookies.map(value => value.split(';', 1)[0]?.trim()).find(value => value?.startsWith('dsh-auth-'))
-  if (cookie === undefined || !cookie.includes('=')) {
+  const rawCookie = rawCookies.find(value => value.trim().startsWith(COOKIE_PREFIX))
+  if (rawCookie === undefined) throw new Error('DSH authentication failed; paste the current dsh web startup URL')
+  const cookie = rawCookie.split(';', 1)[0]?.trim()
+  const expiresAt = cookieExpiry(rawCookie)
+  if (cookie === undefined || !cookie.includes('=') || expiresAt === undefined) {
     throw new Error('DSH authentication failed; paste the current dsh web startup URL')
   }
-  return { cookie, cleanUrl: new URL('/', endpoint) }
+  return { cookie, cleanUrl: new URL('/', endpoint), authority: endpoint.host, expiresAt }
+}
+
+/** Validate a persisted DSH cookie without possessing the DSH signing secret.
+ * Its deterministic name proves the authority binding; the signed payload
+ * provides only the public absolute expiry used to avoid replaying stale
+ * material. DSH remains authoritative and verifies the signature on probe. */
+export function inspectDshCookie(cookie: string, authority: string, expiresAt: number, now = Date.now()): boolean {
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return false
+  const separator = cookie.indexOf('=')
+  if (separator <= 0 || separator === cookie.length - 1 || cookie.includes(';')) return false
+  return cookie.slice(0, separator) === cookieName(authority)
+}
+
+function cookieName(authority: string): string {
+  const digest = createHash('sha256').update(authority).digest('base64url')
+  return COOKIE_PREFIX + digest
+}
+
+function cookieExpiry(rawCookie: string, now = Date.now()): number | undefined {
+  let maxAge: number | undefined
+  for (const part of rawCookie.split(';').slice(1)) {
+    const [rawName, ...rawValue] = part.trim().split('=')
+    const name = rawName?.toLowerCase()
+    const value = rawValue.join('=')
+    if (name === 'expires') {
+      const parsed = Date.parse(value)
+      if (Number.isFinite(parsed)) return parsed
+    }
+    if (name === 'max-age' && /^\d+$/u.test(value)) maxAge = Number(value)
+  }
+  return maxAge !== undefined && Number.isSafeInteger(maxAge) ? now + maxAge * 1_000 : undefined
 }
 
 /** Build the one-shot iframe URL. The device performs the exchange and removes

@@ -14,6 +14,22 @@ export type DeviceState =
   | 'READY'
   | 'DEGRADED'
 
+export type DshAuthState = 'not-configured' | 'ready' | 'recovery-required'
+export type DshAuthDiscovery = 'disabled' | 'ohmydsh-log'
+
+/** Private DSH browser-session material. Never project this object wholesale
+ * into a read API. */
+export interface DshAuthMaterial {
+  readonly version: 1
+  readonly launchToken?: string
+  readonly serverCookie?: string
+  readonly cookieAuthority?: string
+  readonly cookieExpiresAt?: number
+  readonly autoDiscovery: DshAuthDiscovery
+  readonly updatedAt: number
+  readonly generation: number
+}
+
 /** A device record as persisted by the registry. */
 export interface DeviceRecord {
   readonly deviceId: string
@@ -22,9 +38,10 @@ export interface DeviceRecord {
   readonly sshAlias?: string
   readonly remoteDshPort: number
   readonly localPort?: number
-  /** DSH 0.1.2 process launch token. Persisted by the cockpit only and never
-   * projected into DeviceStatusFacts or any read API. */
+  /** Legacy DSH 0.1.2 process launch token. Accepted on read for migration. */
   readonly dshLaunchToken?: string
+  /** Versioned private browser-session material. */
+  readonly dshAuth?: DshAuthMaterial
   readonly enabled: boolean
   readonly order: number
 }
@@ -79,6 +96,12 @@ export interface DeviceStatusFacts {
   readonly lastUpdatedAt: number
   readonly diagnostic?: string
   readonly endpoint?: string
+  /** Non-sensitive DSH browser-auth projection. */
+  readonly dshAuthConfigured: boolean
+  readonly dshAuthState: DshAuthState
+  readonly dshAuthAutoDiscovery: boolean
+  readonly dshAuthGeneration: number
+  readonly dshAuthExpiresAt?: number
 }
 
 /** One session status as reported by the remote rc.2 session.list / events. */
@@ -130,6 +153,8 @@ export interface AddDeviceRequest {
   readonly enabled?: boolean
   /** Full loopback URL printed by DSH 0.1.2; accepted write-only. */
   readonly dshLaunchUrl?: string
+  /** Explicit opt-in to bounded ohmydsh log discovery. Defaults false. */
+  readonly dshAuthAutoDiscovery?: boolean
 }
 
 export interface UpdateDeviceRequest {
@@ -140,8 +165,10 @@ export interface UpdateDeviceRequest {
   readonly order?: number
   /** Full loopback URL printed by DSH 0.1.2; accepted write-only. */
   readonly dshLaunchUrl?: string
-  /** Explicitly removes a previously stored launch token. */
+  /** Explicitly removes all previously stored DSH auth material. */
   readonly clearDshLaunchToken?: boolean
+  /** Enables the fixed, bounded ohmydsh log recovery adapter for this device. */
+  readonly dshAuthAutoDiscovery?: boolean
 }
 
 export interface RemoveDeviceRequest {

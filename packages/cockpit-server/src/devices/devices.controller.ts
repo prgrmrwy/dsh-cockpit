@@ -70,7 +70,7 @@ export class DevicesController {
   }
 
   @Post('devices/:deviceId/workbench-launch')
-  async workbenchLaunch(@Param('deviceId') deviceId: string): Promise<{ url: string }> {
+  async workbenchLaunch(@Param('deviceId') deviceId: string): Promise<{ url: string; authGeneration: number }> {
     try {
       return await this.connectivity.workbenchLaunch(decodeDeviceId(deviceId))
     } catch (cause) {
@@ -260,6 +260,7 @@ function requireAdd(body: AddDeviceRequest): AddDeviceRequest {
     ...(body.sshAlias === undefined ? {} : { sshAlias: body.sshAlias }),
     ...(body?.enabled === undefined ? {} : { enabled: body.enabled }),
     ...(body.dshLaunchUrl === undefined ? {} : { dshLaunchUrl: requireLaunchUrl(body.dshLaunchUrl) }),
+    ...(body.dshAuthAutoDiscovery === undefined ? {} : { dshAuthAutoDiscovery: requireBoolean(body.dshAuthAutoDiscovery, 'dshAuthAutoDiscovery') }),
   }
 }
 
@@ -287,11 +288,14 @@ function requireUpdate(body: UpdateDeviceRequest): UpdateDeviceRequest {
     update.order = body.order
   }
   if (body.dshLaunchUrl !== undefined) update.dshLaunchUrl = requireLaunchUrl(body.dshLaunchUrl)
-  if (body.clearDshLaunchToken !== undefined) {
-    if (typeof body.clearDshLaunchToken !== 'boolean') throw new HttpException(toError('bad-request', 'clearDshLaunchToken must be boolean'), HttpStatus.BAD_REQUEST)
-    update.clearDshLaunchToken = body.clearDshLaunchToken
-  }
+  if (body.clearDshLaunchToken !== undefined) update.clearDshLaunchToken = requireBoolean(body.clearDshLaunchToken, 'clearDshLaunchToken')
+  if (body.dshAuthAutoDiscovery !== undefined) update.dshAuthAutoDiscovery = requireBoolean(body.dshAuthAutoDiscovery, 'dshAuthAutoDiscovery')
   return update as UpdateDeviceRequest
+}
+
+function requireBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw new HttpException(toError('bad-request', `${name} must be boolean`), HttpStatus.BAD_REQUEST)
+  return value
 }
 
 function requireLaunchUrl(value: unknown): string {

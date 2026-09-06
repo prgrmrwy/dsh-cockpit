@@ -27,6 +27,10 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   sessionStatuses: [],
   compatibility: 'SUPPORTED',
   lastUpdatedAt: 0,
+  dshAuthConfigured: false,
+  dshAuthState: 'not-configured',
+  dshAuthAutoDiscovery: false,
+  dshAuthGeneration: 0,
   ...overrides,
 } as DeviceStatusFacts)
 
@@ -124,6 +128,84 @@ describe('DevicePanel', () => {
     expect((screen.getByLabelText('DSH 启动 URL') as HTMLInputElement).value).toBe('')
   })
 
+  it('shows text authentication states in cards and the edit form without exposing secrets', () => {
+    renderPanel([
+      device(),
+      device({
+        deviceId: 'ready-auth', displayName: '已认证设备', order: 1,
+        dshAuthConfigured: true, dshAuthState: 'ready', dshAuthGeneration: 2,
+      }),
+      device({
+        deviceId: 'stale-auth', displayName: '待恢复设备', order: 2,
+        dshAuthConfigured: true, dshAuthState: 'recovery-required', dshAuthAutoDiscovery: true,
+      }),
+    ])
+
+    expect(within(screen.getByRole('listitem', { name: /开发虚拟机/ })).getByText('DSH 认证：未配置')).toBeTruthy()
+    expect(within(screen.getByRole('listitem', { name: /已认证设备/ })).getByText('DSH 认证：已配置')).toBeTruthy()
+    const stale = screen.getByRole('listitem', { name: /待恢复设备/ })
+    expect(within(stale).getByText('DSH 认证：需更新')).toBeTruthy()
+    expect(within(stale).getByText('自动恢复：已开启')).toBeTruthy()
+    expect(within(stale).getByText(/粘贴当前 dsh web 启动 URL/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑已认证设备' }))
+    expect(screen.getByRole('status', { name: '当前 DSH 认证状态：已配置' })).toBeTruthy()
+    expect((screen.getByLabelText('DSH 启动 URL') as HTMLInputElement).value).toBe('')
+    expect(screen.getByText(/编辑时留空不会修改现有认证材料/)).toBeTruthy()
+  })
+
+  it('keeps blank auth input unchanged, persists opt-in, and clears explicitly', async () => {
+    const onChanged = vi.fn()
+    renderPanel([device({ dshAuthConfigured: true, dshAuthState: 'ready' })], onChanged)
+    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
+
+    const autoDiscovery = screen.getByLabelText('启用 ohmydsh 自动认证恢复') as HTMLInputElement
+    expect(autoDiscovery.checked).toBe(false)
+    fireEvent.click(autoDiscovery)
+    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: '仅改名称' } })
+    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: '   ' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('remote-1', {
+      displayName: '仅改名称', sshAlias: 'dev-vm', remoteDshPort: 3080, enabled: true,
+      dshAuthAutoDiscovery: true,
+    }))
+    expect(apiMock.updateDevice.mock.calls[0]?.[1]).not.toHaveProperty('dshLaunchUrl')
+    expect(apiMock.updateDevice.mock.calls[0]?.[1]).not.toHaveProperty('clearDshLaunchToken')
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
+    fireEvent.click(screen.getByLabelText('清除 DSH 认证材料'))
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenLastCalledWith('remote-1', expect.objectContaining({
+      clearDshLaunchToken: true,
+      dshAuthAutoDiscovery: false,
+    })))
+    expect(onChanged).toHaveBeenCalledTimes(2)
+  })
+
+  it('rejects conflicting clear and replacement auth inputs before calling the API', () => {
+    renderPanel([device({ dshAuthConfigured: true, dshAuthState: 'ready' })])
+    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
+    fireEvent.click(screen.getByLabelText('清除 DSH 认证材料'))
+    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: 'http://127.0.0.1:3080/?token=new-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+
+    expect(screen.getByRole('alert').textContent).toContain('不能同时')
+    expect(apiMock.updateDevice).not.toHaveBeenCalled()
+  })
+
+  it('explains the bounded local and SSH log scope on keyboard-accessible native controls', () => {
+    renderPanel()
+    const remoteToggle = screen.getByLabelText('启用 ohmydsh 自动认证恢复') as HTMLInputElement
+    expect(remoteToggle.type).toBe('checkbox')
+    expect(remoteToggle.checked).toBe(false)
+    remoteToggle.focus()
+    expect(document.activeElement).toBe(remoteToggle)
+    expect(screen.getByText(/通过现有 BatchMode SSH 身份读取远端.*\$DSH_HOME\/dsh\.log.*有限尾部/)).toBeTruthy()
+
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: '类型' })).getByRole('radio', { name: '本机' }))
+    expect(screen.getByText(/读取本机标准 \$DSH_HOME\/dsh\.log 的有限尾部/)).toBeTruthy()
+  })
+
   it('switches add fields, retains a failed draft, and exposes the busy state', async () => {
     const pending = deferred<{ deviceId: string }>()
     apiMock.addDevice.mockReturnValueOnce(pending.promise)
@@ -136,6 +218,7 @@ describe('DevicePanel', () => {
 
     expect(apiMock.addDevice).toHaveBeenCalledWith({
       displayName: '新设备', kind: 'remote', sshAlias: 'new-vm', remoteDshPort: 4090, enabled: true,
+      dshAuthAutoDiscovery: false,
     })
     expect(screen.getByRole('button', { name: '验证中…' }).hasAttribute('disabled')).toBe(true)
     const formFields = (screen.getByLabelText('显示名') as HTMLInputElement).closest('fieldset')
@@ -156,6 +239,7 @@ describe('DevicePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
     await waitFor(() => expect(apiMock.addDevice).toHaveBeenLastCalledWith({
       displayName: '新设备', kind: 'local', remoteDshPort: 4090, enabled: true,
+      dshAuthAutoDiscovery: false,
     }))
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('')
@@ -190,6 +274,7 @@ describe('DevicePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
     await waitFor(() => expect(apiMock.updateDevice).toHaveBeenLastCalledWith('remote-1', {
       displayName: '改名后的设备', sshAlias: 'bad-vm', remoteDshPort: 3080, enabled: false,
+      dshAuthAutoDiscovery: false,
     }))
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()

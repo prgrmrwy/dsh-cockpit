@@ -7,6 +7,7 @@ import { TunnelManager } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { probeDshCarrier } from './protocol-client.js'
 import { dshIframeLaunchUrl, parseDshLaunchUrl } from './dsh-auth.js'
+import { discoverLocalDshLaunchToken, discoverRemoteDshLaunchToken } from './dsh-auth-discovery.js'
 import { resolveSshExecutable } from '../runtime/config.js'
 import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
 
@@ -19,6 +20,8 @@ export class ConnectivityService implements OnApplicationShutdown {
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
   readonly #capabilities: BridgeCapabilityService
+  readonly #authDiscoveryInFlight = new Map<string, Promise<string | undefined>>()
+  readonly #authDiscoveryAttemptedAt = new Map<string, number>()
 
   constructor(
     @Inject(DeviceRegistry) registry: DeviceRegistry,
@@ -49,9 +52,55 @@ export class ConnectivityService implements OnApplicationShutdown {
       // REST snapshot stays available for manual refresh.
       onFacts: () => { this.events.publish(this.statuses()) },
       onLocalPort: (deviceId, localPort) => { void this.#persistLocalPort(deviceId, localPort) },
+      recoverAuth: async (current, signal) => this.#discoverAuth(current, signal),
+      onAuthAccepted: async (deviceId, expectedGeneration, accepted) => {
+        const current = (await this.#registry.load()).find(candidate => candidate.deviceId === deviceId)
+        if (current === undefined) return undefined
+        const previous = current.dshAuth
+        const launchToken = accepted.launchToken ?? previous?.launchToken ?? current.dshLaunchToken
+        const unchanged = previous?.serverCookie === accepted.cookie
+          && previous.cookieAuthority === accepted.authority
+          && previous.cookieExpiresAt === accepted.expiresAt
+          && previous.launchToken === launchToken
+        if (unchanged) return current
+        const auth = {
+          version: 1 as const,
+          ...(launchToken === undefined ? {} : { launchToken }),
+          serverCookie: accepted.cookie,
+          cookieAuthority: accepted.authority,
+          cookieExpiresAt: accepted.expiresAt,
+          autoDiscovery: previous?.autoDiscovery ?? 'disabled' as const,
+          updatedAt: Date.now(),
+          generation: expectedGeneration + 1,
+        }
+        const committed = await this.#registry.commitRecoveredAuth(deviceId, expectedGeneration, auth)
+        if (committed !== undefined) this.events.publish(this.statuses())
+        return committed
+      },
     })
     this.#lifecycles.set(record.deviceId, lifecycle)
     if (record.enabled) lifecycle.start()
+  }
+
+  async #discoverAuth(record: DeviceRecord, signal: AbortSignal): Promise<string | undefined> {
+    const key = [record.deviceId, record.dshAuth?.generation ?? 0, record.sshAlias ?? 'local', record.remoteDshPort].join('\u0000')
+    const existing = this.#authDiscoveryInFlight.get(key)
+    if (existing !== undefined) return existing
+    const last = this.#authDiscoveryAttemptedAt.get(key) ?? 0
+    if (Date.now() - last < 15_000) return undefined
+    this.#authDiscoveryAttemptedAt.set(key, Date.now())
+    const task = (async () => {
+      const result = record.kind === 'local'
+        ? await discoverLocalDshLaunchToken(record.remoteDshPort, { signal })
+        : await discoverRemoteDshLaunchToken(record.sshAlias ?? '', record.remoteDshPort, { sshExecutable: this.#sshExecutable, signal })
+      return result.ok ? result.token : undefined
+    })()
+    this.#authDiscoveryInFlight.set(key, task)
+    try {
+      return await task
+    } finally {
+      if (this.#authDiscoveryInFlight.get(key) === task) this.#authDiscoveryInFlight.delete(key)
+    }
   }
 
   /** Persist the port a device's tunnel actually bound so the next connection
@@ -77,6 +126,8 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = this.#lifecycles.get(deviceId)
     this.#lifecycles.delete(deviceId)
     await lifecycle?.stop()
+    const prefix = `${deviceId}\u0000`
+    for (const key of this.#authDiscoveryAttemptedAt.keys()) if (key.startsWith(prefix)) this.#authDiscoveryAttemptedAt.delete(key)
   }
 
   /** Live aggregated statuses for all registered devices. */
@@ -105,6 +156,11 @@ export class ConnectivityService implements OnApplicationShutdown {
           lastUpdatedAt: facts.lastUpdatedAt,
           ...(facts.diagnostic === undefined ? {} : { diagnostic: facts.diagnostic }),
           ...(facts.endpoint === undefined ? {} : { endpoint: facts.endpoint }),
+          dshAuthConfigured: facts.dshAuthConfigured,
+          dshAuthState: facts.dshAuthState,
+          dshAuthAutoDiscovery: facts.dshAuthAutoDiscovery,
+          dshAuthGeneration: facts.dshAuthGeneration,
+          ...(facts.dshAuthExpiresAt === undefined ? {} : { dshAuthExpiresAt: facts.dshAuthExpiresAt }),
         }
       })
   }
@@ -132,6 +188,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     kind?: 'local' | 'remote'
     enabled?: boolean
     dshLaunchUrl?: string
+    dshAuthAutoDiscovery?: boolean
   }): Promise<DeviceRecord> {
     const kind = input.kind ?? 'remote'
     if (kind === 'remote') {
@@ -139,22 +196,30 @@ export class ConnectivityService implements OnApplicationShutdown {
       const identity = await probeSshIdentity(input.sshAlias, { sshExecutable: this.#sshExecutable })
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
-    const records = await this.#registry.load()
-    const record: DeviceRecord = {
+    const launchToken = input.dshLaunchUrl === undefined ? undefined : parseDshLaunchUrl(input.dshLaunchUrl, input.remoteDshPort)
+    const recordBase = {
       deviceId: `device-${randomSuffix()}`,
       displayName: input.displayName,
       kind,
       remoteDshPort: input.remoteDshPort,
       enabled: input.enabled ?? true,
-      order: records.length,
       ...(kind === 'remote' ? { sshAlias: input.sshAlias! } : {}),
-      ...(input.dshLaunchUrl === undefined ? {} : { dshLaunchToken: parseDshLaunchUrl(input.dshLaunchUrl, input.remoteDshPort) }),
+      ...(launchToken === undefined ? {} : { dshLaunchToken: launchToken }),
+      dshAuth: {
+        version: 1 as const,
+        ...(launchToken === undefined ? {} : { launchToken }),
+        autoDiscovery: input.dshAuthAutoDiscovery === true ? 'ohmydsh-log' as const : 'disabled' as const,
+        updatedAt: Date.now(),
+        generation: launchToken === undefined ? 0 : 1,
+      },
     }
-    const next = [...records, record]
-    await this.#registry.save(next)
+    let record!: DeviceRecord
+    await this.#registry.mutateDevices(records => {
+      record = { ...recordBase, order: records.length }
+      return [...records, record]
+    })
     this.#attach(record)
-    const { dshLaunchToken: _launchToken, ...publicRecord } = record
-    return publicRecord
+    return redactDeviceRecord(record)
   }
 
   async updateDevice(deviceId: string, update: {
@@ -165,6 +230,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     order?: number
     dshLaunchUrl?: string
     clearDshLaunchToken?: boolean
+    dshAuthAutoDiscovery?: boolean
   }): Promise<DeviceRecord> {
     const records = await this.#registry.load()
     const index = records.findIndex(r => r.deviceId === deviceId)
@@ -182,28 +248,60 @@ export class ConnectivityService implements OnApplicationShutdown {
       if (!identity.ok) throw new Error(`SSH identity verification failed: ${identity.diagnostic}`)
     }
     if (update.dshLaunchUrl !== undefined && update.clearDshLaunchToken === true) throw new Error('cannot set and clear DSH launch token together')
-    const effectivePort = update.remoteDshPort ?? current.remoteDshPort
-    const launchToken = update.dshLaunchUrl === undefined ? current.dshLaunchToken : parseDshLaunchUrl(update.dshLaunchUrl, effectivePort)
-    const { dshLaunchToken: _priorLaunchToken, ...currentWithoutToken } = current
-    const updated: DeviceRecord = {
-      ...currentWithoutToken,
-      displayName: update.displayName ?? current.displayName,
-      ...(update.sshAlias === undefined ? {} : { sshAlias: update.sshAlias }),
-      ...(update.remoteDshPort === undefined ? {} : { remoteDshPort: update.remoteDshPort }),
-      ...(update.enabled === undefined ? {} : { enabled: update.enabled }),
-      ...(update.clearDshLaunchToken === true || launchToken === undefined ? {} : { dshLaunchToken: launchToken }),
-    }
-    const withoutUpdated = records.filter(record => record.deviceId !== deviceId)
-    const targetIndex = update.order === undefined
-      ? index
-      : Math.max(0, Math.min(update.order, withoutUpdated.length))
-    const reordered = [...withoutUpdated]
-    reordered.splice(targetIndex, 0, updated)
-    const normalized = reordered.map((record, order): DeviceRecord => ({ ...record, order }))
-    await this.#registry.save(normalized)
+    let committedPrevious = current
+    let authChanged = false
+    let discoveryChanged = false
+    const normalized = await this.#registry.mutateDevices(latestRecords => {
+      const latestIndex = latestRecords.findIndex(record => record.deviceId === deviceId)
+      if (latestIndex < 0) throw new Error(`unknown device ${deviceId}`)
+      const latest = latestRecords[latestIndex]!
+      committedPrevious = latest
+      const effectivePort = update.remoteDshPort ?? latest.remoteDshPort
+      const previousAuth = latest.dshAuth ?? {
+        version: 1 as const,
+        ...(latest.dshLaunchToken === undefined ? {} : { launchToken: latest.dshLaunchToken }),
+        autoDiscovery: 'disabled' as const,
+        updatedAt: 0,
+        generation: latest.dshLaunchToken === undefined ? 0 : 1,
+      }
+      const launchToken = update.dshLaunchUrl === undefined ? previousAuth.launchToken : parseDshLaunchUrl(update.dshLaunchUrl, effectivePort)
+      authChanged = update.dshLaunchUrl !== undefined || update.clearDshLaunchToken === true
+      discoveryChanged = update.dshAuthAutoDiscovery !== undefined
+        && update.dshAuthAutoDiscovery !== (previousAuth.autoDiscovery === 'ohmydsh-log')
+      const { dshAuth: _priorAuth, ...currentWithoutAuth } = latest
+      const nextAuth = {
+        version: 1 as const,
+        ...(update.clearDshLaunchToken === true || launchToken === undefined ? {} : { launchToken }),
+        ...(!authChanged && previousAuth.serverCookie !== undefined ? {
+          serverCookie: previousAuth.serverCookie,
+          cookieAuthority: previousAuth.cookieAuthority!,
+          cookieExpiresAt: previousAuth.cookieExpiresAt!,
+        } : {}),
+        autoDiscovery: update.dshAuthAutoDiscovery === undefined
+          ? previousAuth.autoDiscovery
+          : update.dshAuthAutoDiscovery ? 'ohmydsh-log' as const : 'disabled' as const,
+        updatedAt: authChanged || discoveryChanged ? Date.now() : previousAuth.updatedAt,
+        generation: previousAuth.generation + (authChanged || discoveryChanged ? 1 : 0),
+      }
+      const updated: DeviceRecord = {
+        ...currentWithoutAuth,
+        displayName: update.displayName ?? latest.displayName,
+        ...(update.sshAlias === undefined ? {} : { sshAlias: update.sshAlias }),
+        ...(update.remoteDshPort === undefined ? {} : { remoteDshPort: update.remoteDshPort }),
+        ...(update.enabled === undefined ? {} : { enabled: update.enabled }),
+        ...(nextAuth.launchToken === undefined ? {} : { dshLaunchToken: nextAuth.launchToken }),
+        dshAuth: nextAuth,
+      }
+      const withoutUpdated = latestRecords.filter(record => record.deviceId !== deviceId)
+      const targetIndex = update.order === undefined
+        ? latestIndex
+        : Math.max(0, Math.min(update.order, withoutUpdated.length))
+      const reordered = [...withoutUpdated]
+      reordered.splice(targetIndex, 0, updated)
+      return reordered.map((record, order): DeviceRecord => ({ ...record, order }))
+    })
     const next = normalized.find(record => record.deviceId === deviceId)!
-    const authChanged = update.dshLaunchUrl !== undefined || update.clearDshLaunchToken === true
-    if ((update.enabled !== undefined && update.enabled !== current.enabled) || authChanged) {
+    if ((update.enabled !== undefined && update.enabled !== committedPrevious.enabled) || authChanged || discoveryChanged) {
       // stop() is terminal. Replace the lifecycle when the enabled bit flips;
       // reusing an aborted instance would make a later enable a no-op. A
       // disable also invalidates bridge presence: it describes a live page,
@@ -215,8 +313,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     }
     for (const record of normalized) this.#lifecycles.get(record.deviceId)?.updateRecord(record)
     this.events.publish(this.statuses())
-    const { dshLaunchToken: _launchToken, ...publicRecord } = next
-    return publicRecord
+    return redactDeviceRecord(next)
   }
 
   async removeDevice(deviceId: string, confirmed: boolean): Promise<{ removed: boolean; requiresConfirmation: boolean }> {
@@ -254,16 +351,16 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   /** Returns a one-shot tokenized iframe URL without exposing it in status. */
-  async workbenchLaunch(deviceId: string): Promise<{ url: string }> {
+  async workbenchLaunch(deviceId: string): Promise<{ url: string; authGeneration: number }> {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     const facts = lifecycle.current()
     if (facts.endpoint === undefined) throw new Error(`device ${deviceId} is not connected`)
-    if (lifecycle.protocolKind() === 'rc2') return { url: facts.endpoint }
+    if (lifecycle.protocolKind() === 'rc2') return { url: facts.endpoint, authGeneration: facts.dshAuthGeneration }
     const record = (await this.#registry.load()).find(candidate => candidate.deviceId === deviceId)
-    const url = dshIframeLaunchUrl(new URL(facts.endpoint), record?.dshLaunchToken)
+    const url = dshIframeLaunchUrl(new URL(facts.endpoint), record?.dshAuth?.launchToken ?? record?.dshLaunchToken)
     if (url === undefined) throw new Error('DSH authentication required; paste the current dsh web startup URL')
-    return { url }
+    return { url, authGeneration: record?.dshAuth?.generation ?? facts.dshAuthGeneration }
   }
 
   /** Issues a short-lived bridge capability after the shell (same-origin,
@@ -363,6 +460,11 @@ export class ConnectivityService implements OnApplicationShutdown {
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     await this.#tunnels.disposeAll()
   }
+}
+
+function redactDeviceRecord(record: DeviceRecord): DeviceRecord {
+  const { dshLaunchToken: _legacy, dshAuth: _auth, ...publicRecord } = record
+  return publicRecord
 }
 
 function randomSuffix(): string {

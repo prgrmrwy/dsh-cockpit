@@ -17,6 +17,8 @@ type DeviceForm = {
   readonly remoteDshPort: string
   readonly enabled: boolean
   readonly dshLaunchUrl: string
+  readonly clearDshLaunchToken: boolean
+  readonly dshAuthAutoDiscovery: boolean
 }
 
 const EMPTY_DEVICE_FORM: DeviceForm = {
@@ -26,6 +28,24 @@ const EMPTY_DEVICE_FORM: DeviceForm = {
   remoteDshPort: '3080',
   enabled: true,
   dshLaunchUrl: '',
+  clearDshLaunchToken: false,
+  dshAuthAutoDiscovery: false,
+}
+
+const AUTH_STATE_LABELS: Record<DeviceStatusFacts['dshAuthState'], string> = {
+  'not-configured': '未配置',
+  ready: '已配置',
+  'recovery-required': '需更新',
+}
+
+function authStateDescription(device: DeviceStatusFacts): string {
+  if (device.dshAuthState === 'recovery-required') {
+    return '现有认证材料不可用，请粘贴当前 dsh web 启动 URL，或启用自动恢复。'
+  }
+  if (device.dshAuthConfigured) {
+    return '认证材料已保存；启动 URL 为写入专用，不会回显。'
+  }
+  return '尚未保存 DSH 启动 URL。'
 }
 
 const STATE_LABELS: Record<DeviceStatusFacts['state'], string> = {
@@ -55,6 +75,8 @@ function draftFor(device: DeviceStatusFacts): DeviceForm {
     remoteDshPort: String(device.remoteDshPort),
     enabled: device.enabled,
     dshLaunchUrl: '',
+    clearDshLaunchToken: false,
+    dshAuthAutoDiscovery: device.dshAuthAutoDiscovery,
   }
 }
 
@@ -106,15 +128,22 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault()
-    setBusy(true)
     setFormError(undefined)
+    const dshLaunchUrl = form.dshLaunchUrl.trim()
+    if (form.clearDshLaunchToken && dshLaunchUrl !== '') {
+      setFormError('不能同时粘贴新的 DSH 启动 URL 和清除现有认证材料。')
+      return
+    }
+    setBusy(true)
     try {
       const connectionFields = {
         displayName: form.displayName,
         ...(form.kind === 'remote' ? { sshAlias: form.sshAlias } : {}),
         remoteDshPort: Number(form.remoteDshPort),
         enabled: form.enabled,
-        ...(form.dshLaunchUrl === '' ? {} : { dshLaunchUrl: form.dshLaunchUrl }),
+        dshAuthAutoDiscovery: form.dshAuthAutoDiscovery,
+        ...(dshLaunchUrl === '' ? {} : { dshLaunchUrl }),
+        ...(mode.kind === 'edit' && form.clearDshLaunchToken ? { clearDshLaunchToken: true } : {}),
       }
       if (mode.kind === 'edit') {
         await api.updateDevice(mode.deviceId, connectionFields)
@@ -220,6 +249,15 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
                             {' · '}
                             <span>{device.deviceId}</span>
                           </div>
+                          <div className="device-auth-summary" aria-label={`DSH 认证：${AUTH_STATE_LABELS[device.dshAuthState]}`}>
+                            <span className="device-auth-state" data-auth-state={device.dshAuthState}>
+                              DSH 认证：{AUTH_STATE_LABELS[device.dshAuthState]}
+                            </span>
+                            <span className="device-auth-discovery">自动恢复：{device.dshAuthAutoDiscovery ? '已开启' : '已关闭'}</span>
+                          </div>
+                          {device.dshAuthState === 'recovery-required' && (
+                            <p className="device-auth-guidance">{authStateDescription(device)}</p>
+                          )}
                           {device.state !== 'READY' && device.diagnostic !== undefined && device.diagnostic !== '' && (
                             <p className="device-card-diagnostic">{device.diagnostic}</p>
                           )}
@@ -300,10 +338,38 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
                   DSH 端口
                   <input aria-label="DSH 端口" type="number" min={1} max={65535} value={form.remoteDshPort} onChange={event => setForm(current => ({ ...current, remoteDshPort: event.target.value }))} required />
                 </label>
+                {mode.kind === 'edit' && (() => {
+                  const editedDevice = devices.find(device => device.deviceId === mode.deviceId)
+                  if (editedDevice === undefined) return null
+                  return (
+                    <div className="device-auth-detail" role="status" aria-label={`当前 DSH 认证状态：${AUTH_STATE_LABELS[editedDevice.dshAuthState]}`}>
+                      <span className="device-auth-state" data-auth-state={editedDevice.dshAuthState}>
+                        当前认证：{AUTH_STATE_LABELS[editedDevice.dshAuthState]}
+                      </span>
+                      <span className="field-hint">{authStateDescription(editedDevice)}</span>
+                    </div>
+                  )
+                })()}
                 <label>
                   DSH 启动 URL（可选）
                   <input aria-label="DSH 启动 URL" type="url" value={form.dshLaunchUrl} onChange={event => setForm(current => ({ ...current, dshLaunchUrl: event.target.value }))} placeholder="http://127.0.0.1:3081/?token=…" autoComplete="off" />
-                  <span className="field-hint">DSH 0.1.2 提示认证时，粘贴当前 dsh web 输出的完整启动 URL；保存后不会回显。</span>
+                  <span className="field-hint">DSH 0.1.2 提示认证时，粘贴当前 dsh web 输出的完整启动 URL；此字段始终为空且保存后不会回显。编辑时留空不会修改现有认证材料。</span>
+                </label>
+                {mode.kind === 'edit' && (
+                  <label className="device-auth-option">
+                    <span>
+                      <input aria-label="清除 DSH 认证材料" type="checkbox" checked={form.clearDshLaunchToken} onChange={event => setForm(current => ({ ...current, clearDshLaunchToken: event.target.checked }))} />
+                      {' '}保存时清除现有 DSH 认证材料
+                    </span>
+                    <span className="field-hint">清除已保存的 launch token 与 cookie；自动恢复选择保持不变。不能与新的启动 URL 同时提交。</span>
+                  </label>
+                )}
+                <label className="device-auth-option">
+                  <span>
+                    <input aria-label="启用 ohmydsh 自动认证恢复" type="checkbox" checked={form.dshAuthAutoDiscovery} onChange={event => setForm(current => ({ ...current, dshAuthAutoDiscovery: event.target.checked }))} />
+                    {' '}启用 ohmydsh 自动认证恢复
+                  </span>
+                  <span className="field-hint">默认关闭。启用后仅在认证失效时读取{form.kind === 'local' ? '本机' : '通过现有 BatchMode SSH 身份读取远端'}标准 $DSH_HOME/dsh.log 的有限尾部；不会扫描其它文件或执行写操作。</span>
                 </label>
                 <label>
                   <span>

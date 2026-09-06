@@ -38,6 +38,10 @@ const remoteFacts = {
   sessionStatuses: [],
   compatibility: 'SUPPORTED',
   lastUpdatedAt: 1,
+  dshAuthConfigured: false,
+  dshAuthState: 'not-configured',
+  dshAuthAutoDiscovery: false,
+  dshAuthGeneration: 0,
 } satisfies DeviceStatusFacts
 
 const localFacts = {
@@ -53,6 +57,10 @@ const localFacts = {
   sessionStatuses: [],
   compatibility: 'SUPPORTED',
   lastUpdatedAt: 1,
+  dshAuthConfigured: false,
+  dshAuthState: 'not-configured',
+  dshAuthAutoDiscovery: false,
+  dshAuthGeneration: 0,
 } satisfies DeviceStatusFacts
 
 const disabledFacts = {

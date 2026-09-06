@@ -101,6 +101,13 @@ class FakeRegistry {
     return snapshot
   }
 
+  async mutateDevices(update: (current: readonly DeviceRecord[]) => readonly DeviceRecord[]): Promise<readonly DeviceRecord[]> {
+    const snapshot = update(this.records).map(record => ({ ...record }))
+    this.saves.push([...snapshot])
+    this.records = snapshot
+    return snapshot
+  }
+
   async updateLocalPort(deviceId: string, localPort: number): Promise<void> {
     const target = this.records.find(record => record.deviceId === deviceId)
     if (target === undefined || target.localPort === localPort) return
