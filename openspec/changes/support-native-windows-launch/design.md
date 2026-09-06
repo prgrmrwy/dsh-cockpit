@@ -53,7 +53,7 @@ CLI 核心保持零第三方依赖，保证依赖尚未安装时 `bootstrap` 仍
 
 ### 3. SSH 直接依赖 Node spawn 的 PATH 行为
 
-SSH 可执行文件合同为 `DSH_COCKPIT_SSH_EXECUTABLE`，未设置时使用字符串 `ssh`。身份探测与 `TunnelManager` 都从共享运行时配置获得同一个值，再通过 `child_process.spawn(executable, argv, { shell: false })` 启动。Node/操作系统负责 PATH 与 Windows PATHEXT 查找，Windows OpenSSH 会自然使用当前用户的 `.ssh/config`、known_hosts 和 Agent。
+SSH 可执行文件合同为 `DSH_COCKPIT_SSH_EXECUTABLE`，未设置时使用字符串 `ssh`。身份探测、`TunnelManager` 与远端认证恢复都从共享运行时配置获得同一个值，再通过 `child_process.spawn(executable, argv, { shell: false, windowsHide: true })` 启动。`windowsHide` 在 Unix 上无副作用，在 Windows 上防止后台服务每次连接或退避重试时创建瞬时控制台窗口。Node/操作系统负责 PATH 与 Windows PATHEXT 查找，Windows OpenSSH 会自然使用当前用户的 `.ssh/config`、known_hosts 和 Agent。
 
 SSH spawn 的 `error` 事件必须转成可读诊断并进入现有设备状态路径，不能像当前实现一样只得到空 stderr。SSH 仍按需使用：系统没有 SSH 时，驾驶舱与本机设备正常启动；添加或连接远端设备时明确失败。
 

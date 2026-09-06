@@ -13,7 +13,11 @@ export interface OwnedProcess {
 export type ProcessSpawner = (executable: string, argv: readonly string[]) => OwnedProcess
 
 export const defaultSpawner: ProcessSpawner = (executable, argv) => {
-  const child = spawn(executable, [...argv], { shell: false, stdio: ['ignore', 'ignore', 'pipe'] })
+  const child = spawn(executable, [...argv], {
+    shell: false,
+    stdio: ['ignore', 'ignore', 'pipe'],
+    windowsHide: true,
+  })
   const stderr = new PassThrough()
   child.stderr.pipe(stderr, { end: false })
   child.stderr.once('end', () => { if (!stderr.destroyed) stderr.end() })

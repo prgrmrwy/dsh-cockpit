@@ -9,6 +9,7 @@
 - [x] 2.1 将身份探测和 `TunnelManager` 的 `/usr/bin/ssh` 默认值替换为共享的环境变量覆盖或 `ssh` 命令名，继续使用 `shell: false` 和既有 argv 边界。
 - [x] 2.2 将 SSH 子进程的 spawn `error` 事件保留为可操作诊断，使命令缺失能与认证失败、网络不可达区分。
 - [x] 2.3 扩展 SSH、隧道和连接层测试，覆盖 PATH 行为、显式覆盖、命令缺失、安全参数不变，以及缺少 SSH 时本机设备仍可使用。
+- [x] 2.4 Windows 上以隐藏窗口模式启动后台 OpenSSH 身份探测、隧道和远端认证恢复，并添加 spawn 选项回归测试，防止连接退避期间反复闪现终端窗口。
 
 ## 3. 认证运行实例与优雅关闭
 
@@ -40,4 +41,6 @@
 - 2026-08-30，Windows：隔离目录与 43992 端口的生产 start/status/HTTP 200/stop 冒烟通过，停止后端口关闭且 `runtime.json` 已删除。
 - 2026-08-30，Windows：开发模式 `Ctrl+C` 冒烟通过，43991 与 5173 均关闭且 `runtime.json` 已删除；Windows `.cmd` 终止确认由 CLI 自动处理。
 - 2026-08-30，Windows：从 PATH 发现并运行 `C:\Windows\System32\OpenSSH\ssh.exe`（OpenSSH 9.5p2）；当前没有已注册远端设备，无法执行真实远端握手。
+- 2026-09-06，Windows：修复 OpenSSH 身份探测、隧道与远端认证恢复未设置 `windowsHide` 导致退避重连反复闪现终端窗口的问题；新增两项 spawn 选项回归测试，server 15 个测试文件共 166 项全部通过。
+- 2026-09-06，Windows：CLI 8 项、shared 1 项、web 72 项、bridge 17 项测试全部通过；五包 typecheck、全仓 lint 与四包生产构建通过。隔离目录和 64472 端口的生产 start/status/HTTP 200/stop 冒烟通过，停止后端口关闭且 `runtime.json` 已删除。
 - 待外部环境：由 Ubuntu CI 执行 Unix 生产生命周期；由提供了可连接目标的 Windows 环境执行 OpenSSH 远端连接验证。

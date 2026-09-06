@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: 使用自有 SSH 隧道只监听中央回环并保持有界
-系统 SHALL 为每台设备建立一条本地回环转发（`127.0.0.1:<localPort>` → 远端 DSH 端口），由驾驶舱分配并跟踪。系统 SHALL 优先使用 `DSH_COCKPIT_SSH_EXECUTABLE` 指定的单一 OpenSSH 可执行文件名或路径；未设置时 SHALL 把 `ssh` 作为可执行文件直接交给 Node.js `child_process.spawn` 并通过当前进程 `PATH` 查找，从而支持 Unix OpenSSH 与 Windows OpenSSH。SSH 进程 MUST 使用 `shell: false`，覆盖值 MUST NOT 被当作 shell 命令行解析。隧道 SHALL 使用系统 OpenSSH 配置（别名、`~/.ssh/config`、known_hosts、Agent、ProxyJump），并至少设置 `BatchMode`、`ExitOnForwardFailure` 与有界 keepalive。系统 MUST NOT 关闭 host-key 校验，MUST NOT 把密钥/口令暴露给模型或日志。
+系统 SHALL 为每台设备建立一条本地回环转发（`127.0.0.1:<localPort>` → 远端 DSH 端口），由驾驶舱分配并跟踪。系统 SHALL 优先使用 `DSH_COCKPIT_SSH_EXECUTABLE` 指定的单一 OpenSSH 可执行文件名或路径；未设置时 SHALL 把 `ssh` 作为可执行文件直接交给 Node.js `child_process.spawn` 并通过当前进程 `PATH` 查找，从而支持 Unix OpenSSH 与 Windows OpenSSH。SSH 进程 MUST 使用 `shell: false`；在 Windows 上 MUST 禁止后台身份探测、隧道重连及远端认证恢复创建可见控制台窗口。覆盖值 MUST NOT 被当作 shell 命令行解析。隧道 SHALL 使用系统 OpenSSH 配置（别名、`~/.ssh/config`、known_hosts、Agent、ProxyJump），并至少设置 `BatchMode`、`ExitOnForwardFailure` 与有界 keepalive。系统 MUST NOT 关闭 host-key 校验，MUST NOT 把密钥/口令暴露给模型或日志。
 
 #### Scenario: PATH 中发现平台 OpenSSH
 - **WHEN** 未设置 SSH 覆盖且当前进程 PATH 包含平台提供的 `ssh` 或 `ssh.exe`
@@ -14,6 +14,10 @@
 #### Scenario: SSH 可执行文件不可用
 - **WHEN** SSH 覆盖无效或 PATH 中找不到 `ssh`
 - **THEN** 远端设备连接失败并显示可操作的 SSH 命令发现诊断，不持久化未通过身份验证的新设备，且本机设备与驾驶舱 UI 仍可使用
+
+#### Scenario: Windows 后台重连不弹出终端窗口
+- **WHEN** Windows 上的远端设备不可达，驾驶舱按退避策略反复启动 OpenSSH 进行隧道连接或认证恢复
+- **THEN** 每次 OpenSSH 子进程均在无可见控制台窗口的模式下运行，用户桌面不得随重试反复出现和关闭终端窗口
 
 #### Scenario: 本地端口被占用
 - **WHEN** 驾驶舱分配的本地端口被其他进程占用于建立阶段
