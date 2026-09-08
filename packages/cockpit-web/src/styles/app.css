@@ -98,6 +98,10 @@ body {
   display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; line-height: 1; color: var(--fg-dim);
   border-radius: 999px; padding: 3px 8px; white-space: nowrap;
+  /* All chips share one box model: the same transparent border keeps the
+     clickable completed chip's border-box identical to these decorative
+     chips (a button with no border would be 2px shorter/narrower). */
+  border: 1px solid transparent;
   /* Pure display: the status chip is decoration inside the device tab, not
      an interactive control — no pointer affordance of its own. */
   cursor: default;
@@ -111,7 +115,12 @@ body {
    look IDENTICAL to the other (purely decorative) chips at rest — the
    difference is only the pointer affordance and focus ring, not appearance. */
 .session-chip-clear {
-  appearance: none; border: 1px solid transparent; margin: 0; font: inherit;
+  appearance: none; background: none; border: 1px solid transparent; margin: 0;
+  /* Reset only the UA button font family, NOT via the `font` shorthand: that
+     shorthand (same specificity as `.session-chip`, declared later) would
+     override this chip's font-size: 11px / line-height: 1 and render the
+     completed status visibly larger than the running/approval/question chips. */
+  font-family: inherit;
   cursor: pointer;
 }
 .session-chip-clear:hover { color: var(--fg); background: var(--bg-hover); }

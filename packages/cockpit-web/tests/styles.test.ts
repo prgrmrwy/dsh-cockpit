@@ -57,4 +57,22 @@ describe('cockpit visual contracts', () => {
       expect(rule).not.toMatch(/#[0-9a-fA-F]{3,6}|rgba?\(/)
     }
   })
+
+  it('keeps the completed clear chip box-identical to the other status chips', () => {
+    // Decorative chips carry the same transparent border as the clickable
+    // completed chip, so the button's border-box cannot exceed its siblings'.
+    expect(css).toMatch(/\.session-chip\s*\{[^}]*border:\s*1px\s+solid\s+transparent/s)
+    // The completed chip resets the UA button font family only: a `font: inherit`
+    // here (same specificity as `.session-chip`, declared later) would override
+    // font-size: 11px / line-height: 1 and render the completed status visibly
+    // larger than the running/approval/question chips.
+    expect(css).toMatch(/\.session-chip-clear\s*\{[^}]*background:\s*none/s)
+    expect(css).toMatch(/\.session-chip-clear\s*\{[^}]*font-family:\s*inherit/s)
+    expect(css).not.toMatch(/\.session-chip-clear\s*\{[^}]*font:\s*inherit/s)
+
+    // Chip colors stay on theme tokens.
+    for (const rule of css.match(/\.session-chip[^{]*\{[^}]*\}/gs) ?? []) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+    }
+  })
 })

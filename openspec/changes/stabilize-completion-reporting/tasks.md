@@ -50,3 +50,4 @@
 - [x] 7.2 bridge 纯续签 `bridge-config` 不再重置 helloReady（不重跑 hello / 不重申 current）：只有真实 `device-activated` 才重申当前选择，杜绝「用户没看过却被误清」
 - [x] 7.3 回归测试：detach 保留选择快照后完成不点亮、bridge 纯续签 config 零请求、401/400 自愈路径不受影响
 - [x] 7.4 更新 spec delta 与 design（D1/D4 措辞）与上述语义一致；全套验证重跑通过（server 130/130、web 60/60、bridge 16/16）
+- [x] 7.5 验收反馈：完成 chip（可点击 button）静止状态的盒模型与进行中/等待审批/等待回答 chip 完全一致——不得用 `font` 简写覆盖 `.session-chip` 的 11px/`line-height: 1`（同优先级且声明在其后，会把完成 chip 渲染得明显更大），边框盒与内边距统一，颜色继续走主题令牌；补样式契约测试（新增契约测试与 spec delta 场景，web 73/73、server 164/164、bridge 17/17 + 根 8 + shared 1 全绿）
