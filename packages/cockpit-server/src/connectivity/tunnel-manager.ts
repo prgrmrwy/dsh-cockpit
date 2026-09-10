@@ -23,6 +23,10 @@ export interface TunnelHandle {
   dispose(): Promise<void>
 }
 
+export interface TunnelManagerLogger {
+  warn(message: string): void
+}
+
 export interface TunnelManagerOptions {
   readonly sshExecutable?: string
   readonly spawn?: ProcessSpawner
@@ -32,6 +36,28 @@ export interface TunnelManagerOptions {
   readonly connectTimeoutSeconds?: number
   readonly serverAliveIntervalSeconds?: number
   readonly serverAliveCountMax?: number
+  /** Optional sink for operational warnings (port drift, etc.). Omitted in
+   * tests, where the manager stays silent and assertions read return values. */
+  readonly logger?: TunnelManagerLogger
+}
+
+/** Attribution of an OpenSSH early exit: does its stderr indicate the local
+ * forward port could not be bound, as opposed to a link/auth/readiness
+ * failure? The default is deliberately conservative — anything not clearly a
+ * port-bind failure returns false, so a stable origin is abandoned only on
+ * strong evidence. stderr is untrusted input (remote-influenced banners can
+ * land here), so the result is used ONLY to choose a local loopback port
+ * number; it never enters argv or affects host-key checking. */
+export function isPortBindFailure(stderr: string, port: number): boolean {
+  const text = stderr.toLowerCase()
+  const addressInUse = /bind \[[^\]]+\]:(\d+): address already in use/.exec(text)
+  if (addressInUse) return Number(addressInUse[1]) === port
+  const cannotListen = /cannot listen to port: (\d+)/.exec(text)
+  if (cannotListen) return Number(cannotListen[1]) === port
+  // Emitted under ExitOnForwardFailure=yes when local-forward setup fails; it
+  // carries no port but is unambiguously a forwarding-bind failure.
+  if (text.includes('could not request local forwarding')) return true
+  return false
 }
 
 function tunnelArgs(request: TunnelRequest, localPort: number, options: Required<Pick<TunnelManagerOptions, 'connectTimeoutSeconds' | 'serverAliveIntervalSeconds' | 'serverAliveCountMax'>>): string[] {
@@ -52,11 +78,13 @@ function tunnelArgs(request: TunnelRequest, localPort: number, options: Required
  * new tunnel may be spawned and an in-flight connect cannot leave an orphan. */
 export class TunnelManager {
   readonly #options: Required<Pick<TunnelManagerOptions, 'spawn' | 'sshExecutable' | 'maxBindAttempts' | 'maxStderrBytes' | 'connectTimeoutSeconds' | 'serverAliveIntervalSeconds' | 'serverAliveCountMax'>> & Pick<TunnelManagerOptions, 'readinessProbe'>
+  readonly #logger: TunnelManagerLogger | undefined
   readonly #active = new Map<string, { generation: number; process: OwnedProcess; abort: AbortController; disposed: boolean }>()
   readonly #generations = new Map<string, number>()
   #shutDown = false
 
   constructor(options: TunnelManagerOptions) {
+    this.#logger = options.logger
     this.#options = {
       readinessProbe: options.readinessProbe,
       sshExecutable: options.sshExecutable ?? 'ssh',
@@ -75,15 +103,20 @@ export class TunnelManager {
     await this.disposeNode(request.deviceId)
     const generation = (this.#generations.get(request.deviceId) ?? 0) + 1
     this.#generations.set(request.deviceId, generation)
+    const persistedPort = sanitizePort(request.preferredLocalPort)
+    // Once we have strong evidence the persisted port is unavailable, we stop
+    // offering it for the rest of THIS connect — a single latch, never revived
+    // by a later attempt's attribution. A link/auth/readiness failure leaves it
+    // set, so one transient blip does not permanently drift the device origin.
+    let abandonPreferred = false
     let lastDiagnostic = ''
     for (let attempt = 1; attempt <= this.#options.maxBindAttempts; attempt += 1) {
-      // The preferred port gets exactly one shot, on the first attempt. A
-      // reservation cannot be held until OpenSSH binds (the same port cannot
-      // be listened on twice), so a TOCTOU window is structural; forcing later
-      // attempts onto a fresh port keeps a port stolen inside that window from
-      // burning every retry on the same doomed number.
-      const preferred = attempt === 1 ? sanitizePort(request.preferredLocalPort) : undefined
-      const localPort = await reserveCandidatePort(preferred)
+      const preferred = abandonPreferred ? undefined : persistedPort
+      const reserved = await reserveCandidatePort(preferred)
+      const localPort = reserved.port
+      // Deterministic signal: our own listen on the preferred port failed. This
+      // is the TOCTOU/occupied case the spec authorizes dropping the port for.
+      if (reserved.preferredRejected) abandonPreferred = true
       if (this.#shutDown) throw new Error('tunnel manager is shut down')
       const process = this.#options.spawn(this.#options.sshExecutable, tunnelArgs(request, localPort, this.#options))
       const abort = new AbortController()
@@ -105,6 +138,13 @@ export class TunnelManager {
       ])
       if (outcome.kind === 'exit') {
         lastDiagnostic = diagnostic()
+        // Only a port-bind failure justifies abandoning the persisted port for
+        // the remaining attempts. Anything else (link, auth, readiness) — and
+        // any stderr we cannot classify — keeps the persisted port so a link
+        // blip does not permanently drift the origin.
+        if (persistedPort !== undefined && !abandonPreferred && localPort === persistedPort && isPortBindFailure(lastDiagnostic, localPort)) {
+          abandonPreferred = true
+        }
         this.#active.delete(request.deviceId)
         await this.#terminate(process, 1000)
         if (this.#shutDown) throw new Error('tunnel manager is shut down')
@@ -118,6 +158,9 @@ export class TunnelManager {
       if (this.#active.get(request.deviceId) !== active || active.disposed) {
         await this.#disposeExact(request.deviceId, active)
         throw new Error('tunnel generation was replaced')
+      }
+      if (persistedPort !== undefined && localPort !== persistedPort) {
+        this.#logger?.warn(`tunnel local port drift: device=${request.deviceId} from=${persistedPort} to=${localPort} reason=${abandonPreferred ? 'preferred-port-unavailable' : 'unknown'}`)
       }
       return {
         deviceId: request.deviceId,

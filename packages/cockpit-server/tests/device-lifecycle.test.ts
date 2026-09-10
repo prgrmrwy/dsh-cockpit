@@ -1128,7 +1128,7 @@ describe('device lifecycle local port persistence', () => {
   })
 
   it('passes the persisted port through and reports nothing when it is reused unchanged', async () => {
-    const persisted = await reserveCandidatePort()
+    const persisted = (await reserveCandidatePort()).port
     const reported: [string, number][] = []
     const { lifecycle, tunnel } = portReportingDevice(reported, { localPort: persisted })
     lifecycle.start()

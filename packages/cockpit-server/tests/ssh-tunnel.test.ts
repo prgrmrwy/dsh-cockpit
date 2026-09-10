@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:net'
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { defaultSpawner, probeSshIdentity, reserveCandidatePort, validateSshAlias, type OwnedProcess } from '../src/connectivity/ssh.js'
-import { TunnelManager } from '../src/connectivity/tunnel-manager.js'
+import { TunnelManager, isPortBindFailure } from '../src/connectivity/tunnel-manager.js'
 
 /** Fake ssh: keeps running long enough to look alive; records signals. */
 class FakeProcess implements OwnedProcess {
@@ -23,6 +23,13 @@ class FakeProcess implements OwnedProcess {
   }
   signals(): string[] { return this.#signals }
   exit(code: number): void { this.#resolveExit({ code, signal: null }) }
+  /** Model OpenSSH writing a diagnostic to stderr and then exiting. The exit is
+   * deferred a tick so the manager's 'data' listener (attached right after
+   * spawn returns) drains the chunk before diagnostic() runs. */
+  emitStderrThenExit(text: string, code: number): void {
+    ;(this.stderr as Readable).push(Buffer.from(text))
+    setTimeout(() => this.#resolveExit({ code, signal: null }), 0)
+  }
 }
 
 describe('ssh identity probe', () => {
@@ -142,26 +149,32 @@ function forwardedPort(argv: readonly string[]): number {
 
 describe('reserveCandidatePort', () => {
   it('returns the preferred port when it is bindable', async () => {
-    const free = await reserveCandidatePort()
-    await expect(reserveCandidatePort(free)).resolves.toBe(free)
+    const free = (await reserveCandidatePort()).port
+    const reserved = await reserveCandidatePort(free)
+    expect(reserved.port).toBe(free)
+    expect(reserved.preferredRejected).toBe(false)
   })
 
   it('falls back to an OS-assigned port when the preferred one is taken', async () => {
-    const taken = await reserveCandidatePort()
+    const taken = (await reserveCandidatePort()).port
     const holder = await occupy(taken)
     try {
-      const port = await reserveCandidatePort(taken)
-      expect(port).not.toBe(taken)
-      expect(port).toBeGreaterThan(0)
+      const reserved = await reserveCandidatePort(taken)
+      expect(reserved.port).not.toBe(taken)
+      expect(reserved.port).toBeGreaterThan(0)
+      // Deterministic attribution: our own listen on the preferred port failed.
+      expect(reserved.preferredRejected).toBe(true)
+      expect(reserved.preferredRejectionCode).toBe('EADDRINUSE')
     } finally {
       await release(holder)
     }
   })
 
   it('assigns a fresh port when no preference is given', async () => {
-    const port = await reserveCandidatePort()
-    expect(port).toBeGreaterThan(0)
-    expect(port).toBeLessThanOrEqual(65535)
+    const reserved = await reserveCandidatePort()
+    expect(reserved.port).toBeGreaterThan(0)
+    expect(reserved.port).toBeLessThanOrEqual(65535)
+    expect(reserved.preferredRejected).toBe(false)
   })
 })
 
@@ -170,7 +183,7 @@ describe('reserveCandidatePort', () => {
  * discards the device's own DSH web localStorage. */
 describe('tunnel manager local port reuse', () => {
   it('reuses the persisted port so the endpoint origin survives a reconnect', async () => {
-    const persisted = await reserveCandidatePort()
+    const persisted = (await reserveCandidatePort()).port
     const spawned: string[][] = []
     const manager = new TunnelManager({
       spawn: (_exe, argv) => { spawned.push([...argv]); return new FakeProcess(20 + spawned.length) },
@@ -192,7 +205,7 @@ describe('tunnel manager local port reuse', () => {
   })
 
   it('falls back to a fresh port and still connects when the persisted port is taken', async () => {
-    const persisted = await reserveCandidatePort()
+    const persisted = (await reserveCandidatePort()).port
     const holder = await occupy(persisted)
     const spawned: string[][] = []
     const manager = new TunnelManager({
@@ -240,15 +253,15 @@ describe('tunnel manager local port reuse', () => {
   })
 
   it('retries on a fresh port when the reused one is stolen inside the bind window', async () => {
-    const persisted = await reserveCandidatePort()
+    const persisted = (await reserveCandidatePort()).port
     const spawned: string[][] = []
     const manager = new TunnelManager({
       spawn: (_exe, argv) => {
         spawned.push([...argv])
         const child = new FakeProcess(60 + spawned.length)
         // First attempt models OpenSSH losing the race for the reused port:
-        // ExitOnForwardFailure makes it exit rather than bind elsewhere.
-        if (spawned.length === 1) child.exit(255)
+        // ExitOnForwardFailure makes it exit with a bind-failure diagnostic.
+        if (spawned.length === 1) child.emitStderrThenExit(`bind [127.0.0.1]:${persisted}: Address already in use\r\nchannel_setup_fwd_listener_tcpip: cannot listen to port: ${persisted}\r\nCould not request local forwarding.\r\n`, 255)
         return child
       },
       readinessProbe: async () => {
@@ -265,5 +278,112 @@ describe('tunnel manager local port reuse', () => {
     expect(forwardedPort(spawned[1]!)).not.toBe(persisted)
     expect(handle.localPort).toBe(forwardedPort(spawned[1]!))
     await manager.disposeAll()
+  })
+
+  it('keeps the persisted port across a link-level failure so the origin does not drift', async () => {
+    const persisted = (await reserveCandidatePort()).port
+    const spawned: string[][] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        spawned.push([...argv])
+        const child = new FakeProcess(70 + spawned.length)
+        // First attempt fails for a reason unrelated to the local port
+        // (connection timeout). The persisted port must be retried, not dropped.
+        if (spawned.length === 1) child.emitStderrThenExit('ssh: connect to host 10.255.255.1 port 22: Operation timed out\r\n', 255)
+        return child
+      },
+      readinessProbe: async () => {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        return { ok: true, state: 'READY' as const, diagnostic: 'ok' }
+      },
+    })
+    const handle = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080, preferredLocalPort: persisted })
+    expect(spawned).toHaveLength(2)
+    expect(forwardedPort(spawned[0]!)).toBe(persisted)
+    // The retry stays on the persisted port: a link blip must not drift origin.
+    expect(forwardedPort(spawned[1]!)).toBe(persisted)
+    expect(handle.localPort).toBe(persisted)
+    await manager.disposeAll()
+  })
+
+  it('keeps the persisted port when an early exit cannot be attributed', async () => {
+    const persisted = (await reserveCandidatePort()).port
+    const spawned: string[][] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        spawned.push([...argv])
+        const child = new FakeProcess(80 + spawned.length)
+        // Empty stderr: unclassifiable. Conservative default keeps the port.
+        if (spawned.length === 1) child.emitStderrThenExit('', 255)
+        return child
+      },
+      readinessProbe: async () => {
+        await new Promise(resolve => setTimeout(resolve, 10))
+        return { ok: true, state: 'READY' as const, diagnostic: 'ok' }
+      },
+    })
+    const handle = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080, preferredLocalPort: persisted })
+    expect(forwardedPort(spawned[1]!)).toBe(persisted)
+    expect(handle.localPort).toBe(persisted)
+    await manager.disposeAll()
+  })
+
+  it('warns once with attribution when the local port drifts, and stays silent when it does not', async () => {
+    const persisted = (await reserveCandidatePort()).port
+    const holder = await occupy(persisted)
+    const warnings: string[] = []
+    const manager = new TunnelManager({
+      spawn: () => new FakeProcess(90),
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+      logger: { warn: message => warnings.push(message) },
+    })
+    try {
+      const drifted = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080, preferredLocalPort: persisted })
+      expect(drifted.localPort).not.toBe(persisted)
+      expect(warnings).toHaveLength(1)
+      expect(warnings[0]).toContain('device=d1')
+      expect(warnings[0]).toContain(`from=${persisted}`)
+      expect(warnings[0]).toContain(`to=${drifted.localPort}`)
+      expect(warnings[0]).toContain('reason=preferred-port-unavailable')
+    } finally {
+      await manager.disposeAll()
+      await release(holder)
+    }
+
+    // A clean reuse (no drift) must not warn.
+    const stablePort = (await reserveCandidatePort()).port
+    const quiet: string[] = []
+    const stable = new TunnelManager({
+      spawn: () => new FakeProcess(91),
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+      logger: { warn: message => quiet.push(message) },
+    })
+    const handle = await stable.connect({ deviceId: 'd2', sshAlias: 'vm-a', remoteDshPort: 3080, preferredLocalPort: stablePort })
+    expect(handle.localPort).toBe(stablePort)
+    expect(quiet).toHaveLength(0)
+    await stable.disposeAll()
+  })
+})
+
+describe('isPortBindFailure', () => {
+  it('classifies real OpenSSH port-bind stderr as a port failure (matching port)', () => {
+    const stderr = 'bind [127.0.0.1]:54695: Address already in use\nchannel_setup_fwd_listener_tcpip: cannot listen to port: 54695\nCould not request local forwarding.\n'
+    expect(isPortBindFailure(stderr, 54695)).toBe(true)
+  })
+
+  it('does not attribute an address-in-use for a different port to our port', () => {
+    const stderr = 'bind [127.0.0.1]:11111: Address already in use\n'
+    expect(isPortBindFailure(stderr, 54695)).toBe(false)
+  })
+
+  it('treats "Could not request local forwarding" alone as a port-bind failure', () => {
+    expect(isPortBindFailure('Could not request local forwarding.\n', 54695)).toBe(true)
+  })
+
+  it('classifies link/auth/resolution failures as NOT a port failure', () => {
+    expect(isPortBindFailure('ssh: connect to host 10.255.255.1 port 22: Operation timed out\n', 54695)).toBe(false)
+    expect(isPortBindFailure('ssh: Could not resolve hostname vm-a: nodename nor servname provided\n', 54695)).toBe(false)
+    expect(isPortBindFailure('Permission denied (publickey).\n', 54695)).toBe(false)
+    expect(isPortBindFailure('', 54695)).toBe(false)
   })
 })

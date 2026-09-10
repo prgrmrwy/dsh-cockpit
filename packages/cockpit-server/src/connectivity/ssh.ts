@@ -96,6 +96,18 @@ export async function probeSshIdentity(alias: string, options: SshIdentityProbeO
   return { ok: true, exit: { code: 0, signal: null }, diagnostic }
 }
 
+/** Outcome of reserving a loopback port, carrying the attribution the caller
+ * needs to decide whether a preferred port is worth keeping across retries.
+ * `preferredRejected` is true ONLY when a preferred port was requested and its
+ * own `listen` failed — a deterministic signal from this process's own kernel
+ * call, never a guess. `preferredRejectionCode` echoes the Node error code
+ * (`EADDRINUSE`, `EACCES`, …) for diagnostics. */
+export interface ReservedPort {
+  readonly port: number
+  readonly preferredRejected: boolean
+  readonly preferredRejectionCode?: string
+}
+
 /** Reserve a loopback port, then release it for the tunnel to bind.
  *
  * With `preferredPort` the bind is attempted on that exact port first: an
@@ -103,8 +115,10 @@ export async function probeSshIdentity(alias: string, options: SshIdentityProbeO
  * also covers a port still held by another live device's tunnel. Any listen
  * error (EADDRINUSE, EACCES on a privileged port, anything else) falls back
  * silently to an OS-assigned port — a stable origin is an optimization and
- * must never be able to fail a reconnect. */
-export function reserveCandidatePort(preferredPort?: number): Promise<number> {
+ * must never be able to fail a reconnect. The returned attribution lets the
+ * caller distinguish "preferred port unavailable" (drop it) from "no preferred
+ * port asked for" (nothing to drop). */
+export async function reserveCandidatePort(preferredPort?: number): Promise<ReservedPort> {
   const attempt = (port: number): Promise<number> => new Promise((resolve, reject) => {
     const server = createServer()
     server.once('error', reject)
@@ -117,6 +131,13 @@ export function reserveCandidatePort(preferredPort?: number): Promise<number> {
       server.close(error => (error ? reject(error) : resolve(assigned)))
     })
   })
-  if (preferredPort === undefined) return attempt(0)
-  return attempt(preferredPort).catch(() => attempt(0))
+  if (preferredPort === undefined) return { port: await attempt(0), preferredRejected: false }
+  try {
+    return { port: await attempt(preferredPort), preferredRejected: false }
+  } catch (cause) {
+    const code = cause instanceof Error && typeof (cause as NodeJS.ErrnoException).code === 'string'
+      ? (cause as NodeJS.ErrnoException).code
+      : undefined
+    return { port: await attempt(0), preferredRejected: true, ...(code === undefined ? {} : { preferredRejectionCode: code }) }
+  }
 }
