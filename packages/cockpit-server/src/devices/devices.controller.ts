@@ -213,9 +213,15 @@ export class DevicesController {
    * carve-out that lets a header-bearing request skip the cookie check does
    * not, and must not, also let a header-less request skip both checks) — so
    * it is legitimately the legacy compatibility path, not an unauthenticated
-   * request, and must not be rejected here. Rejections are logged
-   * structurally (device/origin/protocol/reason) so "green dot stopped
-   * clearing" is diagnosable from the server log. */
+   * request, and must not be rejected here.
+   *
+   * Rejections are graded rather than always logged at WARN: the capability
+   * and origin races this method sees are the NORMAL self-healing path (the
+   * plugin re-issues and re-posts), and logging each one at WARN drowned the
+   * log — 54% of a real install's lines. They are recorded at debug with full
+   * structure so they stay diagnosable on demand, and only a genuine
+   * self-healing failure escalates, so "green dot stopped clearing" remains
+   * findable at the level meant for things a human must look at. */
   private authorizeBridge(request: import('express').Request, origin: string, protocolVersion = 1): void {
     const token = request.headers[BRIDGE_CAPABILITY_HEADER]
     const capability = Array.isArray(token) ? token[0] : token
@@ -223,9 +229,23 @@ export class DevicesController {
     try {
       this.connectivity.validateBridgeCapability(origin, capability)
     } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : String(cause)
-      const deviceId = this.connectivity.resolveBridgeDeviceId(origin)
-      this.logger.warn(`bridge callback rejected: device=${deviceId ?? 'unknown'} origin=${origin} protocolVersion=${protocolVersion} reason=${reason}`)
+      // Logging is strictly best-effort and must never change the outcome:
+      // the original rejection is rethrown untouched even if grading or the
+      // logger itself misbehaves. That keeps this path safe on a reduced
+      // dependency surface (partial mocks, a future refactor) as well.
+      try {
+        const reason = cause instanceof Error ? cause.message : String(cause)
+        const deviceId = this.connectivity.resolveBridgeDeviceId(origin) ?? 'unknown'
+        const graded = this.connectivity.gradeBridgeRejection(origin, reason)
+        const detail = `device=${deviceId} origin=${origin} protocolVersion=${protocolVersion} reason=${reason} class=${graded.class} count=${graded.count}`
+        if (graded.level === 'warn') {
+          this.logger.warn(`bridge self-healing failed: bridge callbacks repeatedly rejected without any successful report — ${detail}`)
+        } else {
+          this.logger.debug(`bridge callback rejected: ${detail}`)
+        }
+      } catch {
+        // Diagnostics only; the rejection below is what matters.
+      }
       throw cause
     }
   }

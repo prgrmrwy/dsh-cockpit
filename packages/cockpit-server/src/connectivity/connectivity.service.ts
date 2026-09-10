@@ -1,4 +1,4 @@
-import { Inject, Injectable, OnApplicationShutdown } from '@nestjs/common'
+import { Inject, Injectable, Logger, OnApplicationShutdown } from '@nestjs/common'
 import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle } from './device-lifecycle.js'
@@ -10,15 +10,19 @@ import { dshIframeLaunchUrl, parseDshLaunchUrl } from './dsh-auth.js'
 import { discoverLocalDshLaunchToken, discoverRemoteDshLaunchToken } from './dsh-auth-discovery.js'
 import { resolveSshExecutable } from '../runtime/config.js'
 import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
+import { BridgeRejectionLog, type BridgeRejectionDecision } from './bridge-rejection-log.js'
 
 @Injectable()
 export class ConnectivityService implements OnApplicationShutdown {
   readonly #registry: DeviceRegistry
+  readonly #logger = new Logger(ConnectivityService.name)
   readonly #tunnels: TunnelManager
   readonly #sshExecutable: string
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
+  /** Per-device bridge rejection grading (see bridge-rejection-log.ts). */
+  readonly #bridgeRejections = new BridgeRejectionLog()
   readonly #capabilities: BridgeCapabilityService
   readonly #authDiscoveryInFlight = new Map<string, Promise<string | undefined>>()
   readonly #authDiscoveryAttemptedAt = new Map<string, number>()
@@ -34,6 +38,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#tunnels = new TunnelManager({
       sshExecutable: this.#sshExecutable,
       readinessProbe: probeDshCarrier,
+      logger: { warn: message => this.#logger.warn(message) },
     })
     void this.#boot()
   }
@@ -116,9 +121,11 @@ export class ConnectivityService implements OnApplicationShutdown {
       const records = await this.#registry.load()
       const record = records.find(candidate => candidate.deviceId === deviceId)
       if (record !== undefined) this.#lifecycles.get(deviceId)?.updateRecord(record)
-    } catch {
+    } catch (cause) {
       // Keep the live connection; the port simply stays unstable until a later
       // connection manages to record it.
+      const reason = cause instanceof Error ? cause.message : String(cause)
+      this.#logger.warn(`local port persist failed: device=${deviceId} port=${localPort} reason=${reason}`)
     }
   }
 
@@ -126,6 +133,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = this.#lifecycles.get(deviceId)
     this.#lifecycles.delete(deviceId)
     await lifecycle?.stop()
+    this.#bridgeRejections.forget(deviceId)
     const prefix = `${deviceId}\u0000`
     for (const key of this.#authDiscoveryAttemptedAt.keys()) if (key.startsWith(prefix)) this.#authDiscoveryAttemptedAt.delete(key)
   }
@@ -393,6 +401,15 @@ export class ConnectivityService implements OnApplicationShutdown {
     return lifecycle
   }
 
+  /** Grade a rejected bridge callback so routine self-healing does not drown
+   * the log at WARN. `deviceId` is undefined when no enabled device matches the
+   * origin; those are aggregated under a stable synthetic key so one stale
+   * page cannot flood the log either. Returns how the caller should log it. */
+  gradeBridgeRejection(origin: string, reason: string): BridgeRejectionDecision {
+    const deviceId = this.resolveBridgeDeviceId(origin) ?? `unknown-origin:${origin}`
+    return this.#bridgeRejections.record(deviceId, reason, Date.now())
+  }
+
   /** Best-effort device id for a bridge request origin, used only for
    * rejection diagnostics — undefined when no enabled device matches. */
   resolveBridgeDeviceId(origin: string): string | undefined {
@@ -435,6 +452,9 @@ export class ConnectivityService implements OnApplicationShutdown {
 
   #recordBridgeSuccess(deviceId: string): void {
     this.#bridgeSeenAt.set(deviceId, Date.now())
+    // A successful report proves the bridge self-healed, so any rejection
+    // counters for this device must not keep accumulating toward an alert.
+    this.#bridgeRejections.recordSuccess(deviceId, Date.now())
     this.events.publish(this.statuses())
   }
 

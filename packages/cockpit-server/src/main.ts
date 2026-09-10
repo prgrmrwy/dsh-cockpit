@@ -8,7 +8,13 @@ import { resolveCockpitPort } from './runtime/config.js'
 import { RuntimeControlService } from './runtime/runtime-control.service.js'
 
 export async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log'] })
+  // `debug` is enabled deliberately: bridge callbacks that fail capability or
+  // origin validation are the NORMAL self-healing path and are recorded at
+  // debug with full structure (device/origin/reason/class) so they stay
+  // diagnosable on demand, while WARN is reserved for genuine self-healing
+  // failures. Without this level those entries would be unrecoverable rather
+  // than merely quiet. See connectivity/bridge-rejection-log.ts.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log', 'debug'] })
   app.enableShutdownHooks()
   // The bridge plugin runs inside each device's own DSH web client, which is a
   // DIFFERENT origin (127.0.0.1:<device port>). Cross-origin fetches to the

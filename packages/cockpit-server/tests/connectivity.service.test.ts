@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { Logger } from '@nestjs/common'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceEventsService } from '../src/connectivity/device-events.service.js'
 
@@ -407,6 +408,31 @@ describe('connectivity device updates', () => {
     expect(service.statuses()[0]?.state).toBe('READY')
 
     await service.onApplicationShutdown()
+  })
+
+  it('keeps the connection alive and warns when persisting the port fails', async () => {
+    tunnel.established = true
+    // Persisted port is unavailable, so the connection drifts to a fresh port
+    // and must persist the new one — that durable write is what we fail.
+    takenPorts.add(49999)
+    const warnings: string[] = []
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn').mockImplementation((message: unknown) => { warnings.push(String(message)) })
+    try {
+      const registry = new FakeRegistry([remote('a', 0, { enabled: true, localPort: 49999 })])
+      registry.updateLocalPort = async () => { throw new Error('disk full') }
+      const events = new DeviceEventsService()
+      const service = new ConnectivityService(registry as never, events)
+      for (let i = 0; i < 200 && service.statuses()[0]?.state !== 'READY'; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      // The failed persist did not break the connection.
+      expect(service.statuses()[0]?.state).toBe('READY')
+      // The failure is observable rather than silently swallowed.
+      expect(warnings.some(w => w.includes('local port persist failed') && w.includes('device=a'))).toBe(true)
+      await service.onApplicationShutdown()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 
   it('does not persist a forward port for a local device', async () => {
