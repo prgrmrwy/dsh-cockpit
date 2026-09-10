@@ -32,12 +32,17 @@
 - [x] 5.1 保留 Ubuntu CI，并新增 `windows-latest` 生命周期任务；两端使用隔离数据目录和非默认空闲端口验证 build、start、status、HTTP、stop 与无进程遗留。
 - [x] 5.2 在 Windows CI 验证 Node 以 `shell: false` 从 PATH 启动 `ssh.exe`，并验证 pnpm `.cmd` shim 适配。
 - [x] 5.3 更新 `README.md`、`README.en.md` 和 `CONTRIBUTING.md`，说明统一 Node 命令、平台调用方式、环境变量、全局 shim、端口、日志和陈旧实例排障；中文文档内容以中文编写。
-- [ ] 5.4 实际运行并记录 `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm build`、Windows 与 Unix 生产生命周期冒烟、开发模式中断清理，以及 Windows OpenSSH 远端连接验证。
+- [x] 5.4 实际运行并记录 `pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm build`、Windows 与 Unix 生产生命周期冒烟、开发模式中断清理，以及 Windows OpenSSH 远端连接验证。
 
 ## 验证记录
 
 - 2026-08-30，Windows：`pnpm typecheck`、`pnpm test`、`pnpm lint`、`pnpm build` 全部通过。
 - 2026-08-30，Windows：隔离目录与 43992 端口的生产 start/status/HTTP 200/stop 冒烟通过，停止后端口关闭且 `runtime.json` 已删除。
 - 2026-08-30，Windows：开发模式 `Ctrl+C` 冒烟通过，43991 与 5173 均关闭且 `runtime.json` 已删除；Windows `.cmd` 终止确认由 CLI 自动处理。
-- 2026-08-30，Windows：从 PATH 发现并运行 `C:\Windows\System32\OpenSSH\ssh.exe`（OpenSSH 9.5p2）；当前没有已注册远端设备，无法执行真实远端握手。
-- 待外部环境：由 Ubuntu CI 执行 Unix 生产生命周期；由提供了可连接目标的 Windows 环境执行 OpenSSH 远端连接验证。
+- 2026-08-30，Windows：从 PATH 发现并运行 `C:\Windows\System32\OpenSSH\ssh.exe`（OpenSSH 9.5p2）；当时没有已注册远端设备，未能执行真实远端握手。
+- 2026-09-11，Windows→远端真实 SSH 连接验证：**由用户在其 Windows 环境执行并确认通过**。该项即任务原文所指的「Windows OpenSSH 远端连接验证」，至此补齐 2026-08-30 记录中因缺少可连接远端目标而留下的缺口。
+- 待外部环境：无（Ubuntu 侧 Unix 生产生命周期已由 CI 覆盖，见下）。
+- 2026-09-11，Unix（macOS Darwin 25.2，本机实跑）：`pnpm typecheck` / `pnpm lint` / `pnpm build` exit 0；`pnpm test` 全绿（根 8 + shared 1 + bridge 17 + web 73 + server 172）。
+- 2026-09-11，Unix（本机实跑）：隔离数据目录 + `COCKPIT_PORT=3099` 的生产冒烟通过——start 成功、`status` 正确报告 URL/PID/instance、HTTP 200、stop 后端口释放且无进程遗留。
+- 2026-09-11，CI：[run #40](https://github.com/prgrmrwy/dsh-cockpit/actions/runs/34254174463)（`48b03c2`）conclusion=success。`check`（ubuntu-latest）与 `windows-lifecycle`（windows-latest）两个 job 均 success；后者含 `node bin/cockpit build`、**Verify PATH OpenSSH through Node**、Start/Stop 冒烟与失败后兜底停止。
+- **证据来源说明**：「Windows OpenSSH 远端连接验证」为**用户在其 Windows 环境执行并确认通过**，非本仓库可自动复现的断言，亦非由 CI 覆盖——CI 的两个 job 覆盖的是 Windows 上的 PATH OpenSSH **发现**与完整生命周期（`node bin/cockpit build`、Verify PATH OpenSSH through Node、Start/Stop 冒烟），不含 Windows→远端设备的真实 SSH 握手。记录于此以免日后误认为该项由 CI 证明。

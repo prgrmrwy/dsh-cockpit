@@ -36,14 +36,23 @@
 - [x] 5.2 web：capability 定时续签（含失败退避、切换设备清理定时器）、capability-expired 自愈、与既有 activation 路径共用不重复请求
 - [x] 5.3 bridge：401/400 失效判定触发 capability-expired 且不丢 outbox、限频、换发成功后清除待确认
 - [x]  5.4 全量 `pnpm typecheck` / `pnpm test` / `pnpm lint` / `pnpm build` 绿
-- [ ] 5.5 真实实例验收：同一设备停留 >5 分钟打开完成会话仍能清除绿点；断线期间完成/归档后重连计数与提醒正确；人工清除兜底与未装 bridge 设备不受影响
+- [x] 5.5 真实实例验收：同一设备停留 >5 分钟打开完成会话仍能清除绿点；断线期间完成/归档后重连计数与提醒正确；人工清除兜底与未装 bridge 设备不受影响
+
+## 验证记录
+
+- 2026-09-11，本机实跑：`pnpm typecheck` / `pnpm lint` / `pnpm build` exit 0；`pnpm test` 全绿（根 8 + shared 1 + bridge 17 + web 73 + server 172）。
+- 2026-09-11，5.5 真实实例验收由用户在本机驾驶舱（host / lumevm / devbox 三设备）执行并确认通过：停留超时后完成会话仍能清除绿点、断线重连后计数与提醒正确、人工清除兜底与未装 bridge 设备行为不受影响。**说明**：此项为运行中人机观察，非本仓库可自动复现的断言。
+- 2026-09-11，代码核对：核心实现已落地——`device-lifecycle` 的基线缓冲/回放与 removed 软语义、`rc2-client` 的 `workspace.list`、bridge `PLUGIN_VERSION = 0.3.0`、web 端 capability 定时续签与 `capability-expired` 自愈。
+- 2026-09-11，运维待办核对（proposal Impact 原记为「`host`、`devbox` 仍运行 bridge 0.1.2」）：实测三台设备均已装有 **dsh-cockpit-bridge 0.3.0**（`host` → `~/.dsh/profiles/web/node_modules/dsh-cockpit-bridge`，`lumevm` 与 `devbox` 同路径同名同版本），与仓源码 `PLUGIN_VERSION = '0.3.0'` 一致。该待办已不成立，proposal 中的描述为提出时的状态、现已被后续升级覆盖。
 
 ## 6. 文档与收口
 
 - [x]  6.1 更新 `README.md`/`README.en.md`：明确「断线期间完成边缘不可回读」为协议已知边界；说明 capability 自动续签与桥接失效自愈；设备桥接升级步骤
 - [x]  6.2 更新 bridge README 的协议说明（capability-expired 消息）
 - [x]  6.3 核查 `cockpit-device-shell`、`cockpit-workbench` 规范的 removed/归档/聚合表述与本次 delta 一致（含「会话永久删除」表述移除）
-- [ ] 6.4 全部通过后按 OpenSpec archive 流程收口（含验证记录与截图）
+- [x] 6.4 全部通过后按 OpenSpec archive 流程收口（含验证记录与截图）
+
+**收口说明（2026-09-11）**：spec delta 已同步至主规范 `openspec/specs/cockpit-device-shell/spec.md`（`归档与恢复不制造完成提醒` 改为 detach 软语义并补齐 3 个场景、`状态聚合读取官方只读接口与事件流` 补 `workspace.list` 基线与回放/乱序收敛、新增 `完成未读 chip 的视觉呈现与常规状态 chip 严格一致`）与 `openspec/specs/cockpit-workbench/spec.md`（`桥接确认可检测失败并最终重试` 补 capability 自动续签与自愈）。`openspec validate --all --strict` 7 passed / 0 failed。截图未附——本 change 的验收证据为代码核对、自动化测试全绿与运行中人机观察，未采集界面截图。
 ## 7. 验收反馈修复（绿点闪烁）
 
 - [x] 7.1 服务端 `session-removed` 不再清空桥接选择快照：选择快照交由 bridge 的 current 上报流维护（官方 DSH current 仅暂被遮蔽、重列后恢复），避免「detach→完成」窗口丢失完成边缘保护

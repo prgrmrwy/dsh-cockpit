@@ -18,7 +18,19 @@
 
 ### Requirement: 使用自有 SSH 隧道只监听中央回环并保持有界
 
-系统 SHALL 为每台设备建立一条本地回环转发（`127.0.0.1:<localPort>` → 远端 DSH 端口），由驾驶舱分配并跟踪。隧道 SHALL 使用系统 OpenSSH 配置（别名、`~/.ssh/config`、known_hosts、Agent、ProxyJump），并至少设置 `BatchMode`、`ExitOnForwardFailure` 与有界 keepalive。系统 MUST NOT 关闭 host-key 校验，MUST NOT 把密钥/口令暴露给模型或日志。
+系统 SHALL 为每台设备建立一条本地回环转发（`127.0.0.1:<localPort>` → 远端 DSH 端口），由驾驶舱分配并跟踪。系统 SHALL 优先使用 `DSH_COCKPIT_SSH_EXECUTABLE` 指定的单一 OpenSSH 可执行文件名或路径；未设置时 SHALL 把 `ssh` 作为可执行文件直接交给 Node.js `child_process.spawn` 并通过当前进程 `PATH` 查找，从而支持 Unix OpenSSH 与 Windows OpenSSH。SSH 进程 MUST 使用 `shell: false`，覆盖值 MUST NOT 被当作 shell 命令行解析。隧道 SHALL 使用系统 OpenSSH 配置（别名、`~/.ssh/config`、known_hosts、Agent、ProxyJump），并至少设置 `BatchMode`、`ExitOnForwardFailure` 与有界 keepalive。系统 MUST NOT 关闭 host-key 校验，MUST NOT 把密钥/口令暴露给模型或日志。
+
+#### Scenario: PATH 中发现平台 OpenSSH
+- **WHEN** 未设置 SSH 覆盖且当前进程 PATH 包含平台提供的 `ssh` 或 `ssh.exe`
+- **THEN** Node.js 直接启动所发现的 OpenSSH，身份验证与隧道保持既有参数及安全约束
+
+#### Scenario: 使用显式 SSH 覆盖
+- **WHEN** 用户设置 `DSH_COCKPIT_SSH_EXECUTABLE` 为有效的 OpenSSH 可执行文件名或路径
+- **THEN** 身份验证与隧道一致使用该值，且不把值中的字符解释为 shell 参数
+
+#### Scenario: SSH 可执行文件不可用
+- **WHEN** SSH 覆盖无效或 PATH 中找不到 `ssh`
+- **THEN** 远端设备连接失败并显示可操作的 SSH 命令发现诊断，不持久化未通过身份验证的新设备，且本机设备与驾驶舱 UI 仍可使用
 
 #### Scenario: 本地端口被占用
 - **WHEN** 驾驶舱分配的本地端口被其他进程占用于建立阶段
@@ -97,9 +109,17 @@
 
 端口复用 MUST NOT 建立在「该端口仍然空闲」的假设之上：系统 SHALL 在每次复用前实际验证该端口当前可在 `127.0.0.1` 上绑定。验证失败时系统 SHALL 静默回退到内核分配的新端口并继续建立隧道；端口不可用 MUST NOT 使重连失败，也 MUST NOT 改变设备的状态分级。
 
-验证与 OpenSSH 实际绑定之间存在竞态窗口。系统 SHALL 与既有的有界绑定重试机制协调而非绕过它：一次连接中 SHALL 至多用已持久化端口尝试一次，同一次连接的后续重试 SHALL 使用内核分配的新端口，使窗口内被抢占的情况降级为一次普通重试。重试次数上限保持不变，系统 MUST NOT 为端口复用引入无界重试。
+验证与 OpenSSH 实际绑定之间存在竞态窗口。系统 SHALL 与既有的有界绑定重试机制协调而非绕过它，且 SHALL 按**上一次尝试失败的归因**决定后续尝试是否继续使用已持久化端口：
+
+- 当失败可归因于该端口不可用时——预绑定验证失败，或 OpenSSH 因端口绑定/转发失败类原因退出——同一次连接的后续尝试 SHALL 改用内核分配的新端口，且 MUST NOT 再回退到该已持久化端口。
+- 当失败与该端口的可用性无关时——例如 SSH 连接超时、主机不可达、认证失败、远端 DSH 尚未就绪，或其它非端口归因的提前退出——后续尝试 SHALL 继续使用该已持久化端口，使一次链路抖动不至于让设备 origin 永久漂移。
+- 无法可靠归因的失败 SHALL 按「与端口无关」处理，即保留已持久化端口：稳定 origin 是该要求要保护的属性，误放弃它的代价高于多一次注定失败的重试。
+
+重试次数上限保持不变，系统 MUST NOT 为端口复用引入无界重试，也 MUST NOT 因保留已持久化端口而延长单次连接的总尝试次数。
 
 系统 SHALL 仅在实际使用的端口与已持久化的值不同时写入注册表，且该写入 SHALL 复用既有的原子写盘与 fail-closed 校验路径。持久化失败 MUST NOT 中断已经建立的连接。
+
+端口漂移 SHALL 可观测：当一次连接实际使用的本地转发端口与该设备已持久化的值不同时，系统 SHALL 记录一条包含设备标识、原端口、新端口与失败归因的告警级日志。端口持久化写入失败时系统 SHALL 同样记录告警。这些日志 MUST NOT 包含 SSH 密钥、口令或远端命令输出以外的敏感材料，且记录行为 MUST NOT 改变连接结果或设备状态分级。
 
 #### Scenario: 已持久化端口仍然可用
 - **WHEN** 一台远端设备的注册记录中存有 `localPort`，且该端口在重连时可在 `127.0.0.1` 上绑定
@@ -114,8 +134,20 @@
 - **THEN** 系统按既有行为由内核分配端口，并在连接建立后把实际端口写入该设备的注册记录
 
 #### Scenario: 复用端口在绑定窗口内被抢占
-- **WHEN** 已持久化端口通过了可绑定验证，但 OpenSSH 实际绑定前该端口被其它进程抢占，导致本次尝试失败
+- **WHEN** 已持久化端口通过了可绑定验证，但 OpenSSH 实际绑定前该端口被其它进程抢占，导致本次尝试因端口绑定失败而退出
 - **THEN** 系统在既有有界重试次数内用内核分配的新端口重试并完成连接，MUST NOT 反复重试同一个已持久化端口
+
+#### Scenario: 首次尝试因链路原因失败后仍保留已持久化端口
+- **WHEN** 一台远端设备的注册记录中存有 `localPort`，该端口通过了可绑定验证，但首次尝试因与端口无关的原因失败——例如 SSH 连接超时、主机暂时不可达或远端 DSH 尚未就绪
+- **THEN** 系统在既有有界重试次数内**继续使用**该已持久化端口重试；重试成功后工作台 endpoint 的 origin 与上一次连接一致，该设备 DSH Web 的 origin 作用域存储不被重置
+
+#### Scenario: 无法归因的提前退出保留已持久化端口
+- **WHEN** OpenSSH 在 DSH readiness 之前退出，且其诊断输出不足以判定失败是否由端口不可用引起
+- **THEN** 系统按「与端口无关」处理并在后续尝试中保留该已持久化端口，重试次数上限不变
+
+#### Scenario: 端口漂移可从日志定位
+- **WHEN** 一次连接最终使用的本地转发端口与该设备已持久化的值不同
+- **THEN** 系统记录一条包含设备标识、原端口、新端口与失败归因的告警级日志，且该设备照常完成连接、状态分级不受影响
 
 #### Scenario: 本机设备不涉及端口复用
 - **WHEN** 一台 `local` 设备连接其本机 DSH
