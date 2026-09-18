@@ -264,3 +264,104 @@ describe('typert unary and Remote mux', () => {
     await stream.dispose()
   })
 })
+
+describe('typert handshake boundedness', () => {
+  const options = (socket: FakeSocket, extra: { handshakeTimeoutMs?: number } = {}) => ({
+    endpoint: new URL('http://127.0.0.1:3081'),
+    deviceId: 'd1',
+    cookie: 'cookie=value',
+    createSocket: () => socket as never,
+    ...extra,
+  })
+
+  it('fails a handshake whose socket opens and then drops before the workspace baseline', async () => {
+    const socket = new FakeSocket()
+    // The deadline sits far outside the test budget, so only the close path can
+    // settle this: a missing failure path shows up as a hang, not a late timeout.
+    const stream = new TypertEventStream(options(socket, { handshakeTimeoutMs: 60_000 }))
+    const opened = stream.open()
+    const settled = expect(opened).rejects.toThrow('typert stream closed')
+    socket.emit('open')
+    socket.close()
+    await settled
+    await expect(stream.workspaceBaseline()).rejects.toThrow('typert stream closed')
+  })
+
+  it('cancels a pending handshake when the connect attempt is aborted', async () => {
+    const socket = new FakeSocket()
+    const controller = new AbortController()
+    const stream = new TypertEventStream(options(socket, { handshakeTimeoutMs: 60_000 }))
+    const opened = stream.open(controller.signal)
+    const settled = expect(opened).rejects.toThrow('cancelled')
+    socket.emit('open')
+    controller.abort()
+    await settled
+    expect(socket.readyState).toBe(3)
+  })
+
+  it('opens no socket for an attempt that is already cancelled', async () => {
+    vi.useFakeTimers()
+    try {
+      const sockets: FakeSocket[] = []
+      const stream = new TypertEventStream({
+        endpoint: new URL('http://127.0.0.1:3081'),
+        deviceId: 'd1',
+        cookie: 'cookie=value',
+        handshakeTimeoutMs: 10_000,
+        createSocket: () => { const created = new FakeSocket(); sockets.push(created); return created as never },
+      })
+      const controller = new AbortController()
+      controller.abort()
+      await expect(stream.open(controller.signal)).rejects.toThrow('cancelled')
+      expect(sockets).toHaveLength(0)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('settles a pending handshake on dispose and releases the deadline timer', async () => {
+    vi.useFakeTimers()
+    try {
+      const socket = new FakeSocket()
+      const stream = new TypertEventStream(options(socket, { handshakeTimeoutMs: 10_000 }))
+      const opened = stream.open()
+      const settled = expect(opened).rejects.toThrow('disposed')
+      socket.emit('open')
+      await stream.dispose()
+      await settled
+      expect(vi.getTimerCount()).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('bounds the handshake when an upgraded socket never produces a baseline', async () => {
+    const socket = new FakeSocket()
+    const stream = new TypertEventStream(options(socket, { handshakeTimeoutMs: 20 }))
+    const opened = stream.open()
+    const settled = expect(opened).rejects.toThrow(/handshake timed out after 20ms/)
+    socket.emit('open')
+    await settled
+    expect(socket.readyState).toBe(3)
+    await stream.dispose()
+  })
+
+  it('does not retroactively fail a completed handshake when the socket drops later', async () => {
+    const socket = new FakeSocket()
+    const stream = new TypertEventStream(options(socket, { handshakeTimeoutMs: 60_000 }))
+    const disconnects: string[] = []
+    stream.on('disconnect', () => disconnects.push('disconnect'))
+    const opened = stream.open()
+    socket.emit('open')
+    socket.emit('message', JSON.stringify({ type: 'item', streamId: 'workspace', value: { type: 'baseline', value: { items: [], archivedSessionIds: [] } } }))
+    await opened
+    expect(await stream.workspaceBaseline()).toEqual({ items: [], archivedSessionIds: [] })
+    socket.close()
+    await vi.waitFor(() => expect(disconnects).toEqual(['disconnect']))
+    // The completed handshake and its baseline survive: the drop belongs to the
+    // disconnect → reconnect path.
+    expect(await stream.workspaceBaseline()).toEqual({ items: [], archivedSessionIds: [] })
+    await stream.dispose()
+  })
+})

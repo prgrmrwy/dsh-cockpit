@@ -1,5 +1,5 @@
 import { Readable } from 'node:stream'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceLifecycle } from '../src/connectivity/device-lifecycle.js'
 import { reserveCandidatePort } from '../src/connectivity/ssh.js'
@@ -1139,6 +1139,139 @@ describe('device lifecycle local port persistence', () => {
     expect(lifecycle.current().endpoint).toBe(`http://127.0.0.1:${persisted}/`)
     // Nothing changed, so no registry write is requested.
     expect(reported).toEqual([])
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+})
+
+describe('device lifecycle bounded handshake', () => {
+  /** Exits as soon as it is signalled, so tunnel teardown does not add its own
+   * grace period to the timings asserted below. */
+  class KillableProcess {
+    pid = 7
+    stderr = new Readable({ read() {} })
+    #exit!: (value: { code: number | null; signal: string | null }) => void
+    exited = new Promise<{ code: number | null; signal: string | null }>(resolve => { this.#exit = resolve })
+    kill(sig?: string): boolean { void sig; this.#exit({ code: 0, signal: null }); return true }
+  }
+
+  function harness(options: {
+    open: (signal: AbortSignal | undefined, attempt: number) => Promise<void>
+    teardownBarrierMs?: number
+    baselineTimeoutMs?: number
+    listSessions?: () => Promise<readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean }[]>
+  }) {
+    const facts: { state: string; diagnostic: string }[] = []
+    let attempts = 0
+    const tunnel = new TunnelManager({
+      spawn: () => new KillableProcess() as never,
+      readinessProbe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+    })
+    const lifecycle = new DeviceLifecycle({
+      record: record(),
+      tunnels: tunnel,
+      reconnectDelay: () => 5,
+      teardownBarrierMs: options.teardownBarrierMs ?? 5_000,
+      ...(options.baselineTimeoutMs === undefined ? {} : { baselineTimeoutMs: options.baselineTimeoutMs }),
+      createProtocol: async () => ({
+        kind: 'typert' as const,
+        client: {
+          kind: 'typert' as const,
+          probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+          listSessions: options.listSessions ?? (async () => []),
+          listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+        },
+        stream: {
+          on: () => undefined as never,
+          off: () => undefined as never,
+          open: async (signal?: AbortSignal) => { attempts += 1; await options.open(signal, attempts) },
+          dispose: () => {},
+        },
+      }),
+      onFacts: current => facts.push({ state: current.state, diagnostic: current.diagnostic ?? '' }),
+    })
+    return { lifecycle, tunnel, facts, attempts: () => attempts }
+  }
+
+  async function waitForState(lifecycle: DeviceLifecycle, state: string): Promise<void> {
+    for (let i = 0; i < 400 && lifecycle.current().state !== state; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+  }
+
+  it('retries after a failed handshake and reaches READY on a later attempt', async () => {
+    let attempt = 0
+    const { lifecycle, tunnel, facts, attempts } = harness({
+      open: async () => {
+        attempt += 1
+        if (attempt === 1) throw new Error('typert stream closed')
+      },
+    })
+    lifecycle.start()
+    await waitForState(lifecycle, 'READY')
+    expect(lifecycle.current().state).toBe('READY')
+    expect(attempts()).toBeGreaterThanOrEqual(2)
+    // The failed attempt announced a bounded backoff instead of freezing behind
+    // a "reconnecting" diagnostic the loop is not actually running.
+    expect(facts.some(entry => entry.state === 'CONNECTING' && entry.diagnostic.startsWith('reconnecting in '))).toBe(true)
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+
+  it('lets manual reconnect abandon a handshake that only ends on abort', async () => {
+    const { lifecycle, tunnel, attempts } = harness({
+      open: signal => new Promise<void>((_resolve, reject) => {
+        if (signal === undefined) return
+        const cancel = () => reject(new Error('typert stream handshake cancelled'))
+        if (signal.aborted) cancel()
+        else signal.addEventListener('abort', cancel, { once: true })
+      }),
+    })
+    lifecycle.start()
+    await vi.waitFor(() => expect(attempts()).toBeGreaterThanOrEqual(1))
+    const startedAt = Date.now()
+    await lifecycle.reconnect()
+    // Settled by cancellation, not by the 5s teardown barrier.
+    expect(Date.now() - startedAt).toBeLessThan(1_000)
+    await vi.waitFor(() => expect(attempts()).toBeGreaterThanOrEqual(2))
+    await lifecycle.stop()
+    await tunnel.disposeAll()
+  })
+
+  it('bounds teardown even when an attempt ignores cancellation entirely', async () => {
+    const { lifecycle, tunnel, attempts } = harness({
+      open: () => new Promise<void>(() => {}),
+      teardownBarrierMs: 40,
+    })
+    lifecycle.start()
+    await vi.waitFor(() => expect(attempts()).toBeGreaterThanOrEqual(1))
+    const startedAt = Date.now()
+    await lifecycle.stop()
+    expect(Date.now() - startedAt).toBeLessThan(2_000)
+    // Torn down without a live endpoint even though the attempt never ended:
+    // convergence does not depend on the peer.
+    expect(lifecycle.current().endpoint).toBeUndefined()
+    await tunnel.disposeAll()
+  })
+
+  it('recovers after a baseline timeout instead of leaking the reconcile gate', async () => {
+    let baselines = 0
+    const { lifecycle, tunnel } = harness({
+      open: async () => {},
+      baselineTimeoutMs: 20,
+      listSessions: async () => {
+        baselines += 1
+        // The first attempt's baseline never answers: the attempt must be
+        // abandoned, and the single-flight gate must be released so the next
+        // attempt can reconcile instead of reporting 'skipped' forever.
+        if (baselines === 1) await new Promise(() => {})
+        return []
+      },
+    })
+    lifecycle.start()
+    await waitForState(lifecycle, 'READY')
+    expect(lifecycle.current().state).toBe('READY')
+    expect(baselines).toBeGreaterThanOrEqual(2)
     await lifecycle.stop()
     await tunnel.disposeAll()
   })

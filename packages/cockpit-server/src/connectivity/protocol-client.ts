@@ -35,7 +35,10 @@ export interface DeviceProtocolClient {
 export interface DeviceProtocolStream {
   on(event: string | symbol, listener: (...args: any[]) => void): this
   off(event: string | symbol, listener: (...args: any[]) => void): this
-  open(): Promise<void>
+  /** Opens the stream and resolves once the handshake is complete. The optional
+   * signal is the connect attempt's own cancellation: a stream that cannot be
+   * cancelled lets a teardown wait on the peer forever. */
+  open(signal?: AbortSignal): Promise<void>
   dispose(): void | Promise<void>
 }
 
@@ -270,6 +273,19 @@ interface TypertStreamOptions {
   readonly cookie: string
   readonly fetch?: typeof fetch
   readonly createSocket?: (url: URL, headers: Record<string, string>) => WebSocket
+  /** Bounded budget for the logical-stream handshake (socket upgrade →
+   * workspace baseline). Same order of magnitude as the baseline RPC budget:
+   * generous for a slow link, finite so an upgraded-but-silent socket fails
+   * the attempt instead of hanging the connect loop. */
+  readonly handshakeTimeoutMs?: number
+}
+
+/** Default handshake budget. Finite by construction: the upgrade succeeding
+ * says nothing about the logical streams ever producing a baseline. */
+export const TYPERT_HANDSHAKE_TIMEOUT_MS = 10_000
+
+function asError(cause: unknown, fallback: string): Error {
+  return cause instanceof Error ? cause : new Error(fallback)
 }
 
 export class TypertEventStream extends EventEmitter implements DeviceProtocolStream {
@@ -278,13 +294,22 @@ export class TypertEventStream extends EventEmitter implements DeviceProtocolStr
   readonly #cookie: string
   readonly #fetch: typeof fetch
   readonly #createSocket: (url: URL, headers: Record<string, string>) => WebSocket
+  readonly #handshakeTimeoutMs: number
   #socket: WebSocket | undefined
   #clientId: string | undefined
   readonly #repliedWaterfalls = new Set<string>()
   #closed = false
   #disconnected = false
   #workspace: WorkspaceBaseline | undefined
+  /** Handshake completion. Settled EXACTLY ONCE: resolved by the workspace
+   * baseline, rejected by any terminal path — socket error/close, handshake
+   * deadline, attempt abort, dispose. This promise IS the `open()` contract, so
+   * a socket that upgrades and then dies before the baseline rejects the
+   * attempt instead of suspending it forever. */
   readonly #workspaceReady: { promise: Promise<void>; resolve: () => void; reject: (cause: unknown) => void }
+  #workspaceSettled = false
+  #handshakeTimer: ReturnType<typeof setTimeout> | undefined
+  #handshakeAbort: { readonly signal: AbortSignal; readonly handler: () => void } | undefined
 
   constructor(options: TypertStreamOptions) {
     super()
@@ -293,34 +318,36 @@ export class TypertEventStream extends EventEmitter implements DeviceProtocolStr
     this.#cookie = options.cookie
     this.#fetch = options.fetch ?? fetch
     this.#createSocket = options.createSocket ?? ((url, headers) => new WebSocket(url, { headers }))
+    this.#handshakeTimeoutMs = options.handshakeTimeoutMs ?? TYPERT_HANDSHAKE_TIMEOUT_MS
     let resolve!: () => void
     let reject!: (cause: unknown) => void
     const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej })
+    // Consumers attach later (open(), workspaceBaseline()), so a failure in the
+    // window before the first attachment must not surface as an unhandled
+    // rejection. Every consumer still receives the rejection.
+    void promise.catch(() => undefined)
     this.#workspaceReady = { promise, resolve, reject }
   }
 
-  open(): Promise<void> {
+  open(signal?: AbortSignal): Promise<void> {
     if (this.#closed) return Promise.resolve()
-    return new Promise((resolve, reject) => {
-      const url = new URL('/api/remote.mux', this.#endpoint)
-      url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-      const socket = this.#createSocket(url, { Cookie: this.#cookie })
-      this.#socket = socket
-      let opened = false
-      const fail = (cause: Error) => {
-        if (!opened) reject(cause)
-        this.#disconnect()
-      }
-      socket.once('open', () => {
-        opened = true
-        socket.send(JSON.stringify({ type: 'open', streamId: 'events', endpoint: '$events', payload: { args: {} } }))
-        socket.send(JSON.stringify({ type: 'open', streamId: 'workspace', endpoint: 'workspace/follow', payload: { args: {} } }))
-        void this.#workspaceReady.promise.then(resolve, reject)
-      })
-      socket.on('message', data => { void this.#receive(String(data)).catch(error => fail(error instanceof Error ? error : new Error(String(error)))) })
-      socket.once('error', error => fail(error instanceof Error ? error : new Error('typert stream error')))
-      socket.once('close', () => fail(new Error('typert stream closed')))
+    this.#armHandshake(signal)
+    // An already-cancelled attempt must not open a socket it cannot own.
+    if (this.#workspaceSettled) return this.#workspaceReady.promise
+    const url = new URL('/api/remote.mux', this.#endpoint)
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
+    const socket = this.#createSocket(url, { Cookie: this.#cookie })
+    this.#socket = socket
+    socket.once('open', () => {
+      socket.send(JSON.stringify({ type: 'open', streamId: 'events', endpoint: '$events', payload: { args: {} } }))
+      socket.send(JSON.stringify({ type: 'open', streamId: 'workspace', endpoint: 'workspace/follow', payload: { args: {} } }))
     })
+    socket.on('message', data => {
+      void this.#receive(String(data)).catch(error => this.#failHandshake(asError(error, 'typert stream frame failed')))
+    })
+    socket.once('error', error => this.#failHandshake(asError(error, 'typert stream error')))
+    socket.once('close', () => this.#failHandshake(new Error('typert stream closed')))
+    return this.#workspaceReady.promise
   }
 
   workspaceBaseline(): Promise<WorkspaceBaseline> {
@@ -331,6 +358,63 @@ export class TypertEventStream extends EventEmitter implements DeviceProtocolStr
   async dispose(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    // Disposal is a handshake outcome: an attempt waiting on this stream must
+    // not keep waiting on a stream that will never produce a baseline.
+    this.#failHandshake(new Error('typert stream disposed'))
+    this.#closeSocket()
+  }
+
+  /** Arm the two bounded/cancellable exits of the handshake. Both are cleared
+   * by whichever settle path runs first, so an already-aborted attempt releases
+   * the deadline immediately instead of leaving a timer behind. */
+  #armHandshake(signal: AbortSignal | undefined): void {
+    const timer = setTimeout(() => {
+      this.#failHandshake(new Error(`typert stream handshake timed out after ${this.#handshakeTimeoutMs}ms`))
+      this.#closeSocket()
+    }, this.#handshakeTimeoutMs)
+    timer.unref?.()
+    this.#handshakeTimer = timer
+    if (signal !== undefined) {
+      const handler = () => {
+        this.#failHandshake(new Error('typert stream handshake cancelled'))
+        this.#closeSocket()
+      }
+      this.#handshakeAbort = { signal, handler }
+      if (signal.aborted) handler()
+      else signal.addEventListener('abort', handler, { once: true })
+    }
+  }
+
+  /** Reject an UNRESOLVED handshake. A settled handshake is never re-settled:
+   * a socket that dies after the baseline belongs to the existing
+   * `disconnect` → reconnect path, not to handshake failure. */
+  #failHandshake(cause: Error): void {
+    this.#disconnect()
+    if (this.#workspaceSettled) return
+    this.#workspaceSettled = true
+    this.#releaseHandshake()
+    this.#workspaceReady.reject(cause)
+  }
+
+  #completeHandshake(): void {
+    if (this.#workspaceSettled) return
+    this.#workspaceSettled = true
+    this.#releaseHandshake()
+    this.#workspaceReady.resolve()
+  }
+
+  #releaseHandshake(): void {
+    if (this.#handshakeTimer !== undefined) {
+      clearTimeout(this.#handshakeTimer)
+      this.#handshakeTimer = undefined
+    }
+    if (this.#handshakeAbort !== undefined) {
+      this.#handshakeAbort.signal.removeEventListener('abort', this.#handshakeAbort.handler)
+      this.#handshakeAbort = undefined
+    }
+  }
+
+  #closeSocket(): void {
     const socket = this.#socket
     this.#socket = undefined
     if (socket !== undefined && socket.readyState < WebSocket.CLOSING) socket.close()
@@ -356,7 +440,7 @@ export class TypertEventStream extends EventEmitter implements DeviceProtocolStr
         items: value.value.items.filter(isWorkspaceRow),
         archivedSessionIds: value.value.archivedSessionIds.filter(isString),
       }
-      this.#workspaceReady.resolve()
+      this.#completeHandshake()
       return
     }
     if (this.#workspace === undefined) throw new Error('workspace increment arrived before baseline')

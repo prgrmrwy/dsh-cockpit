@@ -53,6 +53,13 @@ export interface DeviceLifecycleOptions {
    * connect attempt is abandoned (backoff retry) or refresh keeps its last
    * facts; buffered events are still applied before returning. */
   readonly baselineTimeoutMs?: number
+  /** Backstop for the teardown barrier (stop / manual reconnect wait for the
+   * connect loop to settle). The loop settles on its own — its attempts are
+   * abortable and bounded — so this only bounds the damage of a future
+   * regression: a teardown that times out logs a warning and continues instead
+   * of hanging the cockpit forever. Must be far larger than any single
+   * attempt's own budget. */
+  readonly teardownBarrierMs?: number
   /** Test seam for the rc.2 client (defaults to a real Rc2Client). */
   readonly createClient?: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   /** Test seam for the dual event stream (defaults to a real DualEventStream). */
@@ -71,6 +78,7 @@ export class DeviceLifecycle {
   readonly #onLocalPort: ((deviceId: string, localPort: number) => void) | undefined
   readonly #reconnectDelay: (attempt: number) => number
   readonly #baselineTimeoutMs: number
+  readonly #teardownBarrierMs: number
   readonly #createClient: (endpoint: URL) => Promise<Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>> | Pick<Rc2Client, 'probe' | 'listSessions' | 'listWorkspaces'>
   readonly #createStream: (endpoint: URL) => Pick<DualEventStream, 'on' | 'off' | 'open' | 'dispose'>
   readonly #createProtocol: NonNullable<DeviceLifecycleOptions['createProtocol']>
@@ -141,6 +149,7 @@ export class DeviceLifecycle {
     this.#onLocalPort = options.onLocalPort
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
     this.#baselineTimeoutMs = options.baselineTimeoutMs ?? 5_000
+    this.#teardownBarrierMs = options.teardownBarrierMs ?? 30_000
     this.#createClient = options.createClient ?? (async endpoint => new Rc2Client({ endpoint }))
     this.#createStream = options.createStream ?? (endpoint => new DualEventStream({ endpoint, deviceId: this.deviceId }))
     this.#recoverAuth = options.recoverAuth ?? (async () => undefined)
@@ -409,7 +418,7 @@ export class DeviceLifecycle {
     this.#runAbort?.abort(new Error('device stopped'))
     await this.#stream?.dispose()
     await this.#tunnels.disposeNode(this.deviceId)
-    await this.#task?.catch(() => {})
+    await this.#awaitRunSettled()
     this.#stream = undefined
     this.#client = undefined
     this.#endpoint = undefined
@@ -441,7 +450,7 @@ export class DeviceLifecycle {
     this.#runAbort?.abort(new Error('manual reconnect'))
     await this.#stream?.dispose()
     await this.#tunnels.disposeNode(this.deviceId)
-    await this.#task?.catch(() => {})
+    await this.#awaitRunSettled()
     if (this.#stopped || !this.#record.enabled) return
     this.#stream = undefined
     this.#client = undefined
@@ -467,7 +476,12 @@ export class DeviceLifecycle {
             // disconnect would hang forever. Retry with backoff immediately.
             const delay = this.#reconnectDelay(attempt)
             attempt += 1
-            this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+            // A cancelled attempt reports nothing: its outcome is teardown, and
+            // announcing a backoff the loop will not actually run would be a
+            // diagnostic the connection layer cannot back up.
+            if (!runAbort.signal.aborted && !this.#abort.signal.aborted) {
+              this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+            }
             await this.#delay(delay, runAbort.signal)
             continue
           }
@@ -476,7 +490,9 @@ export class DeviceLifecycle {
           await this.#waitForDisconnect(runAbort.signal)
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : String(cause)
-          this.#setState(message.includes('shut down') ? 'TUNNEL_ERROR' : 'SSH_UNREACHABLE', message)
+          if (!runAbort.signal.aborted && !this.#abort.signal.aborted) {
+            this.#setState(message.includes('shut down') ? 'TUNNEL_ERROR' : 'SSH_UNREACHABLE', message)
+          }
         }
         const delay = this.#reconnectDelay(attempt)
         attempt += 1
@@ -522,18 +538,23 @@ export class DeviceLifecycle {
    * be lost forever. With subscribe-first, those edges are buffered and
    * replayed after the baseline in arrival order. */
   async #connectRc2(endpoint: URL, onFailure: (() => Promise<void>) | undefined, connectionGeneration: number): Promise<boolean> {
+    // This attempt's own cancellation. Captured once so every gate below asks
+    // about THIS run, not about whichever run replaced it.
+    const attemptSignal = this.#runAbort?.signal ?? this.#abort.signal
     let protocol: Awaited<ReturnType<NonNullable<DeviceLifecycleOptions['createProtocol']>>>
     try {
-      protocol = await this.#createProtocol(endpoint, this.#record, this.#runAbort?.signal ?? this.#abort.signal)
+      protocol = await this.#createProtocol(endpoint, this.#record, attemptSignal)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause)
       this.#authRecoveryRequired = cause instanceof DshAuthenticationRequiredError
-      this.#setState(message.includes('NON_DSH_SERVICE') ? 'NON_DSH_SERVICE' : 'DSH_UNAVAILABLE', message)
+      if (!this.#superseded(connectionGeneration, attemptSignal)) {
+        this.#setState(message.includes('NON_DSH_SERVICE') ? 'NON_DSH_SERVICE' : 'DSH_UNAVAILABLE', message)
+      }
       await onFailure?.()
       this.#endpoint = undefined
       return false
     }
-    if (connectionGeneration !== this.#connectionGeneration || this.#runAbort?.signal.aborted === true) {
+    if (this.#superseded(connectionGeneration, attemptSignal)) {
       await protocol.stream.dispose()
       await onFailure?.()
       return false
@@ -546,7 +567,7 @@ export class DeviceLifecycle {
         this.#endpoint = undefined
         return false
       }
-      if (connectionGeneration !== this.#connectionGeneration || Boolean(this.#runAbort?.signal.aborted)) {
+      if (this.#superseded(connectionGeneration, attemptSignal)) {
         await protocol.stream.dispose()
         await onFailure?.()
         return false
@@ -559,6 +580,11 @@ export class DeviceLifecycle {
     this.#pendingBySession.clear()
     this.#client = protocol.client
     const probe = await this.#client.probe()
+    if (this.#superseded(connectionGeneration, attemptSignal)) {
+      await protocol.stream.dispose()
+      await onFailure?.()
+      return false
+    }
     if (!probe.ok) {
       this.#setState(probe.state, probe.diagnostic)
       await onFailure?.()
@@ -569,7 +595,7 @@ export class DeviceLifecycle {
     this.#stream.on('event', event => this.#onStreamEvent(event))
     this.#buffering = true
     try {
-      await this.#stream.open()
+      await this.#stream.open(attemptSignal)
     } catch (cause) {
       this.#buffering = false
       const message = cause instanceof Error ? cause.message : String(cause)
@@ -577,6 +603,16 @@ export class DeviceLifecycle {
       await onFailure?.()
       this.#stream.dispose()
       this.#stream = undefined
+      this.#endpoint = undefined
+      return false
+    }
+    if (this.#superseded(connectionGeneration, attemptSignal)) {
+      // Handshake finished too late to belong to this attempt: give its own
+      // resources back without disturbing whichever generation owns the
+      // lifecycle now.
+      await protocol.stream.dispose()
+      if (this.#stream === protocol.stream) this.#stream = undefined
+      await onFailure?.()
       this.#endpoint = undefined
       return false
     }
@@ -694,6 +730,10 @@ export class DeviceLifecycle {
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause)
       this.#log.warn(`${this.deviceId}: baseline fetch aborted: ${reason}`)
+      // Every exit releases the single-flight gate. A leaked #reconciling makes
+      // every later attempt report 'skipped', which the connect path must treat
+      // as a failed attempt — the device would never reach READY again.
+      this.#endReconcile()
       return 'failed'
     }
     try {
@@ -723,14 +763,19 @@ export class DeviceLifecycle {
       this.#pruneSessions()
       return 'ok'
     } finally {
-      // Even on failure the buffered events are real wire facts: apply them
-      // instead of dropping them (refresh keeps last facts when the baseline
-      // itself failed).
-      this.#applyEventBuffer()
-      this.#buffering = false
-      this.#eventBuffer = []
-      this.#reconciling = false
+      this.#endReconcile()
     }
+  }
+
+  /** Releases the reconcile single-flight gate and replays whatever the buffer
+   * holds. MUST run on every exit path: even on failure the buffered events are
+   * real wire facts, so they are applied rather than dropped (refresh keeps its
+   * last facts when the baseline itself failed). */
+  #endReconcile(): void {
+    this.#applyEventBuffer()
+    this.#buffering = false
+    this.#eventBuffer = []
+    this.#reconciling = false
   }
 
   #applyEventBuffer(): void {
@@ -843,6 +888,33 @@ export class DeviceLifecycle {
 
   #emitFacts(): void {
     this.#onFacts(this.current())
+  }
+
+  /** Bounded teardown barrier: wait for the connect loop to settle, but never
+   * forever. Aborting plus bounded attempts are what actually make the loop
+   * settle; this only guarantees teardown converges even if a later change
+   * reintroduces an unbounded await inside an attempt. A stale attempt that
+   * outlives the barrier cannot install a second live generation — every
+   * mutation after an await is gated on #connectionGeneration. */
+  #superseded(connectionGeneration: number, signal: AbortSignal): boolean {
+    return connectionGeneration !== this.#connectionGeneration || signal.aborted
+  }
+
+  async #awaitRunSettled(): Promise<void> {
+    const task = this.#task
+    if (task === undefined) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = await Promise.race([
+      task.then(() => false, () => false),
+      new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(true), this.#teardownBarrierMs)
+        timer.unref?.()
+      }),
+    ])
+    if (timer !== undefined) clearTimeout(timer)
+    if (timedOut) {
+      this.#log.warn(`${this.deviceId}: connect loop did not settle within ${this.#teardownBarrierMs}ms; continuing teardown`)
+    }
   }
 
   #delay(ms: number, runSignal: AbortSignal): Promise<void> {
