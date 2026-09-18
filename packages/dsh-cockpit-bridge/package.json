@@ -1,7 +1,7 @@
 {
   "name": "dsh-cockpit-bridge",
-  "version": "0.3.0",
-  "description": "Cockpit bridge: reports session-open selections from the official DSH web client to the local dsh-cockpit so completion reminders clear exactly like the official select did",
+  "version": "0.4.0",
+  "description": "Cockpit bridge: reliable DSH session-state reporting plus stable same-page capabilities for consumer plugins",
   "license": "MIT",
   "type": "module",
   "main": "./lib/index.js",
@@ -50,6 +50,7 @@
     "@types/node": "^24.0.0",
     "tsdown": "^0.14.0",
     "typescript": "^5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "@dsh-cockpit/shared": "workspace:*"
   }
 }

@@ -82,3 +82,27 @@ if (serializedDisabled.enabled || serializedDisabled.state !== 'DISABLED') {
   throw new Error('disabled facts are not serialized with the stable DISABLED state')
 }
 if (reorder.order !== 2 || 'order' in renameOnly) throw new Error('update order is not optional')
+
+// Runtime bridge-contract checks complement the structural compile-time checks.
+const bridge = await import('../src/bridge.ts')
+if (!bridge.isValidSshAlias('vm-a') || bridge.isValidSshAlias('user@host')) {
+  throw new Error('SSH alias validator does not enforce the shared contract')
+}
+if (!bridge.isValidEditorPath('/work/project') || !bridge.isValidEditorPath('C:\\work\\project')) {
+  throw new Error('absolute editor paths should be accepted')
+}
+if (bridge.isValidEditorPath('relative/path') || bridge.isValidEditorPath('/work/../secret')) {
+  throw new Error('relative/traversal editor paths should be rejected')
+}
+if (bridge.createRemoteEditorUri('vm-a', '/work/My Project#one') !==
+  'vscode://vscode-remote/ssh-remote+vm-a/work/My%20Project%23one?windowId=_blank') {
+  throw new Error('remote editor URI encoding changed')
+}
+if (bridge.createRemoteEditorUri('vm-a', 'C:\\work\\project') !==
+  'vscode://vscode-remote/ssh-remote+vm-a/C:/work/project?windowId=_blank') {
+  throw new Error('Windows remote editor URI authority/path boundary changed')
+}
+if (bridge.createRemoteEditorUri('vm-a', '/work/%2e%2e/secret') !==
+  'vscode://vscode-remote/ssh-remote+vm-a/work/%252e%252e/secret?windowId=_blank') {
+  throw new Error('encoded traversal text must remain literal path data')
+}

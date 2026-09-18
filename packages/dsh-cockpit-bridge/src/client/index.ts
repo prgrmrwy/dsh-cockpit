@@ -15,18 +15,27 @@
  * cockpit instead of lost in the browser.
  *
  * Non-goals (by design): nothing here reads or forwards any conversation,
- * settings, credentials or content — only the session id of a user-initiated
- * selection crosses the bridge.
+ * settings, credentials or content. Cross-boundary traffic remains limited to
+ * minimal state identifiers and parent-supplied connection metadata. Stable
+ * same-page services may consume that metadata without opening a second
+ * iframe-to-Cockpit channel.
  */
 import type { Context } from '@deepseek-ai/cordis'
+import {
+  BRIDGE_CONFIG_MESSAGE,
+  CAPABILITY_EXPIRED_MESSAGE,
+  COCKPIT_EDITOR_OPEN_SERVICE,
+  DEVICE_ACTIVATED_MESSAGE,
+  createRemoteEditorUri,
+  isValidSshAlias,
+  type BridgeConfigMessage,
+  type CockpitEditorOpenService,
+} from '@dsh-cockpit/shared'
 
 export const inject = ['sessions', 'uiSession']
 
-const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config'
-const DEVICE_ACTIVATED_MESSAGE = 'dsh-cockpit:device-activated'
-const CAPABILITY_EXPIRED_MESSAGE = 'dsh-cockpit:capability-expired'
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.3.0'
+const PLUGIN_VERSION = '0.4.0'
 const PROTOCOL_VERSION = 2
 const PENDING_PROTOCOL_VERSION = 3
 const PENDING_SEAM_VERSION = 1
@@ -43,6 +52,7 @@ const CLEARED_KEY = '\u0000selection-cleared'
 interface BridgeConfig {
   cockpitOrigin: string
   capability: string
+  sshAlias?: string
 }
 
 interface OutboxEntry {
@@ -54,7 +64,7 @@ interface OutboxEntry {
 
 function parseConfig(event: MessageEvent): BridgeConfig | undefined {
   if (event.source !== window.parent || typeof event.data !== 'object' || event.data === null) return
-  const data = event.data as { type?: unknown; cockpitOrigin?: unknown; capability?: unknown }
+  const data = event.data as Partial<BridgeConfigMessage>
   if (data.type !== BRIDGE_CONFIG_MESSAGE || typeof data.cockpitOrigin !== 'string' || typeof data.capability !== 'string' || data.capability === '') return
   try {
     const url = new URL(data.cockpitOrigin)
@@ -66,7 +76,11 @@ function parseConfig(event: MessageEvent): BridgeConfig | undefined {
   } catch {
     return
   }
-  return { cockpitOrigin: data.cockpitOrigin, capability: data.capability }
+  return {
+    cockpitOrigin: data.cockpitOrigin,
+    capability: data.capability,
+    ...(isValidSshAlias(data.sshAlias) ? { sshAlias: data.sshAlias } : {}),
+  }
 }
 
 function isActivation(event: MessageEvent, config: BridgeConfig | undefined): boolean {
@@ -86,8 +100,22 @@ type BridgeContext = Context & {
 }
 
 export function apply(ctx: BridgeContext): void {
+  // Stable, consumer-agnostic seam. The object is provided immediately so
+  // other plugins can discover it regardless of load order; every call reads
+  // the latest asynchronously received bridge config. Missing/invalid config
+  // throws synchronously so a consumer can fall back to its local behavior.
+  let config: BridgeConfig | undefined
+  const editorOpen: CockpitEditorOpenService = {
+    open(path: string): void {
+      const sshAlias = config?.sshAlias
+      if (sshAlias === undefined) throw new Error('cockpit remote editor is unavailable')
+      const uri = createRemoteEditorUri(sshAlias, path)
+      window.open(uri, '_blank')
+    },
+  }
+  ctx.provide(COCKPIT_EDITOR_OPEN_SERVICE, editorOpen)
+
   ctx.effect(() => {
-    let config: BridgeConfig | undefined
     let helloReady = false
     let disposed = false
     let running = false

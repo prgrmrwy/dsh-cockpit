@@ -13,6 +13,7 @@ const failResponse = (status: number, code?: string): Pick<Response, 'ok' | 'sta
 
 class FakeWindow {
   readonly parentPostMessage = vi.fn()
+  readonly open = vi.fn()
   readonly parent: unknown = { postMessage: (...args: unknown[]) => { this.parentPostMessage(...args) } }
   readonly listeners = new Set<(event: MessageEvent) => void>()
 
@@ -35,6 +36,7 @@ function fakeCtx(initial = { current: undefined }, initialPending?: ReadonlyMap<
   let pending = initialPending
   const pendingListeners = new Set<() => void>()
   let cleanup: (() => void) | undefined
+  const services = new Map<string, unknown>()
   const ctx = {
     sessions: {
       list: {
@@ -49,6 +51,7 @@ function fakeCtx(initial = { current: undefined }, initialPending?: ReadonlyMap<
       getSnapshot: () => pending as ReadonlyMap<string, { sessionId: string; kind: 'approval' | 'question'; key: string }>,
       subscribe: (fn: () => void) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
     } } }),
+    provide: (name: string, value: unknown) => { services.set(name, value); return () => { services.delete(name) } },
     effect: (fn: () => () => void) => { cleanup = fn() },
   }
   return {
@@ -61,7 +64,8 @@ function fakeCtx(initial = { current: undefined }, initialPending?: ReadonlyMap<
       pending = next
       for (const fn of [...pendingListeners]) fn()
     },
-    cleanup: () => { cleanup?.() },
+    getService: <T>(name: string): T | undefined => services.get(name) as T | undefined,
+    cleanup: () => { cleanup?.(); services.clear() },
   }
 }
 
@@ -70,11 +74,12 @@ async function loadApply(): Promise<(ctx: unknown) => void> {
   return mod.apply as (ctx: unknown) => void
 }
 
-function configure(fakeWindow = window as unknown as FakeWindow): void {
+function configure(fakeWindow = window as unknown as FakeWindow, sshAlias?: string): void {
   fakeWindow.emitMessage({
     type: 'dsh-cockpit:bridge-config',
     cockpitOrigin: COCKPIT_ORIGIN,
     capability: CAPABILITY,
+    ...(sshAlias === undefined ? {} : { sshAlias }),
   })
 }
 
@@ -134,7 +139,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.3.0',
+      version: '0.4.0',
       protocolVersion: 2,
       current: 'already-open',
     })
@@ -500,6 +505,56 @@ describe('cockpit bridge client', () => {
     await vi.advanceTimersByTimeAsync(250)
     expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)).toEqual({ protocolVersion: 3, seamVersion: 1, items: [] })
     fixture.cleanup()
+  })
+
+  it('provides a stable consumer-agnostic editor service and opens with the latest valid alias', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type EditorOpen = { open(path: string): void }
+    const service = fixture.getService<EditorOpen>('cockpitBridge.editorOpen')
+    expect(service).toBeDefined()
+    expect(() => service!.open('/work/project')).toThrow('unavailable')
+
+    const fakeWindow = window as unknown as FakeWindow
+    configure(fakeWindow, 'vm-a')
+    await vi.advanceTimersByTimeAsync(0)
+    service!.open('/work/My Project')
+    expect(fakeWindow.open).toHaveBeenCalledWith(
+      'vscode://vscode-remote/ssh-remote+vm-a/work/My%20Project?windowId=_blank',
+      '_blank',
+    )
+
+    fakeWindow.open.mockClear()
+    configure(fakeWindow, 'vm-b')
+    await vi.advanceTimersByTimeAsync(0)
+    service!.open('/work/next')
+    expect(fakeWindow.open).toHaveBeenCalledWith(
+      'vscode://vscode-remote/ssh-remote+vm-b/work/next?windowId=_blank',
+      '_blank',
+    )
+    fixture.cleanup()
+    expect(fixture.getService('cockpitBridge.editorOpen')).toBeUndefined()
+  })
+
+  it('rejects invalid aliases and paths without opening a URI', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    const service = fixture.getService<{ open(path: string): void }>('cockpitBridge.editorOpen')!
+    const fakeWindow = window as unknown as FakeWindow
+
+    configure(fakeWindow, 'user@host')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(() => service.open('/work/project')).toThrow('unavailable')
+    expect(fakeWindow.open).not.toHaveBeenCalled()
+
+    configure(fakeWindow, 'vm-a')
+    await vi.advanceTimersByTimeAsync(0)
+    expect(() => service.open('relative/path')).toThrow('invalid editor path')
+    expect(() => service.open('/work/../secret')).toThrow('invalid editor path')
+    expect(() => service.open('C:\work\..\secret')).toThrow('invalid editor path')
+    expect(fakeWindow.open).not.toHaveBeenCalled()
   })
 
   it('swallows persistent bridge failures and cleanup cancels pending work', async () => {

@@ -4,13 +4,34 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
+		/** Stable cross-package service name. Changing it is a breaking change. */
+		const COCKPIT_EDITOR_OPEN_SERVICE = "cockpitBridge.editorOpen";
+		const SSH_ALIAS_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+		function isValidSshAlias(value) {
+			return typeof value === "string" && SSH_ALIAS_PATTERN.test(value);
+		}
+		/** Accept POSIX or drive-letter absolute paths and reject traversal segments. */
+		function isValidEditorPath(value) {
+			if (typeof value !== "string" || value === "" || value.includes("\0")) return false;
+			if (!value.startsWith("/") && !/^[A-Za-z]:[/\\]/.test(value)) return false;
+			return !value.replaceAll("\\", "/").split("/").includes("..");
+		}
+		/** Encode a validated path without allowing query/fragment delimiters through. */
+		function createRemoteEditorUri(sshAlias, path) {
+			if (!isValidSshAlias(sshAlias)) throw new Error("invalid SSH alias");
+			if (!isValidEditorPath(path)) throw new Error("invalid editor path");
+			const normalizedPath = path.replaceAll("\\", "/");
+			return `vscode://vscode-remote/ssh-remote+${sshAlias}${(normalizedPath.startsWith("/") ? normalizedPath : `/${normalizedPath}`).split("/").map((segment, index) => {
+				if (index === 1 && /^[A-Za-z]:$/.test(segment)) return segment;
+				return encodeURIComponent(segment);
+			}).join("/")}?windowId=_blank`;
+		}
+		//#endregion
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
-		const BRIDGE_CONFIG_MESSAGE = "dsh-cockpit:bridge-config";
-		const DEVICE_ACTIVATED_MESSAGE = "dsh-cockpit:device-activated";
-		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.3.0";
+		const PLUGIN_VERSION = "0.4.0";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
@@ -24,7 +45,7 @@ window.__ModuleLoader__.load({
 		function parseConfig(event) {
 			if (event.source !== window.parent || typeof event.data !== "object" || event.data === null) return;
 			const data = event.data;
-			if (data.type !== BRIDGE_CONFIG_MESSAGE || typeof data.cockpitOrigin !== "string" || typeof data.capability !== "string" || data.capability === "") return;
+			if (data.type !== "dsh-cockpit:bridge-config" || typeof data.cockpitOrigin !== "string" || typeof data.capability !== "string" || data.capability === "") return;
 			try {
 				const url = new URL(data.cockpitOrigin);
 				if (url.origin !== data.cockpitOrigin || event.origin !== data.cockpitOrigin) return;
@@ -34,15 +55,22 @@ window.__ModuleLoader__.load({
 			}
 			return {
 				cockpitOrigin: data.cockpitOrigin,
-				capability: data.capability
+				capability: data.capability,
+				...isValidSshAlias(data.sshAlias) ? { sshAlias: data.sshAlias } : {}
 			};
 		}
 		function isActivation(event, config) {
-			return config !== void 0 && event.source === window.parent && event.origin === config.cockpitOrigin && typeof event.data === "object" && event.data !== null && event.data.type === DEVICE_ACTIVATED_MESSAGE;
+			return config !== void 0 && event.source === window.parent && event.origin === config.cockpitOrigin && typeof event.data === "object" && event.data !== null && event.data.type === "dsh-cockpit:device-activated";
 		}
 		function apply(ctx) {
+			let config;
+			ctx.provide(COCKPIT_EDITOR_OPEN_SERVICE, { open(path) {
+				const sshAlias = config?.sshAlias;
+				if (sshAlias === void 0) throw new Error("cockpit remote editor is unavailable");
+				const uri = createRemoteEditorUri(sshAlias, path);
+				window.open(uri, "_blank");
+			} });
 			ctx.effect(() => {
-				let config;
 				let helloReady = false;
 				let disposed = false;
 				let running = false;

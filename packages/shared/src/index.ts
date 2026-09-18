@@ -180,3 +180,4 @@ export interface ApiError {
   readonly code: string
   readonly message: string
 }
+export * from './bridge.js'

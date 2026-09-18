@@ -151,13 +151,15 @@ With the plugin installed:
 
 | Signal | Plugin side (inside the device's DSH page) | Cockpit side |
 | --- | --- | --- |
-| **Parent handshake** | On iframe `load`, device activation, or a capability refresh, the parent `postMessage`s `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability }` to the iframe using a precise `targetOrigin` | The parent first authenticates via its own same-origin cookie session and calls `POST /api/devices/:id/bridge/capability` to obtain a one-shot, short-TTL capability bound to that device's Origin |
+| **Parent handshake** | On iframe `load`, device activation, or a capability refresh, the parent `postMessage`s `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability, sshAlias? }` to the iframe using a precise `targetOrigin` | The parent first authenticates via its own same-origin cookie session and calls `POST /api/devices/:id/bridge/capability` to obtain a one-shot, short-TTL capability bound to that device's Origin |
 | **Startup hello** | On receiving the handshake, `POST <cockpitOrigin>/api/bridge/hello {version, protocolVersion, current}` with an `X-DSH-Cockpit-Bridge-Capability` header | Validates the capability → matches the device by `Origin` → records protocol version and last-success time → drives the top bar bridge icon |
 | **Session selection** | Subscribes to `sessions.list.current`; on change, the id is **captured immediately** into a bounded, deduplicated outbox (not re-read later when a timer fires); a 250 ms window only batches the network flush, then each entry is `POST`ed to `.../session-opened {sessionId, current, protocolVersion}`; an entry is removed from the outbox only after an explicit success response | Validates the capability → matches by `Origin` → acknowledges that session's current generation, converging with the completion edge in whichever order they arrive |
 | **Cleared after archive** | When `current` becomes `undefined`, the plugin reports `{ current: null }` and resets its same-value dedup latch, so restoring the same id later can be acknowledged again | Handled per-session without touching other sessions' state |
 | **Failure retry** | Network errors, 401s, and any other non-2xx response all keep the pending acknowledgement; retries are single-flight with a bounded exponential backoff; a new selection, device activation, or a successful hello are all recovery opportunities | Silent failure never disturbs the native DSH page |
 | **Capability renewal** | On a 401 or a structured `bridge-capability-invalid` response, the plugin resets its hello state and posts `{ type: 'dsh-cockpit:capability-expired' }` to the parent as a backstop request for a fresh capability | The parent renews the capability **before expiry** (15 s grace) and re-sends `bridge-config`; renewal failures retry with bounded backoff (15 s → 2 min) and are rate-limited to one request per device per 5 s, so staying on one device never silently loses precise acknowledgements |
 
+- **Remote editor service**: the bridge exposes the stable `cockpitBridge.editorOpen` service to any same-page plugin. Once a valid SSH alias arrives, it creates a `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank` URI in the original user gesture. No reverse action message is added; other plugins must not bypass the bridge to talk to the cockpit.
+- **Prerequisite and limits**: the host needs VS Code Remote-SSH. Without it the URI may be silently dropped. A directory name containing a dot may be classified as a file by VS Code's URI handler.
 - **The port is no longer hardcoded**: the plugin does not fetch a fixed
   `127.0.0.1:3090` anymore — the real Cockpit origin is supplied dynamically by
   the parent handshake, so the cockpit can run on **any supported
@@ -275,7 +277,8 @@ command fails closed and refuses to stop or overwrite that process.
 - Remote Settings/Subscriptions/Credentials are never proxied; provider tokens
   are never read or synced. The cockpit installs nothing at runtime — the bridge
   plugin, if deployed, is installed by the user on the device side and reports
-  only a session-selection identity and protocol metadata.
+  only minimal session/pending identifiers and parent-supplied connection metadata; same-page capabilities do not read conversation content.
+- All communication between a device page and the cockpit goes through the bridge. Its same-page services are closed and stable, not a generic RPC surface. Remote editor opening handles only an alias and path, creates a URI in the browser, and adds no SSH command-execution surface.
 - Bridge authentication uses a capability bound to one device's Origin, with a
   short TTL and a single purpose; it never exposes the persistent HttpOnly
   token to the plugin. The bridge Origin itself is supplied dynamically by the
@@ -301,7 +304,7 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Verification (measured against the current implementation)
 
-- server vitest 129/129 (registry atomicity / fail-closed corruption, SSH
+- server vitest 141/141 (registry atomicity / fail-closed corruption, SSH
   identity, conclusive tunnel teardown, event conversion including the archive
   set, device lifecycle including the generation state machine / ack-edge
   convergence / archive-restore, **baseline→stream blind window and buffer
@@ -309,11 +312,11 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
   capability lifecycle and authorization, delete confirmation gate, order
   normalisation, **a real NestJS+Express integration test confirming the auth
   middleware actually gates every `/api/*` route**)
-- web vitest 60/60 (mouse/keyboard/non-bubbling coverage for the Device Tab
+- web vitest 63/63 (mouse/keyboard/non-bubbling coverage for the Device Tab
   completion clear control, installed/not-installed bridge icon distinguished
   by shape, Workbench bridge handshake and graceful degradation, **capability
   renewal before expiry with bounded backoff and device-switch timer cleanup**)
-- bridge vitest 15/15 (lossless rapid multi-select, archive-before-flush,
+- bridge vitest 19/19 (lossless rapid multi-select, archive-before-flush,
   failure retry, outbox capacity/TTL, activation re-assertion, **capability
   failure detection and parent renewal request**, DSH page unaffected by
   bridge failures)

@@ -7,7 +7,7 @@ import { Workbench } from '../src/workbench/Workbench.jsx'
 afterEach(cleanup)
 
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
-  deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
+  deviceId: 'd1', displayName: 'VM A', kind: 'remote', sshAlias: 'vm-a', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
   dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1,
@@ -240,10 +240,29 @@ describe('workbench', () => {
     expect(requestBridgeCapability).toHaveBeenCalledWith('d1')
     await waitFor(() => {
       expect(postToA).toHaveBeenCalledWith(
-        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1', sshAlias: 'vm-a' },
         'http://127.0.0.1:51000',
       )
     })
+  })
+
+  it('omits sshAlias from bridge config for local or invalid-alias devices', async () => {
+    const requestBridgeCapability = vi.fn().mockResolvedValue({ capability: 'tok-1', expiresAt: Date.now() + 60_000 })
+    const local = device({ kind: 'local', sshAlias: undefined, endpoint: 'http://127.0.0.1:51000/' })
+    const { container, rerender } = render(<Workbench device={local} requestBridgeCapability={requestBridgeCapability} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const post = vi.spyOn(frame.contentWindow!, 'postMessage')
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+      'http://127.0.0.1:51000',
+    ))
+
+    post.mockClear()
+    rerender(<Workbench device={device({ sshAlias: 'user@host', endpoint: 'http://127.0.0.1:51000/' })} requestBridgeCapability={requestBridgeCapability} />)
+    await waitFor(() => expect(post).toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+      'http://127.0.0.1:51000',
+    ))
   })
 
   it('re-requests and re-sends the bridge capability on every activation (device reactivated)', async () => {
@@ -265,7 +284,7 @@ describe('workbench', () => {
     // existing device-activated message (the bridge re-asserts current +
     // retried acks on any activation/config refresh).
     expect(postToA).toHaveBeenCalledWith(
-      { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1' },
+      { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-1', sshAlias: 'vm-a' },
       'http://127.0.0.1:51000',
     )
     expect(postToA).toHaveBeenCalledWith({ type: 'dsh-cockpit:device-activated' }, 'http://127.0.0.1:51000')
@@ -330,7 +349,7 @@ describe('workbench', () => {
       await vi.advanceTimersByTimeAsync(45_000)
       expect(requestBridgeCapability).toHaveBeenCalledTimes(2)
       expect(postToA).toHaveBeenCalledWith(
-        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-2' },
+        { type: 'dsh-cockpit:bridge-config', cockpitOrigin: window.location.origin, capability: 'tok-2', sshAlias: 'vm-a' },
         'http://127.0.0.1:51000',
       )
     } finally {

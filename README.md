@@ -127,13 +127,15 @@ iframe DOM，也拿不到它。有了插件后：
 
 | 信号 | 插件侧（设备 DSH 页面内） | 驾驶舱侧 |
 | --- | --- | --- |
-| **父页面握手** | iframe `load`、设备被激活、能力刷新时，父页面通过精确 `targetOrigin` 向 iframe `postMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability })` | 父页面先以同源 Cookie 认证向 `POST /api/devices/:id/bridge/capability` 换取绑定该设备 Origin、短 TTL 的一次性能力 |
+| **父页面握手** | iframe `load`、设备被激活、能力刷新时，父页面通过精确 `targetOrigin` 向 iframe `postMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability, sshAlias? })` | 父页面先以同源 Cookie 认证向 `POST /api/devices/:id/bridge/capability` 换取绑定该设备 Origin、短 TTL 的一次性能力 |
 | **启动 hello** | 收到握手后 `POST <cockpitOrigin>/api/bridge/hello {version, protocolVersion, current}`，带 `X-DSH-Cockpit-Bridge-Capability` 头 | 校验能力 → 按 `Origin` 匹配设备 → 记协议版本与最近成功时间 → 顶栏桥接图标 |
 | **会话选择** | 订阅官方 `sessions.list.current`，变化时**立即捕获**该 ID 入有界去重 outbox（不是定时器触发时才读），250ms 合并网络请求后逐个 `POST .../session-opened {sessionId, current, protocolVersion}`；仅服务端明确成功后才从 outbox 移除 | 校验能力 → 按 `Origin` 匹配设备 → 确认该会话当前 generation，随乱序到达的完成边缘收敛 |
 | **归档后清空** | `current` 变为 `undefined` 时上报 `{ current: null }` 并重置同值去重闩，之后恢复同一 ID 仍可再次确认 | 按会话精确处理，不清除其它会话状态 |
 | **失败重试** | 网络异常、401、其它非 2xx 均保留待确认状态，单飞、有上限指数退避重试；新选择、设备激活、成功 hello 都是恢复机会 | 静默失败不影响原生 DSH 页面 |
 | **capability 续签** | 收到 401 或结构化 `bridge-capability-invalid` 时，插件重置 hello 状态并向父页面 `postMessage { type: 'dsh-cockpit:capability-expired' }` 请求换发新能力 | 父页面在 **到期前**（15s 宽限）自动换发并重发 `bridge-config`；换发失败按 15s→2min 有上限退避重试，并按设备限频（5s 至多一次）——长时间停留在同一设备也不会静默失去精确已读确认 |
 
+- **远程编辑器服务**：bridge 以稳定服务名 `cockpitBridge.editorOpen` 面向任意同页面插件；收到合法 `sshAlias` 后，在原始用户点击链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。不新增反向 postMessage；其它插件不得绕过 bridge 直接与驾驶舱通信。
+- **前置与边界**：宿主机需安装 VS Code Remote-SSH；未安装时 URI 可能被静默丢弃。带点的目录名可能被 VS Code URI handler 判断为文件。
 - **端口不写死**：插件不再固定请求 `127.0.0.1:3090`——实际 Cockpit Origin 由
   父页面握手动态提供，因此驾驶舱运行在 `COCKPIT_PORT` 指定的**任意受支持端口**
   上都能正常工作。
@@ -229,7 +231,8 @@ fail-closed 拒绝停止或覆盖该进程。
 ## 安全与边界
 
 - 驾驶舱服务只监听 `127.0.0.1`，凭据仅复用系统 OpenSSH 免密，**不保存**密码/私钥/passphrase。
-- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；驾驶舱运行时零安装——桥接插件（若部署）由用户在设备侧自行安装，只上报会话选择标识与协议元数据。
+- 不代理远端 Settings/Subscriptions/Credentials；不读取或同步 provider token；驾驶舱运行时零安装——桥接插件（若部署）由用户在设备侧自行安装；跨边界只传会话/pending 最小标识与父页面提供的连接元数据，同页面能力不读取会话内容。
+- 设备页面与驾驶舱的一切通信只经桥接插件；bridge 暴露封闭、稳定的同页面服务，不提供通用 RPC。远程编辑器能力只处理 alias 与路径，在浏览器内产出 URI，不新增 SSH 命令执行面。
 - 桥接鉴权使用绑定设备 Origin、短 TTL、单一用途的能力串，从不向插件暴露持久 HttpOnly token；桥接 Origin 由父页面握手动态提供，与 `COCKPIT_PORT` 实际端口保持一致。
 - 每个 `127.0.0.1:<port>` 均为 secure context，远端 GUI 经隧道原生运行。
 - 可捕获信号（SIGINT/SIGTERM）下终结性清理自有 SSH 子进程（无 `ppid=1` 孤儿），不误杀用户其他 SSH 连接。
@@ -238,9 +241,9 @@ fail-closed 拒绝停止或覆盖该进程。
 
 ## 验证（当前实现已通过的实测）
 
-- server vitest 129/129（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、**基线-事件盲窗与缓冲回放、workspace.list 归档基线、live detach 软语义**、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
-- web vitest 60/60（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级、**capability 到期前自动续签与失效自愈、切换设备清理续签定时器**）
-- bridge vitest 15/15（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、**capability 失效识别与父页面续签请求**、DSH 页面不受失败影响）
+- server vitest 141/141（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、**基线-事件盲窗与缓冲回放、workspace.list 归档基线、live detach 软语义**、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
+- web vitest 63/63（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级、**capability 到期前自动续签与失效自愈、切换设备清理续签定时器**）
+- bridge vitest 19/19（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、**capability 失效识别与父页面续签请求**、DSH 页面不受失败影响）
 - 五包 typecheck + build 全绿（含 bridge host/client 双入口与 source map）
 - 真实浏览器验收（agent-browser + 隔离 Cockpit 实例 + 真实本机 DSH + 可控 fake DSH）：非默认端口部署、桥接 capability 签发与 Origin 校验、完成→打开、ack-before-edge、edge-before-ack、打开后立即归档、恢复不重新点亮、下一轮真正完成重新点亮、鼠标与键盘人工清除且不切换设备
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数

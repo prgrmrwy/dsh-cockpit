@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
+import { BRIDGE_CONFIG_MESSAGE, CAPABILITY_EXPIRED_MESSAGE, DEVICE_ACTIVATED_MESSAGE, isValidSshAlias, type DeviceStatusFacts } from '@dsh-cockpit/shared'
 
 interface BridgeCapabilityPayload {
   readonly capability: string
@@ -22,9 +22,7 @@ export interface WorkbenchProps {
   readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string; authGeneration: number }>
 }
 
-const DEVICE_ACTIVATED_MESSAGE = { type: 'dsh-cockpit:device-activated' } as const
-const BRIDGE_CONFIG_MESSAGE = 'dsh-cockpit:bridge-config' as const
-const CAPABILITY_EXPIRED_MESSAGE = 'dsh-cockpit:capability-expired' as const
+const DEVICE_ACTIVATED_PAYLOAD = { type: DEVICE_ACTIVATED_MESSAGE } as const
 
 /** Bridge capabilities expire on the server after a short TTL. The parent
  * renews before expiry (grace window below) so a user staying on one device
@@ -43,6 +41,7 @@ interface FrameInfo {
   readonly state: DeviceStatusFacts['state']
   readonly diagnostic: string | undefined
   readonly lastUpdatedAt: number
+  readonly sshAlias?: string
 }
 
 /** Workbench keeps every created iframe MOUNTED and merely hides non-current
@@ -85,9 +84,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
           type: BRIDGE_CONFIG_MESSAGE,
           cockpitOrigin: window.location.origin,
           capability: capability.capability,
+          ...(isValidSshAlias(frame.sshAlias) ? { sshAlias: frame.sshAlias } : {}),
         }, targetOrigin)
       }
-      iframe.contentWindow.postMessage(DEVICE_ACTIVATED_MESSAGE, targetOrigin)
+      iframe.contentWindow.postMessage(DEVICE_ACTIVATED_PAYLOAD, targetOrigin)
     } catch {
       // A malformed/missing endpoint is already represented by the offline
       // overlay; activation signaling must not disturb that recovery UI.
@@ -234,6 +234,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         state: device.state,
         diagnostic: device.diagnostic,
         lastUpdatedAt: device.lastUpdatedAt,
+        ...(isValidSshAlias(device.sshAlias) ? { sshAlias: device.sshAlias } : {}),
       })
       setFrames([...registryRef.current.values()])
       return
@@ -256,9 +257,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       state: device.state,
       diagnostic: device.diagnostic,
       lastUpdatedAt: device.lastUpdatedAt,
+      ...(isValidSshAlias(device.sshAlias) ? { sshAlias: device.sshAlias } : {}),
     }
     registryRef.current.set(device.deviceId, updated)
-    if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt) {
+    if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt || updated.sshAlias !== prior.sshAlias) {
       setFrames([...registryRef.current.values()])
     }
   }, [device, requestWorkbenchLaunch])
@@ -322,7 +324,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   // session that is already focused.
   useEffect(() => {
     if (device !== undefined) notifyActivated(device.deviceId)
-  }, [device?.deviceId])
+  }, [device?.deviceId, device?.sshAlias])
 
 
   const handleFrameLoad = (deviceId: string): void => {

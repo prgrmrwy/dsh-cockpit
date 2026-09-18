@@ -4,6 +4,11 @@
 本机 dsh-cockpit，使驾驶舱顶栏的完成提醒（绿点）按官方 select 语义精确清除，
 并在快速连续切换会话、打开后立即归档、网络瞬断等场景下也不丢失确认。
 
+从 0.4.0 起，插件还是设备 DSH 页面与驾驶舱之间的**唯一通信切面**：它以稳定
+Cordis 服务名 `cockpitBridge.editorOpen` 向任意同页面插件提供远程编辑器打开能力。
+消费方只传绝对路径；bridge 使用父页面握手下发的 SSH config alias，在原始用户点击
+链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。
+
 ## 为什么存在
 
 官方侧栏打开会话（`ctx.sessions.open` → `SessionManager.select`）是纯浏览器端
@@ -23,11 +28,11 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 
 ## 协议版本 2（可靠确认）
 
-当前版本实现 selection 协议 v2 与 pending snapshot 协议 v3（插件版本 0.3.0）：
+当前版本实现协议 v2（插件版本 0.4.0；pending snapshot seam 仍为 v3）：
 
 1. **父页面握手**：驾驶舱父页面在 iframe `load`、设备被激活、或能力需要刷新
    时，通过精确 `targetOrigin` 向 iframe `postMessage`：
-   `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability }`。插件
+   `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability, sshAlias? }`。插件
    只接受 `event.source === window.parent` 且 `event.origin` 与声明的
    `cockpitOrigin` 完全一致的消息，并把该 origin 固定为本页生命周期内的驾驶舱
    目标——不会再退回任何硬编码端口。
@@ -56,6 +61,14 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 
 旧版本（协议 1）插件仍可继续工作：驾驶舱按尽力而为方式接受其上报，顶栏会
 标注为「已连接但非可靠协议」，并保留 Device Tab 上的人工清除兜底。
+
+## 同页面能力服务
+
+- **稳定服务名**：`cockpitBridge.editorOpen`（跨仓契约；改名属于 breaking change）。
+- **调用**：`open(path: string): void`。未收到合法 alias、路径非绝对路径或含 `..` 段时同步抛错，消费方应回落自身默认行为。
+- **生命周期**：服务随 bridge fiber 注册/注销；对象身份稳定，每次调用读取最新握手配置。
+- **安全边界**：服务只接受路径，不接收任意 method/命令；不新增 iframe→父页面动作消息，不经 SSH 执行命令。所有跨边界通信仍只经 bridge。
+- **前置条件**：宿主机安装 VS Code Remote-SSH，且 `sshAlias` 可由宿主机 SSH config 解析。未安装扩展时 URI 可能被静默丢弃；路径名含点时 VS Code URI handler 可能将目录判断为文件。
 
 ## 安装
 

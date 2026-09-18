@@ -11,8 +11,8 @@
 ## What Changes
 
 - 既有 `bridge-config` 握手**增带可选 `sshAlias`**，使设备侧插件得知「远程编辑器打开」能力可用。本机设备不带该字段。
-- 新增**反向消息** `open-in-editor`：设备 iframe 把一个绝对路径交给父页面；父页面校验路径、拼装 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank` 并交给系统 handler。
-- bridge 插件向所在页面 **provide 一个可选服务**，供同页面其它 DSH 插件经运行时探测消费。
+- bridge 插件向所在页面 **provide 一个稳定服务**，供同页面其它 DSH 插件经运行时探测消费；服务在调用时读取最新握手配置，合法 alias 可用时直接在原始用户手势中产出 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank` 并交给系统 handler。
+- 不新增 iframe→父页面反向动作消息：现有 `vscode://file/` 已能从 iframe 拉起宿主机 VS Code，失败仅因路径被按本机语义解释；保留原始用户激活链路也避免异步 postMessage 后被 popup blocker 拦截。
 - 全部失败路径（无 alias、alias 非法、路径非法、origin 不匹配、能力缺失）一律**安全降级**，设备侧回落其本机默认行为，不伪造成功。
 
 **BREAKING**：无。`bridge-config` 增加可选字段对旧版 bridge 无影响；未升级的设备表现为能力不可用并回落既有行为。
@@ -27,16 +27,15 @@
 
 - `cockpit-workbench`：
   - **MODIFIED** `Requirement: 远端边界与安全` —— 现行表述「不将远端路径交给本机打开器」与本方案字面冲突，需**收窄**为「不以本机路径语义交给本机打开器」，明确允许携带 remote authority 的显式远端引用。该禁令写于没有 `vscode-remote` 通道的前提下，其保护意图是「远端路径不被误当作本机路径解释」；`vscode-remote` authority 的语义与该担忧**相反** —— 它显式标注了路径属于哪台机器。禁令中「MUST NOT 调用远端 `host.openPath` 打开本机应用」与「MUST NOT 自动下载/同步工作区文件」两条**保持不变**。
-  - **ADDED** `Requirement: 驾驶舱为设备提供远程编辑器打开接缝` —— 定义 alias 下发与校验、URI 产出位置、路径白名单、降级语义。
-  - **ADDED** `Requirement: 桥接反向请求的信任边界` —— 现有五条 bridge requirement 全部是**只读上报**；本变更首次引入「内嵌文档可触发父页面执行动作」的反向通道，属信任模型的**类别变化而非增量**，需显式立规：动作集合封闭、载荷受限、iframe 输入一律不可信、不新增远端执行面。
-  - 同一条 MODIFIED 另收紧两点：① **一切**设备页面↔驾驶舱通信必须经桥接插件，不新增第二条跨文档通道（无论是否校验 origin），使 origin 校验、能力续签与失败重试只有一份实现；② 驾驶舱暴露的能力面向**任意**同页面插件，以稳定完整服务名标识，MUST NOT 引用或假设任何具体消费方。后者保证驾驶舱不反向耦合到消费方仓库的插件。
+  - **ADDED** `Requirement: 驾驶舱为设备提供远程编辑器打开接缝` —— 定义 alias 下发与校验、bridge 服务契约、URI 产出位置、路径校验与降级语义。
+  - **ADDED** `Requirement: bridge 是唯一跨边界通信切面` —— 一切设备页面↔驾驶舱通信必须经 bridge，不新增第二条跨文档通道；bridge 暴露的能力面向任意同页面插件，以稳定完整服务名标识，MUST NOT 引用或假设任何具体消费方。
 
 ## Impact
 
 **代码**
 
-- `packages/cockpit-web`：父页面 `bridge-config` 下发增带 `sshAlias`；新增 `open-in-editor` 接收端（路径校验与 URI 产出在此）。
-- `packages/dsh-cockpit-bridge`：握手解析增带 alias 字段校验；provide 可选服务；反向 post 消息。现有 `inject = ['sessions', 'uiSession']` 不变。
+- `packages/cockpit-web`：父页面 `bridge-config` 下发增带 `sshAlias`；无新增反向监听器。
+- `packages/dsh-cockpit-bridge`：握手解析增带 alias 字段校验；provide 稳定服务；服务在调用时校验路径并直接产出 URI。现有 `inject = ['sessions', 'uiSession']` 不变。
 - `packages/shared`：如消息契约类型集中维护，需同步扩展。
 - 需发版 `dsh-cockpit-bridge`（设备侧按其自身 manifest 升级 pin）。
 

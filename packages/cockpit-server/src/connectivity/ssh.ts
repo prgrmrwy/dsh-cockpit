@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:net'
 import { PassThrough, Readable } from 'node:stream'
+import { isValidSshAlias } from '@dsh-cockpit/shared'
 
 /** A tracked child process. */
 export interface OwnedProcess {
@@ -41,11 +42,9 @@ export interface SshIdentityProbeResult {
   readonly diagnostic: string
 }
 
-const sshAliasPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
-
 /** SSH alias strictness: reject anything that could be interpreted as an option. */
 export function validateSshAlias(alias: string): string {
-  if (!sshAliasPattern.test(alias)) throw new Error('invalid SSH alias')
+  if (!isValidSshAlias(alias)) throw new Error('invalid SSH alias')
   return alias
 }
 
