@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:net'
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { defaultSpawner, probeSshIdentity, reserveCandidatePort, validateSshAlias, type OwnedProcess } from '../src/connectivity/ssh.js'
-import { TunnelManager, isPortBindFailure } from '../src/connectivity/tunnel-manager.js'
+import { TunnelManager, WORKBENCH_CHANNEL, isPortBindFailure } from '../src/connectivity/tunnel-manager.js'
 
 /** Fake ssh: keeps running long enough to look alive; records signals. */
 class FakeProcess implements OwnedProcess {
@@ -385,5 +385,131 @@ describe('isPortBindFailure', () => {
     expect(isPortBindFailure('ssh: Could not resolve hostname vm-a: nodename nor servname provided\n', 54695)).toBe(false)
     expect(isPortBindFailure('Permission denied (publickey).\n', 54695)).toBe(false)
     expect(isPortBindFailure('', 54695)).toBe(false)
+  })
+})
+
+/** Additional channels exist so one device can publish a loopback service
+ * alongside its workbench tunnel. The invariant under test is independence:
+ * opening, losing or disposing one channel must not disturb another. */
+describe('tunnel manager additional channels', () => {
+  const ready = async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' })
+
+  it('keeps the workbench tunnel and additional channels side by side', async () => {
+    const children: FakeProcess[] = []
+    const forwards: number[] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        forwards.push(Number(argv[argv.indexOf('-L') + 1]!.split(':')[3]))
+        const child = new FakeProcess(100 + children.length)
+        children.push(child)
+        return child
+      },
+      readinessProbe: ready,
+    })
+
+    const workbench = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 })
+    const extra = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+
+    expect(workbench.channelId).toBe(WORKBENCH_CHANNEL)
+    expect(extra.channelId).toBe('cards')
+    // Distinct local ports, and each forwards to its own device-side port.
+    expect(extra.localPort).not.toBe(workbench.localPort)
+    expect(forwards).toEqual([3080, 3939])
+    // The workbench child must NOT have been torn down by the second connect.
+    expect(children[0]!.signals()).toEqual([])
+    expect(children).toHaveLength(2)
+
+    await manager.disposeAll()
+  })
+
+  it('replaces only the same channel when it is reconnected', async () => {
+    const children: FakeProcess[] = []
+    const manager = new TunnelManager({
+      spawn: () => { const c = new FakeProcess(200 + children.length); children.push(c); return c },
+      readinessProbe: ready,
+    })
+
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 })
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+
+    // Only the first 'cards' process is replaced; workbench stays untouched.
+    expect(children[0]!.signals()).toEqual([])
+    expect(children[1]!.signals()).toContain('SIGTERM')
+    expect(children[2]!.signals()).toEqual([])
+
+    await manager.disposeAll()
+  })
+
+  it('disposeChannel drops one channel and leaves the others running', async () => {
+    const children: FakeProcess[] = []
+    const manager = new TunnelManager({
+      spawn: () => { const c = new FakeProcess(300 + children.length); children.push(c); return c },
+      readinessProbe: ready,
+    })
+
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 })
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+
+    await manager.disposeChannel('d1', 'cards')
+    expect(children[1]!.signals()).toContain('SIGTERM')
+    expect(children[0]!.signals()).toEqual([])
+
+    await manager.disposeAll()
+  })
+
+  it('disposeNode clears every channel of that device only', async () => {
+    const children: FakeProcess[] = []
+    const manager = new TunnelManager({
+      spawn: () => { const c = new FakeProcess(400 + children.length); children.push(c); return c },
+      readinessProbe: ready,
+    })
+
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 })
+    await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+    await manager.connect({ deviceId: 'd2', sshAlias: 'vm-b', remoteDshPort: 3080 })
+
+    await manager.disposeNode('d1')
+    expect(children[0]!.signals()).toContain('SIGTERM')
+    expect(children[1]!.signals()).toContain('SIGTERM')
+    // A different device keeps its tunnel.
+    expect(children[2]!.signals()).toEqual([])
+
+    await manager.disposeAll()
+  })
+
+  it('never offers a persisted port to an additional channel', async () => {
+    // D3: only the workbench tunnel has a stable-origin requirement. An extra
+    // channel must not inherit the device's persisted port, or two channels
+    // would contend for the same local port on every reconnect.
+    const persisted = (await reserveCandidatePort()).port
+    const forwards: number[] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        forwards.push(Number(argv[argv.indexOf('-L') + 1]!.split(':')[1]))
+        return new FakeProcess(600 + forwards.length)
+      },
+      readinessProbe: ready,
+    })
+
+    const workbench = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080, preferredLocalPort: persisted })
+    const extra = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 })
+
+    expect(workbench.localPort).toBe(persisted)
+    expect(extra.localPort).not.toBe(persisted)
+    expect(forwards[0]).toBe(persisted)
+    expect(forwards[1]).not.toBe(persisted)
+
+    await manager.disposeAll()
+  })
+
+  it('stays terminal for additional channels after disposeAll', async () => {
+    const manager = new TunnelManager({
+      spawn: () => new FakeProcess(500),
+      readinessProbe: ready,
+    })
+    await manager.disposeAll()
+    await expect(manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939 }))
+      .rejects.toThrow(/shut down/)
   })
 })

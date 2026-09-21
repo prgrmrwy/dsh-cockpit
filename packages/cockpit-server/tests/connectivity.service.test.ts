@@ -42,17 +42,18 @@ vi.mock('../src/connectivity/rc2-client.js', () => ({
 const tunnel = { established: false }
 const takenPorts = new Set<number>()
 let nextFreshPort = 51000
-const tunnelConnects: { deviceId: string; preferredLocalPort?: number }[] = []
+const tunnelConnects: { deviceId: string; preferredLocalPort?: number; channelId?: string; remoteDshPort?: number }[] = []
 
 class FakeTunnelManager {
   constructor(readonly options: unknown) {}
-  async connect(request: { deviceId: string; preferredLocalPort?: number }) {
-    tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort })
+  async connect(request: { deviceId: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number }) {
+    tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort, channelId: request.channelId, remoteDshPort: request.remoteDshPort })
     if (!tunnel.established) throw new Error('no ssh in test environment')
     const preferred = request.preferredLocalPort
     const localPort = preferred !== undefined && !takenPorts.has(preferred) ? preferred : nextFreshPort++
     return {
       deviceId: request.deviceId,
+      channelId: request.channelId ?? 'workbench',
       generation: 1,
       endpoint: new URL(`http://127.0.0.1:${localPort}`),
       localPort,
@@ -61,6 +62,7 @@ class FakeTunnelManager {
     }
   }
   async disposeNode() {}
+  async disposeChannel() {}
   async disposeAll() {}
 }
 
@@ -575,6 +577,84 @@ describe('bridge capability and protocol', () => {
 
     await service.updateDevice('local', { enabled: false })
     expect(() => service.ackCompleted('local')).toThrow('is disabled')
+    await service.onApplicationShutdown()
+  })
+})
+
+/** Additional port forwards: registration is device-scoped by construction
+ * (the device is resolved from Origin, never named by the caller), and the
+ * real limits are structural — bound channel, per-device cap, loopback only. */
+describe('publishable port registration and publishing', () => {
+  async function connectedRemote() {
+    tunnel.established = true
+    const built = await serviceFor([remote('a', 0, { enabled: true })])
+    for (let attempt = 0; attempt < 200 && built.service.statuses()[0]?.endpoint === undefined; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const origin = new URL(built.service.statuses()[0]!.endpoint!).origin
+    return { ...built, origin }
+  }
+
+  it('publishes a registered port and reuses the same forward on repeat calls', async () => {
+    const { service, origin } = await connectedRemote()
+    service.registerPublishablePort(origin, 'cards', 3939)
+
+    const before = tunnelConnects.length
+    const first = await service.publishPort(origin, 'cards')
+    expect(first.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+    expect(tunnelConnects.at(-1)).toMatchObject({ deviceId: 'a', channelId: 'cards', remoteDshPort: 3939 })
+
+    // Idempotent: a second publish must not spawn another forward.
+    const second = await service.publishPort(origin, 'cards')
+    expect(second).toEqual(first)
+    expect(tunnelConnects.length).toBe(before + 1)
+
+    await service.onApplicationShutdown()
+  })
+
+  it('refuses to publish a port that was never registered', async () => {
+    const { service, origin } = await connectedRemote()
+    const before = tunnelConnects.length
+    await expect(service.publishPort(origin, 'cards')).rejects.toThrow(/not registered/)
+    // The refusal must happen before any ssh child is created.
+    expect(tunnelConnects.length).toBe(before)
+    await service.onApplicationShutdown()
+  })
+
+  it('rejects an unknown origin, so a caller cannot register for another device', async () => {
+    const { service } = await connectedRemote()
+    expect(() => service.registerPublishablePort('http://127.0.0.1:1', 'cards', 3939)).toThrow(/matches origin/)
+    await service.onApplicationShutdown()
+  })
+
+  it('rejects an invalid channel id or port, including the reserved workbench id', async () => {
+    const { service, origin } = await connectedRemote()
+    expect(() => service.registerPublishablePort(origin, 'workbench', 3939)).toThrow(/invalid channel id/)
+    expect(() => service.registerPublishablePort(origin, 'bad id', 3939)).toThrow(/invalid channel id/)
+    expect(() => service.registerPublishablePort(origin, 'cards', 0)).toThrow(/invalid device port/)
+    expect(() => service.registerPublishablePort(origin, 'cards', 70000)).toThrow(/invalid device port/)
+    await service.onApplicationShutdown()
+  })
+
+  it('caps the number of publishable channels per device', async () => {
+    const { service, origin } = await connectedRemote()
+    for (let i = 0; i < 8; i += 1) service.registerPublishablePort(origin, `c${i}`, 4000 + i)
+    expect(() => service.registerPublishablePort(origin, 'c8', 4100)).toThrow(/too many publishable channels/)
+    // Re-registering an existing channel stays allowed at the cap.
+    expect(() => service.registerPublishablePort(origin, 'c0', 4999)).not.toThrow()
+    await service.onApplicationShutdown()
+  })
+
+  it('a local device needs no forward and is refused with a stable reason', async () => {
+    const { service } = await serviceFor([remote('local', 0, {
+      kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080,
+    })])
+    for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    const origin = new URL(service.statuses()[0]!.endpoint!).origin
+    service.registerPublishablePort(origin, 'cards', 3939)
+    await expect(service.publishPort(origin, 'cards')).rejects.toThrow(/local device needs no port forward/)
     await service.onApplicationShutdown()
   })
 })

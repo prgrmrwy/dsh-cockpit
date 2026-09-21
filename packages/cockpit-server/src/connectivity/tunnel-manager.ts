@@ -1,9 +1,17 @@
 import type { DeviceConnectionStatus, DeviceState } from '@dsh-cockpit/shared'
 import { defaultSpawner, reserveCandidatePort, terminateChild, validateSshAlias, type OwnedProcess, type ProcessSpawner } from './ssh.js'
 
+/** The reserved channel id of a device's workbench tunnel. Every device has at
+ * most one; additional channels carry a caller-supplied id. */
+export const WORKBENCH_CHANNEL = 'workbench'
+
 export interface TunnelRequest {
   readonly deviceId: string
   readonly sshAlias: string
+  /** Which tunnel of this device this request addresses. Defaults to the
+   * workbench channel, so existing callers keep their exact behavior. Channels
+   * are tracked independently: opening one never replaces another. */
+  readonly channelId?: string
   readonly remoteDshPort: number
   /** Previously used local forward port for this device. Reusing it keeps the
    * workbench iframe origin (`http://127.0.0.1:<localPort>`) stable, so the
@@ -14,6 +22,7 @@ export interface TunnelRequest {
 
 export interface TunnelHandle {
   readonly deviceId: string
+  readonly channelId: string
   readonly generation: number
   readonly endpoint: URL
   /** Local forward port actually bound by this tunnel; persist it as the next
@@ -79,7 +88,10 @@ function tunnelArgs(request: TunnelRequest, localPort: number, options: Required
 export class TunnelManager {
   readonly #options: Required<Pick<TunnelManagerOptions, 'spawn' | 'sshExecutable' | 'maxBindAttempts' | 'maxStderrBytes' | 'connectTimeoutSeconds' | 'serverAliveIntervalSeconds' | 'serverAliveCountMax'>> & Pick<TunnelManagerOptions, 'readinessProbe'>
   readonly #logger: TunnelManagerLogger | undefined
-  readonly #active = new Map<string, { generation: number; process: OwnedProcess; abort: AbortController; disposed: boolean }>()
+  /** Keyed by device AND channel: one device may hold its workbench tunnel plus
+   * additional channels at the same time, so a second channel must never evict
+   * the first. */
+  readonly #active = new Map<string, { deviceId: string; channelId: string; generation: number; process: OwnedProcess; abort: AbortController; disposed: boolean }>()
   readonly #generations = new Map<string, number>()
   #shutDown = false
 
@@ -100,9 +112,13 @@ export class TunnelManager {
   async connect(request: TunnelRequest): Promise<TunnelHandle> {
     validateSshAlias(request.sshAlias)
     if (this.#shutDown) throw new Error('tunnel manager is shut down')
-    await this.disposeNode(request.deviceId)
-    const generation = (this.#generations.get(request.deviceId) ?? 0) + 1
-    this.#generations.set(request.deviceId, generation)
+    const channelId = request.channelId ?? WORKBENCH_CHANNEL
+    const key = channelKey(request.deviceId, channelId)
+    // Replace only the SAME channel of this device. Other channels are
+    // independent resources and must survive.
+    await this.#disposeKey(key)
+    const generation = (this.#generations.get(key) ?? 0) + 1
+    this.#generations.set(key, generation)
     const persistedPort = sanitizePort(request.preferredLocalPort)
     // Once we have strong evidence the persisted port is unavailable, we stop
     // offering it for the rest of THIS connect — a single latch, never revived
@@ -120,8 +136,8 @@ export class TunnelManager {
       if (this.#shutDown) throw new Error('tunnel manager is shut down')
       const process = this.#options.spawn(this.#options.sshExecutable, tunnelArgs(request, localPort, this.#options))
       const abort = new AbortController()
-      const active = { generation, process, abort, disposed: false }
-      this.#active.set(request.deviceId, active)
+      const active = { deviceId: request.deviceId, channelId, generation, process, abort, disposed: false }
+      this.#active.set(key, active)
       const chunks: Buffer[] = []
       let bytes = 0
       process.stderr.on('data', (chunk: Buffer) => {
@@ -145,46 +161,60 @@ export class TunnelManager {
         if (persistedPort !== undefined && !abandonPreferred && localPort === persistedPort && isPortBindFailure(lastDiagnostic, localPort)) {
           abandonPreferred = true
         }
-        this.#active.delete(request.deviceId)
+        this.#active.delete(key)
         await this.#terminate(process, 1000)
         if (this.#shutDown) throw new Error('tunnel manager is shut down')
         if (attempt < this.#options.maxBindAttempts) continue
         throw new Error(`OpenSSH exited before DSH readiness: ${truncate(lastDiagnostic, 200)}`)
       }
       if (!outcome.result.ok) {
-        await this.#disposeExact(request.deviceId, active)
+        await this.#disposeExact(key, active)
         throw new Error(`${outcome.result.state}: ${outcome.result.diagnostic}`)
       }
-      if (this.#active.get(request.deviceId) !== active || active.disposed) {
-        await this.#disposeExact(request.deviceId, active)
+      if (this.#active.get(key) !== active || active.disposed) {
+        await this.#disposeExact(key, active)
         throw new Error('tunnel generation was replaced')
       }
       if (persistedPort !== undefined && localPort !== persistedPort) {
-        this.#logger?.warn(`tunnel local port drift: device=${request.deviceId} from=${persistedPort} to=${localPort} reason=${abandonPreferred ? 'preferred-port-unavailable' : 'unknown'}`)
+        this.#logger?.warn(`tunnel local port drift: device=${request.deviceId} channel=${channelId} from=${persistedPort} to=${localPort} reason=${abandonPreferred ? 'preferred-port-unavailable' : 'unknown'}`)
       }
       return {
         deviceId: request.deviceId,
+        channelId,
         generation,
         endpoint,
         localPort,
         diagnostic: outcome.result.diagnostic,
-        dispose: () => this.#disposeExact(request.deviceId, active),
+        dispose: () => this.#disposeExact(key, active),
       }
     }
     throw new Error(`could not bind a loopback port: ${truncate(lastDiagnostic, 200)}`)
   }
 
+  /** Dispose EVERY channel of one device. Device-scoped lifecycle events
+   * (disable, delete, reconnect) own all of that device's tunnels, so leaving
+   * an additional channel behind would outlive its device. */
   async disposeNode(deviceId: string): Promise<void> {
-    const active = this.#active.get(deviceId)
-    if (active !== undefined) await this.#disposeExact(deviceId, active)
+    const owned = [...this.#active].filter(([, active]) => active.deviceId === deviceId)
+    await Promise.all(owned.map(([key, active]) => this.#disposeExact(key, active)))
+  }
+
+  /** Dispose one specific channel, leaving the device's other channels alone. */
+  async disposeChannel(deviceId: string, channelId: string): Promise<void> {
+    await this.#disposeKey(channelKey(deviceId, channelId))
+  }
+
+  async #disposeKey(key: string): Promise<void> {
+    const active = this.#active.get(key)
+    if (active !== undefined) await this.#disposeExact(key, active)
   }
 
   /** Terminal cleanup: refuses new tunnels and sweeps any straggler registered
    * mid-sweep by an in-flight connect. */
   async disposeAll(): Promise<void> {
     this.#shutDown = true
-    await Promise.all([...this.#active].map(([id, active]) => this.#disposeExact(id, active)))
-    await Promise.all([...this.#active].map(([id, active]) => this.#disposeExact(id, active)))
+    await Promise.all([...this.#active].map(([key, active]) => this.#disposeExact(key, active)))
+    await Promise.all([...this.#active].map(([key, active]) => this.#disposeExact(key, active)))
   }
 
   /** SSH tunnel binds are not atomic with connection readiness: retry briefly
@@ -200,17 +230,23 @@ export class TunnelManager {
     return last ?? { ok: false, state: 'DSH_UNAVAILABLE', diagnostic: 'probe failed' }
   }
 
-  #disposeExact(deviceId: string, active: { process: OwnedProcess; abort: AbortController; disposed: boolean }): Promise<void> {
+  #disposeExact(key: string, active: { process: OwnedProcess; abort: AbortController; disposed: boolean }): Promise<void> {
     if (active.disposed) return Promise.resolve()
     active.disposed = true
     active.abort.abort(new Error('tunnel disposed'))
-    if (this.#active.get(deviceId) === active) this.#active.delete(deviceId)
+    if (this.#active.get(key) === active) this.#active.delete(key)
     return this.#terminate(active.process, 1000)
   }
 
   #terminate(process: OwnedProcess, graceMs: number): Promise<void> {
     return terminateChild(process, graceMs)
   }
+}
+
+/** Composite key: a device may hold several independently tracked channels.
+ * NUL is not valid in either component, so the join is unambiguous. */
+function channelKey(deviceId: string, channelId: string): string {
+  return `${deviceId}\u0000${channelId}`
 }
 
 function truncate(value: string, max: number): string {

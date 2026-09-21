@@ -37,6 +37,12 @@ export interface DeviceRecord {
   readonly kind: DeviceKind
   readonly sshAlias?: string
   readonly remoteDshPort: number
+  /** Local forward port of this device's WORKBENCH tunnel, persisted so the
+   * workbench iframe origin stays stable across reconnects. Additional
+   * channels (see the port-forward capability) are deliberately NOT recorded
+   * here: their consumers read the URL from a freshly delivered handle every
+   * time, so they have no cross-reconnect origin dependency, and persisting
+   * them would only widen the reserved-port surface. */
   readonly localPort?: number
   /** Legacy DSH 0.1.2 process launch token. Accepted on read for migration. */
   readonly dshLaunchToken?: string

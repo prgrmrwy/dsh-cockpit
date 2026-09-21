@@ -3,7 +3,7 @@ import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@d
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
-import { TunnelManager } from './tunnel-manager.js'
+import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { probeDshCarrier } from './protocol-client.js'
 import { dshIframeLaunchUrl, parseDshLaunchUrl } from './dsh-auth.js'
@@ -12,6 +12,9 @@ import { resolveSshExecutable } from '../runtime/config.js'
 import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
 import { BridgeRejectionLog, type BridgeRejectionDecision } from './bridge-rejection-log.js'
 
+/** Per-device cap on additional forwards. */
+const MAX_PUBLISHABLE_CHANNELS = 8
+
 @Injectable()
 export class ConnectivityService implements OnApplicationShutdown {
   readonly #registry: DeviceRegistry
@@ -19,6 +22,10 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #tunnels: TunnelManager
   readonly #sshExecutable: string
   readonly #lifecycles = new Map<string, DeviceLifecycle>()
+  /** deviceId -> channelId -> device-side loopback port declared publishable. */
+  readonly #publishablePorts = new Map<string, Map<string, number>>()
+  /** device+channel -> the live forward delivered for it. */
+  readonly #publishedChannels = new Map<string, { url: string; localPort: number }>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
   /** Per-device bridge rejection grading (see bridge-rejection-log.ts). */
@@ -133,6 +140,11 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = this.#lifecycles.get(deviceId)
     this.#lifecycles.delete(deviceId)
     await lifecycle?.stop()
+    // Publishable ports and their forwards are facts about a live device run;
+    // lifecycle.stop() already disposes every tunnel of this device, so only
+    // the bookkeeping is left to clear here. Leaving it would let a later run
+    // publish a channel whose port was never re-registered.
+    await this.releasePublishedPorts(deviceId)
     this.#bridgeRejections.forget(deviceId)
     const prefix = `${deviceId}\u0000`
     for (const key of this.#authDiscoveryAttemptedAt.keys()) if (key.startsWith(prefix)) this.#authDiscoveryAttemptedAt.delete(key)
@@ -439,6 +451,70 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#recordBridgeSuccess(lifecycle.deviceId)
   }
 
+  /** Register a device-side loopback port as publishable.
+   *
+   * Resolving the device from the request `Origin` is what keeps a
+   * registration from ever naming another device: the caller cannot choose
+   * which device it registers for. The registry is in-memory and per device —
+   * a publishable port is a fact about the CURRENT run of that device's DSH,
+   * so it must not outlive a restart.
+   */
+  registerPublishablePort(origin: string, channelId: string, devicePort: number): void {
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    if (!isPublishableChannelId(channelId)) throw new Error('invalid channel id')
+    if (!Number.isInteger(devicePort) || devicePort < 1 || devicePort > 65535) throw new Error('invalid device port')
+    let ports = this.#publishablePorts.get(lifecycle.deviceId)
+    if (ports === undefined) {
+      ports = new Map()
+      this.#publishablePorts.set(lifecycle.deviceId, ports)
+    }
+    // The cap bounds ssh child processes per device; it is one of the three
+    // structural limits the capability relies on (see the change's design D4).
+    if (!ports.has(channelId) && ports.size >= MAX_PUBLISHABLE_CHANNELS) {
+      throw new Error(`too many publishable channels (max ${MAX_PUBLISHABLE_CHANNELS})`)
+    }
+    ports.set(channelId, devicePort)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
+  }
+
+  /** Publish a previously registered port and return its host-side URL.
+   *
+   * Idempotent per channel: an existing live forward is reused rather than
+   * replaced, so repeated clicks do not churn ssh processes. A local device
+   * needs no forward at all and is refused with a stable reason so the
+   * consumer falls back to its own loopback address. */
+  async publishPort(origin: string, channelId: string): Promise<{ url: string; localPort: number }> {
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    const facts = lifecycle.current()
+    if (facts.kind !== 'remote' || facts.sshAlias === undefined) throw new Error('local device needs no port forward')
+    const devicePort = this.#publishablePorts.get(lifecycle.deviceId)?.get(channelId)
+    if (devicePort === undefined) throw new Error(`port for channel ${channelId} is not registered`)
+
+    const existing = this.#publishedChannels.get(publishKey(lifecycle.deviceId, channelId))
+    if (existing !== undefined) return { url: existing.url, localPort: existing.localPort }
+
+    const handle = await this.#tunnels.connect({
+      deviceId: lifecycle.deviceId,
+      sshAlias: facts.sshAlias,
+      channelId,
+      remoteDshPort: devicePort,
+    })
+    const published = { url: handle.endpoint.origin, localPort: handle.localPort }
+    this.#publishedChannels.set(publishKey(lifecycle.deviceId, channelId), published)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
+    return published
+  }
+
+  /** Drop every published channel of one device. Called from the device's own
+   * lifecycle transitions so a forward never outlives its device. */
+  async releasePublishedPorts(deviceId: string): Promise<void> {
+    this.#publishablePorts.delete(deviceId)
+    for (const key of [...this.#publishedChannels.keys()]) {
+      if (key.startsWith(`${deviceId}\u0000`)) this.#publishedChannels.delete(key)
+    }
+    await this.#tunnels.disposeNode(deviceId)
+  }
+
   /** Bridge plugin hello: records that the device's DSH web client runs the
    * plugin, and stamps the last-seen time (surfaces as bridgeSeenAt in the
    * status pushed to the browser). */
@@ -478,6 +554,8 @@ export class ConnectivityService implements OnApplicationShutdown {
 
   async onApplicationShutdown(): Promise<void> {
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
+    this.#publishablePorts.clear()
+    this.#publishedChannels.clear()
     await this.#tunnels.disposeAll()
   }
 }
@@ -489,4 +567,14 @@ function redactDeviceRecord(record: DeviceRecord): DeviceRecord {
 
 function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10)
+}
+
+/** Channel ids appear in a composite tunnel key and in diagnostics; keep them
+ * to a conservative, NUL-free shape. */
+function isPublishableChannelId(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(value) && value !== WORKBENCH_CHANNEL
+}
+
+function publishKey(deviceId: string, channelId: string): string {
+  return `${deviceId}\u0000${channelId}`
 }

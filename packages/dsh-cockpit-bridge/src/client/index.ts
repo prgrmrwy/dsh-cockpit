@@ -25,11 +25,16 @@ import {
   BRIDGE_CONFIG_MESSAGE,
   CAPABILITY_EXPIRED_MESSAGE,
   COCKPIT_EDITOR_OPEN_SERVICE,
+  COCKPIT_PORT_FORWARD_SERVICE,
   DEVICE_ACTIVATED_MESSAGE,
   createRemoteEditorUri,
+  isValidDevicePort,
+  isValidPortForwardChannelId,
   isValidSshAlias,
   type BridgeConfigMessage,
   type CockpitEditorOpenService,
+  type CockpitPortForwardService,
+  type PortForwardHandle,
 } from '@dsh-cockpit/shared'
 
 export const inject = ['sessions', 'uiSession']
@@ -114,6 +119,46 @@ export function apply(ctx: BridgeContext): void {
     },
   }
   ctx.provide(COCKPIT_EDITOR_OPEN_SERVICE, editorOpen)
+
+  /** Second seam, same contract shape as editorOpen: provided immediately,
+   * consumer-agnostic, and unavailable-by-throwing so a consumer can fall back
+   * to its own loopback address. Unlike editorOpen this one reaches the
+   * cockpit server (it creates an ssh forward), so the capability header is
+   * mandatory and a rejection is surfaced rather than swallowed. */
+  const seamRequest = async (path: string, body: object): Promise<unknown> => {
+    const active = config
+    if (active === undefined) throw new Error('cockpit port forward is unavailable')
+    const controller = new AbortController()
+    const timeout = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
+    let response: Response
+    try {
+      response = await fetch(`${active.cockpitOrigin}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', [CAPABILITY_HEADER]: active.capability },
+        body: JSON.stringify({ ...body, protocolVersion: PROTOCOL_VERSION }),
+        signal: controller.signal,
+      })
+    } finally {
+      clearTimeout(timeout)
+    }
+    if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`)
+    return await response.json()
+  }
+
+  const portForward: CockpitPortForwardService = {
+    async register(channelId: string, devicePort: number): Promise<void> {
+      if (!isValidPortForwardChannelId(channelId)) throw new Error('invalid channel id')
+      if (!isValidDevicePort(devicePort)) throw new Error('invalid device port')
+      await seamRequest('/api/bridge/publishable-port', { channelId, devicePort })
+    },
+    async publish(channelId: string): Promise<PortForwardHandle> {
+      if (!isValidPortForwardChannelId(channelId)) throw new Error('invalid channel id')
+      const result = await seamRequest('/api/bridge/publish-port', { channelId }) as { url?: unknown }
+      if (typeof result?.url !== 'string' || result.url === '') throw new Error('cockpit returned no forward url')
+      return { channelId, url: result.url }
+    },
+  }
+  ctx.provide(COCKPIT_PORT_FORWARD_SERVICE, portForward)
 
   ctx.effect(() => {
     let helloReady = false

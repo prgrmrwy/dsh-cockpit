@@ -50,6 +50,8 @@ Cockpit 选中设备后承载该设备原生 DSH Web，因此无需适配即可�
 
 该层引入后台生命周期、凭据所有权和写路由，可能不应由现有 Cockpit 进程承担。正式设计必须比较“Cockpit 内置”“独立 Pet Hub”“每设备 transport”三种所有权方案，且不得直接复用当前仅上报 active session ID 的 `dsh-cockpit-bridge` 作为通用写隧道。
 
+**2026-09-21 补充（与 change `device-port-forward-seam` 的关系）**：该 change 在 bridge 上新增了第一个**触发 Cockpit 服务端动作**的接缝 `cockpitBridge.portForward`（建立附加 `-L` 回环转发）。它**满足**而非豁免上面这条约束：调用方不能指定设备（由请求 `Origin` 解析）、不能指定任意端口（只能发布已登记的 channel）、句柄绑定单个端口、每设备通道数有上限、转发只在宿主机回环监听，且 Cockpit 不进入被转发流量的数据路径。Pet 若将来需要写路由，仍须独立论证所有权与信任面，**不得**以本接缝为先例推导出「bridge 可作通用写隧道」。
+
 ### 保持不变的约束
 
 在正式 OpenSpec change 接受前：

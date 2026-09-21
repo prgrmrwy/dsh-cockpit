@@ -80,7 +80,10 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     ...(typeof row.sshAlias === 'string' && row.sshAlias !== '' ? { sshAlias: row.sshAlias } : {}),
     // An out-of-range port is treated as absent, not as corruption: localPort
     // is optional and a bad value simply means "no stable port yet", which the
-    // next connection overwrites.
+    // next connection overwrites. Records written before additional channels
+    // existed carry exactly this field, so they keep their stable workbench
+    // port with no migration step: the field always meant the workbench
+    // tunnel, and still does.
     ...(isValidLocalPort(row.localPort) ? { localPort: row.localPort } : {}),
     ...(typeof row.dshLaunchToken === 'string' ? { dshLaunchToken: row.dshLaunchToken } : {}),
     ...(dshAuth === undefined ? {} : { dshAuth }),

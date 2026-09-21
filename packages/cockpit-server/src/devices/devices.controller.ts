@@ -207,6 +207,61 @@ export class DevicesController {
     }
   }
 
+  /** Register a device-side loopback port as publishable, and publish it.
+   *
+   * Unlike the reporting callbacks above, these two DO make the cockpit act
+   * (the publish spawns an ssh forward), so they require a capability rather
+   * than accepting the header-less legacy path: `authorizeBridge` returns
+   * early when no header is present, which is right for a report and wrong
+   * for an action. The device is resolved from `Origin`, so a caller can
+   * never register or publish for a device other than its own. */
+  @Post('bridge/publishable-port')
+  async bridgeRegisterPublishablePort(
+    @Req() request: import('express').Request,
+    @Body() body: { channelId?: unknown; devicePort?: unknown; protocolVersion?: unknown },
+  ): Promise<{ registered: boolean }> {
+    const origin = requireOrigin(request)
+    try {
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.requireBridgeCapability(request, origin, bridgeProtocol)
+      if (typeof body?.channelId !== 'string' || typeof body?.devicePort !== 'number') {
+        throw new HttpException(toError('bad-request', 'channelId and devicePort are required'), HttpStatus.BAD_REQUEST)
+      }
+      this.connectivity.registerPublishablePort(origin, body.channelId, body.devicePort)
+      return { registered: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  @Post('bridge/publish-port')
+  async bridgePublishPort(
+    @Req() request: import('express').Request,
+    @Body() body: { channelId?: unknown; protocolVersion?: unknown },
+  ): Promise<{ url: string; localPort: number }> {
+    const origin = requireOrigin(request)
+    try {
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.requireBridgeCapability(request, origin, bridgeProtocol)
+      if (typeof body?.channelId !== 'string') {
+        throw new HttpException(toError('bad-request', 'channelId is required'), HttpStatus.BAD_REQUEST)
+      }
+      return await this.connectivity.publishPort(origin, body.channelId)
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Capability is mandatory here: these routes cause a server-side action. */
+  private requireBridgeCapability(request: import('express').Request, origin: string, protocolVersion: number): void {
+    const token = request.headers[BRIDGE_CAPABILITY_HEADER]
+    const capability = Array.isArray(token) ? token[0] : token
+    if (capability === undefined) {
+      throw new HttpException(toError('unauthorized', 'bridge capability required'), HttpStatus.UNAUTHORIZED)
+    }
+    this.authorizeBridge(request, origin, protocolVersion)
+  }
+
   /** Validates the capability ONLY when the caller presented one. A request
    * with no capability header reached this method only because it already
    * satisfied TokenMiddleware's persistent-cookie requirement (the middleware
@@ -328,6 +383,10 @@ function requireLaunchUrl(value: unknown): string {
 function toError(code: string, message: string): ApiError { return { code, message } }
 
 function toHttp(cause: unknown): HttpException {
+  // An already-shaped HttpException carries a deliberate status (e.g. 401 for
+  // a missing bridge capability); re-wrapping it would silently downgrade
+  // that to the generic 400 below.
+  if (cause instanceof HttpException) return cause
   const message = cause instanceof Error ? cause.message : String(cause)
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)

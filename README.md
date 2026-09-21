@@ -135,6 +135,10 @@ iframe DOM，也拿不到它。有了插件后：
 | **capability 续签** | 收到 401 或结构化 `bridge-capability-invalid` 时，插件重置 hello 状态并向父页面 `postMessage { type: 'dsh-cockpit:capability-expired' }` 请求换发新能力 | 父页面在 **到期前**（15s 宽限）自动换发并重发 `bridge-config`；换发失败按 15s→2min 有上限退避重试，并按设备限频（5s 至多一次）——长时间停留在同一设备也不会静默失去精确已读确认 |
 
 - **远程编辑器服务**：bridge 以稳定服务名 `cockpitBridge.editorOpen` 面向任意同页面插件；收到合法 `sshAlias` 后，在原始用户点击链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。不新增反向 postMessage；其它插件不得绕过 bridge 直接与驾驶舱通信。
+- **端口发布服务**：bridge 以稳定服务名 `cockpitBridge.portForward` 面向任意同页面插件，让设备上只监听回环的服务能被宿主机浏览器访问（`register(channelId, devicePort)` 声明可发布，`publish(channelId)` 取得宿主机可访问的 URL）。驾驶舱为其建立一条**附加**的 `-L` 回环转发，与该设备的工作台主通道并列且互不影响；附加通道的本地端口由内核分配、**不持久化**（只有工作台通道需要稳定 origin）。
+  - **不是通用隧道**：调用方只能发布**自己这台设备**上**已登记**的端口——设备由请求 `Origin` 解析，调用方无法指定；句柄绑定单个端口，不提供「任意端口转发」能力；每设备附加通道数有上限。登记制的安全价值不依赖「登记方不可伪造」（能登记的前提本就是已作为插件载入该设备的可信页面），真正的边界是这三条结构性约束加上「只在宿主机回环监听」。
+  - 与 `editorOpen` 不同，这两个调用**会让驾驶舱执行服务端动作**（spawn 一个 ssh 子进程），因此 capability 请求头是**必需**的，不接受无头部的兼容路径。驾驶舱不进入被转发流量的数据路径，不解析、不重写、不记录其内容。
+  - 服务缺席、握手未完成、本机设备、端口未登记或转发失败时，调用以稳定原因失败，消费方据此回落自身的本机地址——不在驾驶舱中运行时这就是常态。
 - **前置与边界**：宿主机需安装 VS Code Remote-SSH；未安装时 URI 可能被静默丢弃。带点的目录名可能被 VS Code URI handler 判断为文件。
 - **端口不写死**：插件不再固定请求 `127.0.0.1:3090`——实际 Cockpit Origin 由
   父页面握手动态提供，因此驾驶舱运行在 `COCKPIT_PORT` 指定的**任意受支持端口**

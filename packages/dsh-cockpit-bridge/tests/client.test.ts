@@ -537,6 +537,86 @@ describe('cockpit bridge client', () => {
     expect(fixture.getService('cockpitBridge.editorOpen')).toBeUndefined()
   })
 
+  it('provides a port-forward seam that is unavailable until configured', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')
+    // Provided immediately, regardless of load order or handshake state.
+    expect(service).toBeDefined()
+    // Before the handshake there is no cockpit to ask: the consumer must be
+    // able to detect that and fall back to its own loopback address.
+    await expect(service!.register('cards', 3939)).rejects.toThrow('unavailable')
+    await expect(service!.publish('cards')).rejects.toThrow('unavailable')
+    expect(fetchMock).not.toHaveBeenCalled()
+
+    fixture.cleanup()
+    expect(fixture.getService('cockpitBridge.portForward')).toBeUndefined()
+  })
+
+  it('registers and publishes a channel with the capability header', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    configure(window as unknown as FakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    await service.register('cards', 3939)
+    const registerCall = callsFor('/api/bridge/publishable-port').at(-1)!
+    expect(JSON.parse(String(registerCall[1].body))).toMatchObject({ channelId: 'cards', devicePort: 3939 })
+    expect((registerCall[1].headers as Record<string, string>)['x-dsh-cockpit-bridge-capability']).toBe(CAPABILITY)
+
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ url: 'http://127.0.0.1:54321', localPort: 54321 }) })
+    const handle = await service.publish('cards')
+    expect(handle).toEqual({ channelId: 'cards', url: 'http://127.0.0.1:54321' })
+
+    fixture.cleanup()
+  })
+
+  it('surfaces a rejected or malformed publish instead of inventing an address', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    configure(window as unknown as FakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+
+    fetchMock.mockResolvedValue(failResponse(401))
+    await expect(service.publish('cards')).rejects.toThrow('rejected (401)')
+
+    // A 200 with no url must NOT become a usable handle: an address that does
+    // not exist on the host would silently reach some other local service.
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
+    await expect(service.publish('cards')).rejects.toThrow('no forward url')
+
+    fixture.cleanup()
+  })
+
+  it('rejects an invalid channel id or port without calling the cockpit', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    configure(window as unknown as FakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+
+    await expect(service.register('workbench', 3939)).rejects.toThrow('invalid channel id')
+    await expect(service.register('bad id', 3939)).rejects.toThrow('invalid channel id')
+    await expect(service.register('cards', 0)).rejects.toThrow('invalid device port')
+    await expect(service.publish('workbench')).rejects.toThrow('invalid channel id')
+    expect(callsFor('/api/bridge/publishable-port')).toHaveLength(0)
+    expect(callsFor('/api/bridge/publish-port')).toHaveLength(0)
+
+    fixture.cleanup()
+  })
+
   it('rejects invalid aliases and paths without opening a URI', async () => {
     const fixture = fakeCtx()
     const apply = await loadApply()
