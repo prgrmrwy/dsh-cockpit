@@ -40,7 +40,7 @@ import {
 export const inject = ['sessions', 'uiSession']
 
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.5.0'
+const PLUGIN_VERSION = '0.5.1'
 const PROTOCOL_VERSION = 2
 const PENDING_PROTOCOL_VERSION = 3
 const PENDING_SEAM_VERSION = 1
@@ -52,6 +52,9 @@ const RETRY_MAX_MS = 30_000
 const REQUEST_TIMEOUT_MS = 10_000
 const OUTBOX_TTL_MS = 5 * 60_000
 const OUTBOX_CAPACITY = 32
+/** How long a seam call waits for the parent to supply a fresh capability. */
+const CAPABILITY_RENEWAL_WAIT_MS = 5_000
+const CAPABILITY_RENEWAL_POLL_MS = 100
 const CLEARED_KEY = '\u0000selection-cleared'
 
 interface BridgeConfig {
@@ -125,14 +128,12 @@ export function apply(ctx: BridgeContext): void {
    * to its own loopback address. Unlike editorOpen this one reaches the
    * cockpit server (it creates an ssh forward), so the capability header is
    * mandatory and a rejection is surfaced rather than swallowed. */
-  const seamRequest = async (path: string, body: object): Promise<unknown> => {
-    const active = config
-    if (active === undefined) throw new Error('cockpit port forward is unavailable')
+  /** One capability-bearing POST; no retry, no renewal. */
+  const seamFetch = async (path: string, body: object, active: BridgeConfig): Promise<Response> => {
     const controller = new AbortController()
     const timeout = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
-    let response: Response
     try {
-      response = await fetch(`${active.cockpitOrigin}${path}`, {
+      return await fetch(`${active.cockpitOrigin}${path}`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', [CAPABILITY_HEADER]: active.capability },
         body: JSON.stringify({ ...body, protocolVersion: PROTOCOL_VERSION }),
@@ -140,6 +141,41 @@ export function apply(ctx: BridgeContext): void {
       })
     } finally {
       clearTimeout(timeout)
+    }
+  }
+
+  /**
+   * Wait for the parent to hand down a capability different from the stale one.
+   *
+   * Capabilities live ~60s, and this seam is driven by a human click that can
+   * land long after the page loaded — so an expired capability is the NORMAL
+   * case here, not an error. Asking the parent and waiting briefly turns it
+   * into a transparent retry instead of a user-visible 401.
+   */
+  const renewConfig = async (stale: BridgeConfig): Promise<BridgeConfig | undefined> => {
+    try {
+      window.parent.postMessage({ type: CAPABILITY_EXPIRED_MESSAGE }, stale.cockpitOrigin)
+    } catch {
+      return undefined
+    }
+    for (let waited = 0; waited < CAPABILITY_RENEWAL_WAIT_MS; waited += CAPABILITY_RENEWAL_POLL_MS) {
+      await new Promise(resolve => setTimeout(resolve, CAPABILITY_RENEWAL_POLL_MS))
+      const next = config
+      if (next !== undefined && next.capability !== stale.capability) return next
+    }
+    return undefined
+  }
+
+  const seamRequest = async (path: string, body: object): Promise<unknown> => {
+    const active = config
+    if (active === undefined) throw new Error('cockpit port forward is unavailable')
+    let response = await seamFetch(path, body, active)
+    if (response.status === 401 || response.status === 400) {
+      // The renewal path below is the one the reporting callbacks already use;
+      // this seam needs it too, because a click can arrive after the page has
+      // been sitting idle for minutes.
+      const renewed = await renewConfig(active)
+      if (renewed !== undefined) response = await seamFetch(path, body, renewed)
     }
     if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`)
     return await response.json()

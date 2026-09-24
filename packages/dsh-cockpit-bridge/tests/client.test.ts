@@ -139,7 +139,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.5.0',
+      version: '0.5.1',
       protocolVersion: 2,
       current: 'already-open',
     })
@@ -577,6 +577,49 @@ describe('cockpit bridge client', () => {
     fixture.cleanup()
   })
 
+  it('renews an expired capability and retries instead of surfacing 401', async () => {
+    // Capabilities live ~60s while this seam is driven by a human click, so an
+    // expired capability is the normal case. Real-device regression: the click
+    // surfaced "cockpit port forward rejected (401)" because only the reporting
+    // callbacks had a renewal path.
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    const fakeWindow = window as unknown as FakeWindow
+    configure(fakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+
+    let calls = 0
+    fetchMock.mockImplementation(async () => {
+      calls += 1
+      if (calls === 1) return failResponse(401)
+      return { ok: true, status: 200, json: async () => ({ url: 'http://127.0.0.1:54321' }) }
+    })
+
+    const pending = service.publish('cards')
+    // The seam asks the parent for a new capability...
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fakeWindow.parentPostMessage).toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:capability-expired' },
+      COCKPIT_ORIGIN,
+    )
+    // ...and the parent supplies one, which unblocks the retry.
+    fakeWindow.emitMessage({
+      type: 'dsh-cockpit:bridge-config',
+      cockpitOrigin: COCKPIT_ORIGIN,
+      capability: 'fresh-capability',
+    })
+    await vi.advanceTimersByTimeAsync(200)
+
+    await expect(pending).resolves.toEqual({ channelId: 'cards', url: 'http://127.0.0.1:54321' })
+    const retry = callsFor('/api/bridge/publish-port').at(-1)!
+    expect((retry[1].headers as Record<string, string>)['x-dsh-cockpit-bridge-capability']).toBe('fresh-capability')
+
+    fixture.cleanup()
+  })
+
   it('surfaces a rejected or malformed publish instead of inventing an address', async () => {
     const fixture = fakeCtx()
     const apply = await loadApply()
@@ -586,8 +629,12 @@ describe('cockpit bridge client', () => {
     configure(window as unknown as FakeWindow)
     await vi.advanceTimersByTimeAsync(0)
 
+    // A 401 now triggers one renewal attempt; with no parent reply the wait
+    // times out and the original rejection surfaces unchanged.
     fetchMock.mockResolvedValue(failResponse(401))
-    await expect(service.publish('cards')).rejects.toThrow('rejected (401)')
+    const rejected = service.publish('cards')
+    await vi.advanceTimersByTimeAsync(6_000)
+    await expect(rejected).rejects.toThrow('rejected (401)')
 
     // A 200 with no url must NOT become a usable handle: an address that does
     // not exist on the host would silently reach some other local service.

@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.5.0";
+		const PLUGIN_VERSION = "0.5.1";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
@@ -53,6 +53,9 @@ window.__ModuleLoader__.load({
 		const REQUEST_TIMEOUT_MS = 1e4;
 		const OUTBOX_TTL_MS = 3e5;
 		const OUTBOX_CAPACITY = 32;
+		/** How long a seam call waits for the parent to supply a fresh capability. */
+		const CAPABILITY_RENEWAL_WAIT_MS = 5e3;
+		const CAPABILITY_RENEWAL_POLL_MS = 100;
 		const CLEARED_KEY = "\0selection-cleared";
 		function parseConfig(event) {
 			if (event.source !== window.parent || typeof event.data !== "object" || event.data === null) return;
@@ -87,16 +90,14 @@ window.__ModuleLoader__.load({
 			* to its own loopback address. Unlike editorOpen this one reaches the
 			* cockpit server (it creates an ssh forward), so the capability header is
 			* mandatory and a rejection is surfaced rather than swallowed. */
-			const seamRequest = async (path, body) => {
-				const active = config;
-				if (active === void 0) throw new Error("cockpit port forward is unavailable");
+			/** One capability-bearing POST; no retry, no renewal. */
+			const seamFetch = async (path, body, active) => {
 				const controller = new AbortController();
 				const timeout = setTimeout(() => {
 					controller.abort();
 				}, REQUEST_TIMEOUT_MS);
-				let response;
 				try {
-					response = await fetch(`${active.cockpitOrigin}${path}`, {
+					return await fetch(`${active.cockpitOrigin}${path}`, {
 						method: "POST",
 						headers: {
 							"content-type": "application/json",
@@ -110,6 +111,35 @@ window.__ModuleLoader__.load({
 					});
 				} finally {
 					clearTimeout(timeout);
+				}
+			};
+			/**
+			* Wait for the parent to hand down a capability different from the stale one.
+			*
+			* Capabilities live ~60s, and this seam is driven by a human click that can
+			* land long after the page loaded — so an expired capability is the NORMAL
+			* case here, not an error. Asking the parent and waiting briefly turns it
+			* into a transparent retry instead of a user-visible 401.
+			*/
+			const renewConfig = async (stale) => {
+				try {
+					window.parent.postMessage({ type: CAPABILITY_EXPIRED_MESSAGE }, stale.cockpitOrigin);
+				} catch {
+					return;
+				}
+				for (let waited = 0; waited < CAPABILITY_RENEWAL_WAIT_MS; waited += CAPABILITY_RENEWAL_POLL_MS) {
+					await new Promise((resolve) => setTimeout(resolve, CAPABILITY_RENEWAL_POLL_MS));
+					const next = config;
+					if (next !== void 0 && next.capability !== stale.capability) return next;
+				}
+			};
+			const seamRequest = async (path, body) => {
+				const active = config;
+				if (active === void 0) throw new Error("cockpit port forward is unavailable");
+				let response = await seamFetch(path, body, active);
+				if (response.status === 401 || response.status === 400) {
+					const renewed = await renewConfig(active);
+					if (renewed !== void 0) response = await seamFetch(path, body, renewed);
 				}
 				if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`);
 				return await response.json();

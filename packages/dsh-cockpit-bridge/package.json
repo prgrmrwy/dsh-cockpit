@@ -1,6 +1,6 @@
 {
   "name": "dsh-cockpit-bridge",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Cockpit bridge: reliable DSH session-state reporting plus stable same-page capabilities for consumer plugins",
   "license": "MIT",
   "type": "module",
