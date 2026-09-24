@@ -18,6 +18,17 @@ export interface TunnelRequest {
    * device's own DSH web client keeps its origin-scoped browser storage across
    * reconnects. Advisory only: an unavailable port falls back to a fresh one. */
   readonly preferredLocalPort?: number
+  /**
+   * Whether to wait for a DSH service behind the forward before reporting success.
+   *
+   * True for the workbench channel, whose whole purpose is to carry DSH. An
+   * additional channel forwards an ARBITRARY device-side service — a card
+   * browser, a docs server — so probing it for DSH would reject every healthy
+   * forward as `DSH_UNAVAILABLE`. Those channels are ready once OpenSSH has
+   * bound the local port; whether the far side speaks anything useful is the
+   * requester's business, not the tunnel's.
+   */
+  readonly probeForDsh?: boolean
 }
 
 export interface TunnelHandle {
@@ -148,9 +159,14 @@ export class TunnelManager {
       })
       const diagnostic = () => Buffer.concat(chunks).toString('utf8').trim()
       const endpoint = new URL(`http://127.0.0.1:${localPort}`)
+      // Only the workbench channel carries DSH; see `probeForDsh`.
+      const probeForDsh = request.probeForDsh ?? channelId === WORKBENCH_CHANNEL
+      const readiness = probeForDsh
+        ? this.#probeWithRetry(endpoint, abort.signal)
+        : this.#settleWithoutProbe(abort.signal)
       const outcome = await Promise.race([
         process.exited.then(exit => ({ kind: 'exit' as const, exit })),
-        this.#probeWithRetry(endpoint, abort.signal).then(result => ({ kind: 'ready' as const, result })),
+        readiness.then(result => ({ kind: 'ready' as const, result })),
       ])
       if (outcome.kind === 'exit') {
         lastDiagnostic = diagnostic()
@@ -215,6 +231,21 @@ export class TunnelManager {
     this.#shutDown = true
     await Promise.all([...this.#active].map(([key, active]) => this.#disposeExact(key, active)))
     await Promise.all([...this.#active].map(([key, active]) => this.#disposeExact(key, active)))
+  }
+
+  /**
+   * Readiness for a channel that carries something other than DSH.
+   *
+   * OpenSSH with `ExitOnForwardFailure=yes` either binds the port or exits, and
+   * an exit is already raced against this in `connect`. So a short settle
+   * window is enough: if the process is still alive afterwards, the forward is
+   * up. The far-side service is deliberately NOT contacted — the tunnel must
+   * not assume any protocol on a port it was merely asked to forward.
+   */
+  async #settleWithoutProbe(signal: AbortSignal): Promise<{ ok: boolean; state: DeviceState; diagnostic: string }> {
+    await new Promise(resolve => setTimeout(resolve, 250))
+    if (signal.aborted) return { ok: false, state: 'TUNNEL_ERROR', diagnostic: 'tunnel disposed' }
+    return { ok: true, state: 'READY', diagnostic: 'forward established' }
   }
 
   /** SSH tunnel binds are not atomic with connection readiness: retry briefly

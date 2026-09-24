@@ -503,6 +503,46 @@ describe('tunnel manager additional channels', () => {
     await manager.disposeAll()
   })
 
+  it('does not probe an additional channel for DSH', async () => {
+    // Real-device regression: an additional channel forwards an arbitrary
+    // service (a card browser, a docs server). Probing it for DSH rejected
+    // every healthy forward with DSH_UNAVAILABLE. Readiness for these channels
+    // is "OpenSSH bound the port", nothing more.
+    const probed: string[] = []
+    const manager = new TunnelManager({
+      spawn: () => new FakeProcess(700),
+      readinessProbe: async endpoint => {
+        probed.push(endpoint.toString())
+        return { ok: false, state: 'DSH_UNAVAILABLE' as const, diagnostic: 'endpoint is not a supported DSH service' }
+      },
+    })
+
+    const extra = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 45999 })
+    expect(extra.port ?? extra.localPort).toBeGreaterThan(0)
+    expect(probed).toEqual([])
+
+    await manager.disposeAll()
+  })
+
+  it('still gates the workbench channel on DSH readiness', async () => {
+    // The counterpart of the case above: skipping the probe must not leak into
+    // the workbench channel, whose entire job is to carry DSH.
+    let probes = 0
+    const manager = new TunnelManager({
+      spawn: () => new FakeProcess(701),
+      readinessProbe: async () => {
+        probes += 1
+        return { ok: false, state: 'DSH_UNAVAILABLE' as const, diagnostic: 'endpoint is not a supported DSH service' }
+      },
+    })
+
+    await expect(manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', remoteDshPort: 3080 }))
+      .rejects.toThrow(/DSH_UNAVAILABLE/)
+    expect(probes).toBeGreaterThan(0)
+
+    await manager.disposeAll()
+  }, 20_000)
+
   it('stays terminal for additional channels after disposeAll', async () => {
     const manager = new TunnelManager({
       spawn: () => new FakeProcess(500),
