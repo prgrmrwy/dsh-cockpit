@@ -64,8 +64,20 @@ export function requiresToken(pathname: string): boolean {
   return pathname.startsWith('/api/') && pathname !== '/api/bootstrap'
 }
 
+/**
+ * Routes a device's bridge plugin calls directly.
+ *
+ * These arrive cross-origin from the device's own DSH page, so they carry no
+ * cockpit cookie by construction — the capability header is their credential
+ * and the controller validates it. Anything reachable from the bridge MUST be
+ * listed here, or it answers 401 no matter how valid its capability is.
+ */
 function isBridgeCallback(pathname: string): boolean {
-  return pathname === '/api/bridge/hello' || pathname === '/api/bridge/session-opened' || pathname === '/api/bridge/pending-snapshot'
+  return pathname === '/api/bridge/hello'
+    || pathname === '/api/bridge/session-opened'
+    || pathname === '/api/bridge/pending-snapshot'
+    || pathname === '/api/bridge/publishable-port'
+    || pathname === '/api/bridge/publish-port'
 }
 
 export function parseCookie(header: string | undefined): Record<string, string> {

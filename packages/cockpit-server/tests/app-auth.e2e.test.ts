@@ -110,4 +110,21 @@ describe('auth gate (real NestJS + Express integration)', () => {
     // rejects the forged/unbound capability with its own 400.
     expect(response.status).toBe(400)
   })
+
+  it('carves out EVERY bridge route, not just the reporting ones', async () => {
+    // Real-device regression: the port-forward routes were added to the
+    // controller but not to the auth gate's allowlist. A bridge call arrives
+    // cross-origin from the device's own DSH page and therefore carries no
+    // cockpit cookie by construction, so an unlisted route answers 401 no
+    // matter how valid its capability is — and the UI reported exactly that.
+    for (const path of ['/api/bridge/publishable-port', '/api/bridge/publish-port']) {
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { origin: 'http://127.0.0.1:1', 'content-type': 'application/json', 'x-dsh-cockpit-bridge-capability': 'forged' },
+        body: JSON.stringify({ channelId: 'probe', devicePort: 3939, protocolVersion: 2 }),
+      })
+      // Past the gate; the controller then rejects the forged capability.
+      expect(response.status, `${path} must not be gated at the auth layer`).not.toBe(401)
+    }
+  })
 })
