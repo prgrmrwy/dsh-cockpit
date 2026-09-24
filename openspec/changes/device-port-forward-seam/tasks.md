@@ -43,5 +43,5 @@
 - [x] 6.3 运行仓库既有检查（lint / typecheck / 单测）并记录实际执行的命令与结果
 - [x] 6.4 真机验收：远端设备上登记一个回环服务端口，从设备工作台触发发布，宿主机浏览器经交付的 URL 可访问该服务
 - [x] 6.5 真机验收（降级）：本机设备、未登记端口、bridge 未安装三种情形下消费方均确定性回落，工作台其它功能正常
-- [ ] 6.6 发布新版本 `dsh-cockpit-bridge`，并在 ohmydsh 侧更新精确 pin
+- [x] 6.6 发布新版本 `dsh-cockpit-bridge`，并在 ohmydsh 侧更新精确 pin
 - [ ] 6.7 确认 current specs 已同步最终行为后归档 change
