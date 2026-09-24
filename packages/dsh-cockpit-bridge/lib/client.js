@@ -43,7 +43,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.4.0";
+		const PLUGIN_VERSION = "0.5.0";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
