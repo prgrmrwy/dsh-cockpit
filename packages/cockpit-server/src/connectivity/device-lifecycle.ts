@@ -172,6 +172,11 @@ export class DeviceLifecycle {
 
   protocolKind(): 'rc2' | 'typert' { return this.#protocolKind }
 
+  /** The lifecycle's live connection generation. Workbench launch captures it
+   * before validating and re-checks it afterwards, so a result produced by a
+   * superseded connection can never be navigated. */
+  connectionGeneration(): number { return this.#connectionGeneration }
+
   /** Facts currently aggregated for this device. */
   current(): LiveDeviceFacts {
     return {

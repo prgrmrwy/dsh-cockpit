@@ -11,6 +11,15 @@ export interface DshCookieSession {
   readonly expiresAt: number
 }
 
+/** The deterministic, authority-bound cookie name DSH mints for one endpoint.
+ * Exported so callers and tests share ONE definition of the binding instead of
+ * duplicating the digest: a response whose cookie name does not equal this
+ * value for the endpoint's own authority has not proven that endpoint. */
+export function dshCookieName(authority: string): string {
+  const digest = createHash('sha256').update(authority).digest('base64url')
+  return COOKIE_PREFIX + digest
+}
+
 /** Parse the write-only URL printed by DSH 0.1.2. Only its opaque token crosses
  * into the durable registry; the user-supplied authority is never trusted as a
  * request target. */
@@ -65,7 +74,14 @@ export async function exchangeDshLaunchToken(
   if (rawCookie === undefined) throw new Error('DSH authentication failed; paste the current dsh web startup URL')
   const cookie = rawCookie.split(';', 1)[0]?.trim()
   const expiresAt = cookieExpiry(rawCookie)
-  if (cookie === undefined || !cookie.includes('=') || expiresAt === undefined) {
+  if (cookie === undefined || expiresAt === undefined) {
+    throw new Error('DSH authentication failed; paste the current dsh web startup URL')
+  }
+  // Strict authority binding: merely carrying the `dsh-auth-` prefix proves
+  // nothing. The name must be exactly the deterministic name for THIS
+  // endpoint's authority, or a substituted/malformed endpoint could pass the
+  // exchange and leave the browser with a cookie it can never use.
+  if (!inspectDshCookie(cookie, endpoint.host, expiresAt)) {
     throw new Error('DSH authentication failed; paste the current dsh web startup URL')
   }
   return { cookie, cleanUrl: new URL('/', endpoint), authority: endpoint.host, expiresAt }
@@ -79,12 +95,7 @@ export function inspectDshCookie(cookie: string, authority: string, expiresAt: n
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= now) return false
   const separator = cookie.indexOf('=')
   if (separator <= 0 || separator === cookie.length - 1 || cookie.includes(';')) return false
-  return cookie.slice(0, separator) === cookieName(authority)
-}
-
-function cookieName(authority: string): string {
-  const digest = createHash('sha256').update(authority).digest('base64url')
-  return COOKIE_PREFIX + digest
+  return cookie.slice(0, separator) === dshCookieName(authority)
 }
 
 function cookieExpiry(rawCookie: string, now = Date.now()): number | undefined {

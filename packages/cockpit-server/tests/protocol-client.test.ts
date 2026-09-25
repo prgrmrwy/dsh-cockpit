@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { exchangeDshLaunchToken, parseDshLaunchUrl } from '../src/connectivity/dsh-auth.js'
+import { dshCookieName, exchangeDshLaunchToken, parseDshLaunchUrl } from '../src/connectivity/dsh-auth.js'
 import { createDeviceProtocol, HttpStatusError, TypertClient, TypertEventStream } from '../src/connectivity/protocol-client.js'
 
 class FakeSocket extends EventEmitter {
@@ -17,7 +16,7 @@ function response(body: unknown, status = 200, headers: Record<string, string> =
 
 const authChallenge = 'dsh web authentication required; reopen the URL printed by dsh web.'
 const endpoint = new URL('http://127.0.0.1:3081')
-const cookieName = 'dsh-auth-' + createHash('sha256').update(endpoint.host).digest('base64url')
+const cookieName = dshCookieName(endpoint.host)
 const persistedCookie = { cookie: cookieName + '=persisted', authority: endpoint.host, expiresAt: Date.now() + 60_000 }
 
 function sessionListResponse(init?: RequestInit): Response {
@@ -36,10 +35,10 @@ describe('DSH 0.1.2 authentication', () => {
   it('exchanges the launch token without following redirect and extracts only the signed cookie', async () => {
     const fetcher = vi.fn(async () => response('', 303, {
       location: '/',
-      'set-cookie': 'dsh-auth-authority=signed; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict',
+      'set-cookie': cookieName + '=signed; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict',
     })) as unknown as typeof fetch
     await expect(exchangeDshLaunchToken(new URL('http://127.0.0.1:3081'), 'abcdefghijklmnop', { fetch: fetcher }))
-      .resolves.toEqual(expect.objectContaining({ cookie: 'dsh-auth-authority=signed', cleanUrl: new URL('http://127.0.0.1:3081/'), authority: '127.0.0.1:3081' }))
+      .resolves.toEqual(expect.objectContaining({ cookie: cookieName + '=signed', cleanUrl: new URL('http://127.0.0.1:3081/'), authority: '127.0.0.1:3081' }))
     expect(fetcher).toHaveBeenCalledWith(new URL('http://127.0.0.1:3081/?token=abcdefghijklmnop'), expect.objectContaining({ redirect: 'manual' }))
   })
 })
@@ -62,7 +61,7 @@ describe('protocol classification fixtures', () => {
         const target = String(url)
         if (target.endsWith('/api/host.describe')) return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
         if (target === 'http://127.0.0.1:3081/') return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
-        if (target.includes('/?token=')) return response('', 303, { location: '/', 'set-cookie': 'dsh-auth-authority=signed; Max-Age=2592000; HttpOnly' })
+        if (target.includes('/?token=')) return response('', 303, { location: '/', 'set-cookie': cookieName + '=signed; Max-Age=2592000; HttpOnly' })
         if (target.endsWith('/api/session/list')) {
           const rpcId = JSON.parse(String(init?.body)).rpcId
           return response({ type: 'server-response', rpcId, result: { ok: true, value: { items: [] } } })

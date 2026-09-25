@@ -3,14 +3,25 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Logger } from '@nestjs/common'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceEventsService } from '../src/connectivity/device-events.service.js'
+import { dshCookieName, exchangeDshLaunchToken } from '../src/connectivity/dsh-auth.js'
 
 const probeSshIdentity = vi.fn()
 const validateSshAlias = vi.fn((alias: string) => alias)
 const streamInstances: FakeDualEventStream[] = []
 
+/** rc.2 classification stand-in. On by default so existing rc.2 suites keep
+ * their behaviour; a typert fixture turns it OFF, because a probe that succeeds
+ * classifies the device as rc.2 and never reaches the typert path at all. */
+const rc2 = { available: true }
+/** The stream handed to the lifecycle for the most recent typert fixture. */
+let lastProtocolStream: { readonly disposed: boolean } | undefined
+
 class FakeRc2Client {
   constructor(readonly options: { endpoint: URL }) {}
-  async probe() { return { ok: true, state: 'READY' as const, diagnostic: 'ok' } }
+  async probe() {
+    if (!rc2.available) return { ok: false, state: 'DSH_UNAVAILABLE' as const, diagnostic: 'not an rc.2 endpoint' }
+    return { ok: true, state: 'READY' as const, diagnostic: 'ok' }
+  }
   async listSessions() { return [] }
   async listWorkspaces() { return { items: [], archivedSessionIds: [] } }
 }
@@ -29,6 +40,16 @@ vi.mock('../src/connectivity/ssh.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../src/connectivity/ssh.js')>()
   return { ...actual, probeSshIdentity, validateSshAlias }
 })
+
+const discoverLocalDshLaunchToken = vi.fn()
+const discoverRemoteDshLaunchToken = vi.fn()
+
+/** Discovery reads real logs over the real filesystem/SSH; every workbench test
+ * drives it explicitly so "did the server read discovery logs?" is assertable. */
+vi.mock('../src/connectivity/dsh-auth-discovery.js', () => ({
+  discoverLocalDshLaunchToken,
+  discoverRemoteDshLaunchToken,
+}))
 
 vi.mock('../src/connectivity/rc2-client.js', () => ({
   Rc2Client: FakeRc2Client,
@@ -117,6 +138,32 @@ class FakeRegistry {
     this.localPortWrites.push([deviceId, localPort])
     this.records = this.records.map(record => (record.deviceId === deviceId ? { ...record, localPort } : record))
   }
+
+  /** Mirrors the real registry's compare-and-swap, including the generation
+   * fence and the discovery-consent requirement, so tests exercise the same
+   * commit semantics the production path relies on. */
+  async mutateDevice(deviceId: string, update: (current: DeviceRecord) => DeviceRecord | undefined): Promise<DeviceRecord | undefined> {
+    const current = this.records.find(record => record.deviceId === deviceId)
+    if (current === undefined) return undefined
+    const next = update(current)
+    if (next === undefined || next === current) return current
+    this.records = this.records.map(record => (record.deviceId === deviceId ? next : record))
+    return next
+  }
+  async commitRecoveredAuth(deviceId: string, expectedGeneration: number, auth: NonNullable<DeviceRecord['dshAuth']>, requireDiscovery = false): Promise<DeviceRecord | undefined> {
+    const current = this.records.find(record => record.deviceId === deviceId)
+    if (current === undefined || !current.enabled || current.dshAuth?.generation !== expectedGeneration) return undefined
+    if (requireDiscovery && current.dshAuth.autoDiscovery !== 'ohmydsh-log') return undefined
+    const { dshLaunchToken: _legacy, ...withoutLegacy } = current
+    const committed: DeviceRecord = {
+      ...withoutLegacy,
+      ...(auth.launchToken === undefined ? {} : { dshLaunchToken: auth.launchToken }),
+      dshAuth: auth,
+    }
+    this.records = this.records.map(record => (record.deviceId === deviceId ? committed : record))
+    this.saves.push([...this.records])
+    return committed
+  }
 }
 
 async function serviceFor(records: readonly DeviceRecord[]) {
@@ -132,14 +179,135 @@ async function serviceFor(records: readonly DeviceRecord[]) {
   return { service, registry, published }
 }
 
+/**
+ * A typert device that reaches READY, plus the two independent fetch seams the
+ * workbench path needs:
+ *
+ * - `globalThis.fetch` serves the CONNECTION layer, which builds real
+ *   `TypertClient`s internally and therefore always uses the global fetch.
+ * - the injected `workbenchFetch` serves token VALIDATION in the workbench path,
+ *   so a test can make validation succeed, reject or fail without also
+ *   disturbing the live connection.
+ *
+ * Discovery is mocked module-wide, so `discoveryCalls` is the authoritative
+ * answer to "did this launch read DSH logs?".
+ */
+async function typertServiceFor(options: {
+  readonly deviceId?: string
+  readonly auth?: DeviceRecord['dshAuth']
+  readonly enabled?: boolean
+  readonly validation?: (url: string, init?: RequestInit) => Response | Promise<Response>
+}) {
+  const deviceId = options.deviceId ?? 'a'
+  const port = 51_777
+  tunnel.established = true
+  // A REAL typert device: rc.2 classification must fail, otherwise the typert
+  // authentication path is never reached.
+  rc2.available = false
+  const records = [remote(deviceId, 0, {
+    enabled: options.enabled ?? true,
+    localPort: port,
+    ...(options.auth === undefined ? {} : { dshAuth: options.auth }),
+  })]
+  const registry = new FakeRegistry(records)
+  const events = new DeviceEventsService()
+  const workbenchFetch = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = String(input)
+    if (options.validation !== undefined) return await options.validation(url, init)
+    if (!url.includes('?token=')) return challenge()
+    return mintedCookie(new URL(url).searchParams.get('token') ?? 'unknown')
+  }) as unknown as typeof fetch
+  globalThis.fetch = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const url = String(input)
+    if (url.endsWith('/api/session/list')) {
+      const rpcId = JSON.parse(String(init?.body)).rpcId
+      return json({ type: 'server-response', rpcId, result: { ok: true, value: { items: [] } } })
+    }
+    if (url.endsWith('/api/workspace/list')) {
+      const rpcId = JSON.parse(String(init?.body)).rpcId
+      return json({ type: 'server-response', rpcId, result: { ok: true, value: { items: [], archivedSessionIds: [] } } })
+    }
+    // rc.2 classification AND the DSH root probe both land here.
+    return challenge()
+  }) as unknown as typeof fetch
+  const service = new ConnectivityService(registry as never, events, {
+    fetch: workbenchFetch,
+    // A typert handshake needs a real WebSocket against the device; the fixture
+    // models an ALREADY-READY typert device, which is exactly the scenario this
+    // change is about (server cookie healthy, browser still needs a token).
+    createProtocol: async (endpoint, record) => {
+      const auth = record.dshAuth
+      return {
+        kind: 'typert' as const,
+        client: {
+          kind: 'typert' as const,
+          probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'typert ok' }),
+          listSessions: async () => [],
+          listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+        },
+        stream: (() => {
+          const stream = {
+            disposed: false,
+            on() { return this },
+            off() { return this },
+            open: async () => {},
+            dispose() { stream.disposed = true },
+          }
+          lastProtocolStream = stream
+          return stream
+        })(),
+        // Mirror the record EXACTLY (including the expiry): a fabricated value
+        // makes onAuthAccepted see a change and commit a new generation on every
+        // connect, which would silently invalidate the generation assertions.
+        ...(auth === undefined ? {} : {
+          auth: {
+            ...(auth.launchToken === undefined ? {} : { launchToken: auth.launchToken }),
+            ...(auth.serverCookie === undefined ? {} : { cookie: auth.serverCookie }),
+            ...(auth.cookieAuthority === undefined ? { authority: endpoint.host } : { authority: auth.cookieAuthority }),
+            ...(auth.cookieExpiresAt === undefined ? {} : { expiresAt: auth.cookieExpiresAt }),
+          },
+        }),
+      }
+    },
+  })
+  for (let attempt = 0; attempt < 200 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 5))
+  }
+  if ((options.enabled ?? true) && service.statuses()[0]?.state !== 'READY') {
+    throw new Error(`fixture never reached READY: ${JSON.stringify(service.statuses()[0])}`)
+  }
+  return { service, registry, workbenchFetch, deviceId, port }
+}
+
+const AUTH_CHALLENGE = 'dsh web authentication required; reopen the URL printed by dsh web.'
+const challenge = (): Response => new Response(AUTH_CHALLENGE, { status: 401 })
+const json = (body: unknown): Response => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+const exchangeRejected = (): Response => new Response('', { status: 401 })
+const mintedCookie = (token: string, authority = '127.0.0.1:51777'): Response => new Response('', {
+  status: 303,
+  headers: { location: '/', 'set-cookie': `${dshCookieName(authority)}=minted-${token}; Max-Age=2592000; Path=/; HttpOnly` },
+})
+
+async function withGlobalFetch<T>(run: () => Promise<T>): Promise<T> {
+  const original = globalThis.fetch
+  try {
+    return await run()
+  } finally {
+    globalThis.fetch = original
+  }
+}
+
 beforeEach(() => {
   probeSshIdentity.mockReset()
   validateSshAlias.mockClear()
+  discoverLocalDshLaunchToken.mockReset()
+  discoverRemoteDshLaunchToken.mockReset()
   streamInstances.length = 0
   takenPorts.clear()
   tunnelConnects.length = 0
   nextFreshPort = 51000
   tunnel.established = false
+  rc2.available = true
 })
 
 describe('connectivity device updates', () => {
@@ -658,3 +826,364 @@ describe('publishable port registration and publishing', () => {
     await service.onApplicationShutdown()
   })
 })
+
+/** Browser workbench start-up. The whole point of this change: a device can be
+ * READY on the server's own cookie while the browser still needs a CURRENT
+ * token, so the stored token is validated and only a rejected one may trigger
+ * the (already consented) bounded discovery. */
+describe('workbench launch authentication for a fresh browser', () => {
+  it('validates a current repeatable token before issuing a new-browser launch URL', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'current-token-abcdef', serverCookie: 'server-cookie',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 3,
+    }
+    await withGlobalFetch(async () => {
+      const { service, workbenchFetch } = await typertServiceFor({ auth })
+      const launch = await service.workbenchLaunch('a')
+
+      expect(launch.url).toBe('http://127.0.0.1:51777/?token=current-token-abcdef')
+      expect(launch.authGeneration).toBe(3)
+      // Validation must not commit: every exchange mints a DIFFERENT cookie, so
+      // writing one back would bump the generation on every single launch.
+      expect(service.statuses()[0]).toMatchObject({ dshAuthGeneration: 3 })
+      expect(discoverLocalDshLaunchToken).not.toHaveBeenCalled()
+      expect(discoverRemoteDshLaunchToken).not.toHaveBeenCalled()
+      const validated = workbenchFetch.mock.calls.map(([url]) => String(url))
+      expect(validated.filter(url => url.includes('?token='))).toHaveLength(1)
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('discovers validates and commits a current token for an authorized browser launch', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg', serverCookie: 'server-cookie',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 4,
+    }
+    discoverRemoteDshLaunchToken.mockResolvedValue({ ok: true, token: 'fresh-token-abcdefg' })
+    await withGlobalFetch(async () => {
+      const { service, registry } = await typertServiceFor({
+        auth,
+        // The stored (stale) token is the only one the current DSH process rejects.
+        validation: (url) => {
+          if (!url.includes('?token=')) return challenge()
+          return url.includes('stale-token-abcdefg') ? exchangeRejected() : mintedCookie('fresh-token-abcdefg')
+        },
+      })
+
+      const launch = await service.workbenchLaunch('a')
+
+      expect(launch.url).toBe('http://127.0.0.1:51777/?token=fresh-token-abcdefg')
+      expect(launch.authGeneration).toBe(5)
+      expect(discoverRemoteDshLaunchToken).toHaveBeenCalledTimes(1)
+      const record = registry.records.find(candidate => candidate.deviceId === 'a')!
+      expect(record.dshAuth).toMatchObject({ launchToken: 'fresh-token-abcdefg', generation: 5 })
+      expect(service.statuses()[0]).toMatchObject({ dshAuthGeneration: 5 })
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('never invokes local or remote discovery when auto recovery is disabled', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 2,
+    }
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({
+        auth,
+        validation: (url) => url.includes('?token=') ? exchangeRejected() : challenge(),
+      })
+
+      await expect(service.workbenchLaunch('a')).rejects.toMatchObject({ code: 'workbench-auth-required' })
+      expect(discoverLocalDshLaunchToken).not.toHaveBeenCalled()
+      expect(discoverRemoteDshLaunchToken).not.toHaveBeenCalled()
+      expect(service.statuses()[0]).toMatchObject({ dshAuthGeneration: 2 })
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('returns a stable redacted auth-required result when no current token can be obtained', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 6,
+    }
+    discoverRemoteDshLaunchToken.mockResolvedValue({ ok: false, reason: 'source-unavailable' })
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({
+        auth,
+        validation: (url) => url.includes('?token=') ? exchangeRejected() : challenge(),
+      })
+
+      const failure = await service.workbenchLaunch('a').catch((cause: unknown) => cause as Error)
+      expect(failure).toMatchObject({ code: 'workbench-auth-required' })
+      expect(String(failure.message)).not.toContain('stale-token-abcdefg')
+      expect(String(failure.message)).not.toContain('source-unavailable')
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('recovers browser launch auth without disturbing the healthy server connection', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg', serverCookie: 'server-cookie',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 7,
+    }
+    discoverRemoteDshLaunchToken.mockResolvedValue({ ok: true, token: 'fresh-token-abcdefg' })
+    await withGlobalFetch(async () => {
+      const { service, registry } = await typertServiceFor({
+        auth,
+        validation: (url) => {
+          if (!url.includes('?token=')) return challenge()
+          return url.includes('stale-token-abcdefg') ? exchangeRejected() : mintedCookie('fresh-token-abcdefg')
+        },
+      })
+      const streamBefore = lastProtocolStream!
+      const tunnelConnectsBefore = tunnelConnects.length
+
+      await service.workbenchLaunch('a')
+
+      // Browser-side recovery is its own consumer: the live stream, tunnel and
+      // READY state of the server connection must be untouched.
+      expect(streamBefore).toBeDefined()
+      expect(streamBefore.disposed).toBe(false)
+      expect(service.statuses()[0]).toMatchObject({ state: 'READY' })
+      expect(tunnelConnects.length).toBe(tunnelConnectsBefore)
+      expect(registry.records.find(candidate => candidate.deviceId === 'a')!.dshAuth).toMatchObject({
+        // The registry stores the full `name=value` pair, not the bare value.
+        serverCookie: dshCookieName('127.0.0.1:51777') + '=minted-fresh-token-abcdefg',
+        launchToken: 'fresh-token-abcdefg',
+      })
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('returns the clean rc2 endpoint without token validation or discovery', async () => {
+    tunnel.established = true
+    const { service, registry } = await serviceFor([
+      remote('rc2', 0, { enabled: true, localPort: 51_888, dshAuth: {
+        version: 1, launchToken: 'ignored-token-abcdef', autoDiscovery: 'ohmydsh-log', updatedAt: 0, generation: 3,
+      } }),
+    ])
+    for (let attempt = 0; attempt < 200 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(service.statuses()[0]).toMatchObject({ state: 'READY' })
+
+    const launch = await service.workbenchLaunch('rc2')
+
+    expect(launch).toEqual({ url: 'http://127.0.0.1:51888/', authGeneration: 3 })
+    expect(discoverLocalDshLaunchToken).not.toHaveBeenCalled()
+    expect(discoverRemoteDshLaunchToken).not.toHaveBeenCalled()
+    expect(registry.saves).toHaveLength(0)
+    await service.onApplicationShutdown()
+  })
+
+  it('never reuses an old-authority cookie after the workbench endpoint changes', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'current-token-abcdef', serverCookie: 'old-authority-cookie',
+      cookieAuthority: '127.0.0.1:50000', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 8,
+    }
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({
+        auth,
+        // The endpoint's own authority is 127.0.0.1:51777, but the minted cookie
+        // claims the OLD authority: that must never be accepted as validation.
+        validation: (url) => url.includes('?token=') ? mintedCookie('current-token-abcdef', '127.0.0.1:50000') : challenge(),
+      })
+
+      await expect(service.workbenchLaunch('a')).rejects.toMatchObject({ code: 'workbench-unavailable' })
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('projects auth status without token cookie or reversible derivatives', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'secret-token-abcdefg', serverCookie: 'secret-cookie-value',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 9,
+    }
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({ auth })
+      const serialized = JSON.stringify(service.statuses())
+
+      expect(serialized).not.toContain('secret-token-abcdefg')
+      expect(serialized).not.toContain('secret-cookie-value')
+      expect(service.statuses()[0]).toMatchObject({ dshAuthConfigured: true, dshAuthAutoDiscovery: true, dshAuthGeneration: 9 })
+      expect(service.statuses()[0]).not.toHaveProperty('dshAuth')
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('launches a standard remote dsh web without requiring a bridge', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'current-token-abcdef', autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 1,
+    }
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({ auth })
+      // No bridge hello, no capability, no plugin: a plain standard `dsh web`.
+      const launch = await service.workbenchLaunch('a')
+      expect(launch.url).toContain('?token=current-token-abcdef')
+      expect(service.statuses()[0]).not.toHaveProperty('bridgeSeenAt')
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('drops a workbench launch result after its connection tuple becomes stale', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'current-token-abcdef', autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 1,
+    }
+    await withGlobalFetch(async () => {
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const { service } = await typertServiceFor({
+        auth,
+        validation: async url => {
+          if (!url.includes('?token=')) return challenge()
+          await gate
+          return mintedCookie('current-token-abcdef')
+        },
+      })
+
+      const pending = service.workbenchLaunch('a')
+      // Disabling the device supersedes the connection generation while the
+      // validation is still in flight.
+      await service.updateDevice('a', { enabled: false })
+      release()
+
+      await expect(pending).rejects.toMatchObject({ code: 'workbench-launch-stale' })
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('prevents in-flight validation or discovery from restoring replaced or deleted auth', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 2,
+    }
+    discoverRemoteDshLaunchToken.mockResolvedValue({ ok: true, token: 'fresh-token-abcdefg' })
+    await withGlobalFetch(async () => {
+      let release!: () => void
+      const gate = new Promise<void>(resolve => { release = resolve })
+      const { service, registry } = await typertServiceFor({
+        auth,
+        validation: async url => {
+          if (!url.includes('?token=')) return challenge()
+          if (url.includes('stale-token-abcdefg')) return exchangeRejected()
+          await gate
+          return mintedCookie('fresh-token-abcdefg')
+        },
+      })
+
+      const pending = service.workbenchLaunch('a')
+      for (let attempt = 0; attempt < 200 && discoverRemoteDshLaunchToken.mock.calls.length === 0; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5))
+      }
+      // The user replaces the material while recovery is in flight.
+      const userAuth = {
+        version: 1 as const, launchToken: 'user-supplied-abcdefg',
+        cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+        updatedAt: Date.now(), generation: 3,
+      }
+      await registry.mutateDevice('a', current => ({ ...current, dshAuth: userAuth }))
+      release()
+
+      await expect(pending).rejects.toMatchObject({ code: 'workbench-launch-stale' })
+      expect(registry.records.find(candidate => candidate.deviceId === 'a')!.dshAuth?.launchToken).toBe('user-supplied-abcdefg')
+      await service.onApplicationShutdown()
+    })
+  })
+})
+
+  it('serves two fresh browsers the same validated current token while the server cookie stays valid', async () => {
+    // The headline scenario of this change, end to end and with no cookie relay:
+    // the server's own cookie keeps the device READY, and two brand-new browsers
+    // each obtain their OWN authority-bound cookie from the SAME validated
+    // current token. Nothing about the second browser requires a new discovery or
+    // a generation bump, because the token is repeatable for the supported
+    // typert contract — and the server never hands its own cookie over.
+    const auth = {
+      version: 1 as const, launchToken: 'current-token-abcdef', serverCookie: 'server-cookie',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+      updatedAt: 0, generation: 3,
+    }
+    await withGlobalFetch(async () => {
+      const { service, workbenchFetch } = await typertServiceFor({ auth })
+
+      const first = await service.workbenchLaunch('a')
+      const second = await service.workbenchLaunch('a')
+
+      expect(first).toEqual({ url: 'http://127.0.0.1:51777/?token=current-token-abcdef', authGeneration: 3 })
+      expect(second).toEqual(first)
+      // No discovery, no generation churn: the server cookie is still the one
+      // the connection layer keeps using.
+      expect(discoverRemoteDshLaunchToken).not.toHaveBeenCalled()
+      expect(service.statuses()[0]).toMatchObject({ state: 'READY', dshAuthGeneration: 3 })
+
+      // Each browser then performs its OWN official exchange with that token.
+      // The server's validation minted its own cookie and discarded it, so the
+      // two browser cookie jars are independent and both valid.
+      const token = new URL(first.url).searchParams.get('token')!
+      const browserJar = async (label: string) => {
+        const calls: string[] = []
+        const session = await exchangeDshLaunchToken(
+          new URL('http://127.0.0.1:51777'),
+          token,
+          {
+            fetch: (async (input: Parameters<typeof fetch>[0]) => {
+              calls.push(String(input))
+              return mintedCookie(label)
+            }) as unknown as typeof fetch,
+          },
+        )
+        return { session, calls }
+      }
+      const browserA = await browserJar('browser-a')
+      const browserB = await browserJar('browser-b')
+
+      expect(browserA.calls).toEqual(['http://127.0.0.1:51777/?token=current-token-abcdef'])
+      expect(browserB.calls).toEqual(browserA.calls)
+      expect(browserA.session.cookie).toBe(dshCookieName('127.0.0.1:51777') + '=minted-browser-a')
+      expect(browserB.session.cookie).toBe(dshCookieName('127.0.0.1:51777') + '=minted-browser-b')
+      expect(browserA.session.cookie).not.toBe(browserB.session.cookie)
+      // The server's persisted cookie is whatever the registry already held; it
+      // was never relayed, replaced or used to satisfy a browser.
+      expect(workbenchFetch.mock.calls.some(([url]) => String(url).includes('minted-browser-a'))).toBe(false)
+      await service.onApplicationShutdown()
+    })
+  })
+
+  it('fails closed to manual recovery without scanning or exposing discovery output', async () => {
+    const auth = {
+      version: 1 as const, launchToken: 'stale-token-abcdefg',
+      cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: 0, generation: 5,
+    }
+    // A real bounded-reader failure, with hostile text that must never surface.
+    discoverRemoteDshLaunchToken.mockResolvedValue({
+      ok: false,
+      reason: 'invalid-output',
+      diagnostic: 'token=leaked-secret-abcdef https://evil.test/',
+    } as never)
+    await withGlobalFetch(async () => {
+      const { service } = await typertServiceFor({
+        auth,
+        validation: url => url.includes('?token=') ? exchangeRejected() : challenge(),
+      })
+
+      const failure = await service.workbenchLaunch('a').catch((cause: unknown) => cause as Error)
+      expect(failure).toMatchObject({ code: 'workbench-auth-required' })
+      expect(String(failure.message)).not.toMatch(/leaked-secret|evil\.test|invalid-output/u)
+      // Exactly one bounded reader, with the registered port — never a scan.
+      expect(discoverRemoteDshLaunchToken).toHaveBeenCalledTimes(1)
+      expect(discoverRemoteDshLaunchToken.mock.calls[0]?.[0]).toBe('a-alias')
+      expect(discoverRemoteDshLaunchToken.mock.calls[0]?.[1]).toBe(3080)
+      await service.onApplicationShutdown()
+    })
+  })

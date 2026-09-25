@@ -6,6 +6,8 @@ import { Workbench } from '../src/workbench/Workbench.jsx'
 
 afterEach(cleanup)
 
+/** Baseline READY typert-shaped device. Individual tests override only the
+ * field under test, so a fixture can never silently drop required facts. */
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', sshAlias: 'vm-a', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
@@ -441,5 +443,148 @@ describe('workbench', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+/** Fresh-browser authentication behaviour.
+ *
+ * The parent sits in front of a CROSS-ORIGIN iframe, so it can never read the
+ * exchange result: an error page fires `load` exactly like a success does. These
+ * tests therefore pin down only what the parent can actually guarantee — a
+ * bounded number of navigations, a bounded lifetime for its own token
+ * reference, and honest wording — instead of pretending to observe success. */
+describe('workbench launch authentication', () => {
+  const authFacts = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => device({
+    dshAuthConfigured: true, dshAuthState: 'ready', dshAuthGeneration: 1, ...overrides,
+  })
+
+  it('performs exactly one clean-endpoint navigation after a token iframe load', async () => {
+    const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
+    const { container } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+
+    // The tokenized navigation is observable through the phase, which does not
+    // depend on how long the window stays open in a given DOM implementation.
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('clean'))
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    expect(frame.getAttribute('src')).not.toContain('token')
+
+    // A later load (the child's own 303 landing, or a repeat) must not add a
+    // second navigation, a re-request or a reload loop.
+    frame.dispatchEvent(new Event('load'))
+    frame.dispatchEvent(new Event('load'))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    expect(launch).toHaveBeenCalledTimes(1)
+  })
+
+  it('clears parent token references at deadline without replacing the in-flight iframe src', async () => {
+    // The deadline is a BACKSTOP for a navigation that never reports load, so it
+    // is asserted on the navigation itself: whatever the deadline does, it must
+    // not reassign the in-flight src (that would abort a possibly-working
+    // navigation) and it must not start a retry loop.
+    const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
+    const { container } = render(
+      <Workbench device={authFacts()} requestWorkbenchLaunch={launch} navigationDeadlineMs={15} />,
+    )
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+
+    // Let the deadline fire.
+    await new Promise(resolve => setTimeout(resolve, 60))
+
+    // The tokenized navigation was never replaced by a second navigation, and
+    // no retry/loop started: the parent still holds exactly the one navigation
+    // it was allowed to start.
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(frame.getAttribute('src') ?? '').toMatch(/\/\?token=opaque$|^http:\/\/127\.0\.0\.1:51688\/$/u)
+  })
+
+  it('does not retry a failed or unknown launch tuple until user retry or tuple change', async () => {
+    const launch = vi.fn()
+      .mockRejectedValueOnce(new Error('workbench authentication required'))
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=retried', authGeneration: 2 })
+    const { container, rerender } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(container.querySelector('[data-cockpit-auth="d1"]')).not.toBeNull())
+
+    // Re-renders, status pushes and load events must not create a retry loop.
+    rerender(<Workbench device={authFacts({ lastUpdatedAt: 1, diagnostic: 'still ready' })} requestWorkbenchLaunch={launch} />)
+    rerender(<Workbench device={authFacts({ lastUpdatedAt: 2, state: 'READY' })} requestWorkbenchLaunch={launch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    frame.dispatchEvent(new Event('load'))
+    expect(launch).toHaveBeenCalledTimes(1)
+
+    // An explicit user retry is the sanctioned way back.
+    const retry = container.querySelector('[data-cockpit-auth-retry="d1"]') as HTMLButtonElement
+    retry.click()
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(frame.getAttribute('src')).toContain('token=retried'))
+  })
+
+  it('renders recovery controls and never navigates when typert auth material is missing', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    const launch = vi.fn().mockRejectedValue(new ApiRequestError('workbench-auth-required', 'workbench authentication required', 424))
+    const { container } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+
+    await waitFor(() => expect(container.querySelector('[data-cockpit-auth="d1"]')).not.toBeNull())
+    const overlay = container.querySelector('[data-cockpit-auth="d1"]')!
+    expect(overlay.getAttribute('data-cockpit-auth-code')).toBe('workbench-auth-required')
+    expect(overlay.querySelector('button')).not.toBeNull()
+    // No bare 401 is ever presented, and no tokenized src was assigned.
+    expect(overlay.textContent).not.toMatch(/401|authentication required/u)
+    expect(container.querySelector('iframe')!.getAttribute('src')).not.toContain('token')
+  })
+
+  it('shows an actionable auth overlay without creating a token iframe when recovery is unavailable', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    const launch = vi.fn().mockRejectedValue(new ApiRequestError('workbench-auth-required', 'internal: discovery /home/me/.dsh/dsh.log failed', 424))
+    const { container } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+
+    await waitFor(() => expect(container.querySelector('[data-cockpit-auth="d1"]')).not.toBeNull())
+    const overlay = container.querySelector('[data-cockpit-auth="d1"]')!
+    // Fixed wording per stable code: a server-side diagnostic must never be
+    // rendered, because it can name paths, endpoints or log content.
+    expect(overlay.textContent).toContain('需要当前认证信息')
+    expect(overlay.textContent).not.toMatch(/dsh\.log|discovery|internal/u)
+    const retry = overlay.querySelector('button') as HTMLButtonElement
+    expect(retry.textContent).toBe('重试')
+  })
+
+  it('launches once for a higher auth generation across either load cleanup path', async () => {
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=recovered', authGeneration: 2 })
+    const { container, rerender } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('clean'))
+
+    // A silent server-side re-issue (cookie renewed, generation bumped) is a new
+    // tuple: exactly one more tokenized navigation for it, and nothing more.
+    rerender(<Workbench device={authFacts({ dshAuthGeneration: 2, lastUpdatedAt: 1 })} requestWorkbenchLaunch={launch} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(frame.getAttribute('src')).toContain('token=recovered'))
+
+    // Neither a re-render nor a load event may launch that generation again.
+    rerender(<Workbench device={authFacts({ dshAuthGeneration: 2, lastUpdatedAt: 2, diagnostic: 'unchanged' })} requestWorkbenchLaunch={launch} />)
+    frame.dispatchEvent(new Event('load'))
+    expect(launch).toHaveBeenCalledTimes(2)
+  })
+
+  it('distinguishes observable pre-launch failure from unobservable post-launch outcome', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    const failing = vi.fn().mockRejectedValue(new ApiRequestError('workbench-unavailable', 'device is not ready', 503))
+    const { container, rerender } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={failing} />)
+    await waitFor(() => expect(container.querySelector('[data-cockpit-auth-code="workbench-unavailable"]')).not.toBeNull())
+
+    // Same device, but this time the URL is issued: the parent now KNOWS it
+    // issued a validated URL and KNOWS nothing more.
+    const succeeding = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
+    rerender(<Workbench device={authFacts({ deviceId: 'd1', enabled: true })} requestWorkbenchLaunch={succeeding} />)
+    const retry = container.querySelector('[data-cockpit-auth-retry="d1"]') as HTMLButtonElement
+    retry.click()
+    await waitFor(() => expect(container.querySelector('iframe')!.getAttribute('data-workbench-phase')).toBe('tokenized'))
+    // The failure overlay is gone, and nothing claims success.
+    expect(container.querySelector('[data-cockpit-auth="d1"]')).toBeNull()
   })
 })

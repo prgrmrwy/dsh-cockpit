@@ -1,19 +1,35 @@
-import { Inject, Injectable, Logger, OnApplicationShutdown } from '@nestjs/common'
+import { Inject, Injectable, Logger, Optional, OnApplicationShutdown } from '@nestjs/common'
 import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
-import { DeviceLifecycle } from './device-lifecycle.js'
+import { DeviceLifecycle, type DeviceLifecycleOptions } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
 import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { probeDshCarrier } from './protocol-client.js'
-import { dshIframeLaunchUrl, parseDshLaunchUrl } from './dsh-auth.js'
+import { parseDshLaunchUrl } from './dsh-auth.js'
 import { discoverLocalDshLaunchToken, discoverRemoteDshLaunchToken } from './dsh-auth-discovery.js'
+import { WorkbenchLaunchError, type WorkbenchLaunchSnapshot } from './workbench-launch.js'
+import { WorkbenchLaunchCoordinator } from './workbench-launch-coordinator.js'
 import { resolveSshExecutable } from '../runtime/config.js'
 import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
 import { BridgeRejectionLog, type BridgeRejectionDecision } from './bridge-rejection-log.js'
 
 /** Per-device cap on additional forwards. */
 const MAX_PUBLISHABLE_CHANNELS = 8
+
+/** Optional collaborators for ConnectivityService.
+ *
+ * Everything here is optional BY DESIGN: production resolves the capability
+ * service from the module and constructs the rest itself, while tests inject a
+ * fake protocol factory, a fetch that drives token validation, or a coordinator
+ * with a short window. They live in one parameter object so Nest has exactly one
+ * dependency to resolve (and one it can skip). */
+export interface ConnectivityServiceSeams {
+  readonly capabilities?: BridgeCapabilityService
+  readonly fetch?: typeof fetch
+  readonly launchCoordinator?: WorkbenchLaunchCoordinator
+  readonly createProtocol?: DeviceLifecycleOptions['createProtocol']
+}
 
 @Injectable()
 export class ConnectivityService implements OnApplicationShutdown {
@@ -33,15 +49,32 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #capabilities: BridgeCapabilityService
   readonly #authDiscoveryInFlight = new Map<string, Promise<string | undefined>>()
   readonly #authDiscoveryAttemptedAt = new Map<string, number>()
+  /** Bounded validation/discovery coordination for browser workbench launch. */
+  readonly #launchCoordinator: WorkbenchLaunchCoordinator
+  /** Optional fetch seam: workbench validation must be drivable in tests. */
+  readonly #fetchImpl: typeof fetch | undefined
+  /** Protocol-factory seam, mirroring DeviceLifecycle's own option: a typert
+   * fixture needs a real handshake otherwise, which a unit test cannot host. */
+  readonly #createProtocol: DeviceLifecycleOptions['createProtocol']
 
   constructor(
     @Inject(DeviceRegistry) registry: DeviceRegistry,
     @Inject(DeviceEventsService) private readonly events: DeviceEventsService,
-    @Inject(BridgeCapabilityService) capabilities?: BridgeCapabilityService,
+    // ONE optional parameter object, for two reasons:
+    //  - Nest DI only sees the DECORATED parameters. An undecorated fourth
+    //    parameter (or a `@Inject()` token that resolves to bare `Object`) fails
+    //    resolution at boot — a failure unit tests cannot catch, because they
+    //    construct this service directly.
+    //  - The genuinely-optional test seams therefore have to travel inside the
+    //    parameter that Nest already knows how to omit.
+    @Optional() seams: ConnectivityServiceSeams = {},
   ) {
     this.#registry = registry
-    this.#capabilities = capabilities ?? new BridgeCapabilityService()
+    this.#capabilities = seams.capabilities ?? new BridgeCapabilityService()
     this.#sshExecutable = resolveSshExecutable()
+    this.#fetchImpl = seams.fetch
+    this.#createProtocol = seams.createProtocol
+    this.#launchCoordinator = seams.launchCoordinator ?? new WorkbenchLaunchCoordinator({ logger: this.#logger })
     this.#tunnels = new TunnelManager({
       sshExecutable: this.#sshExecutable,
       readinessProbe: probeDshCarrier,
@@ -60,6 +93,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = new DeviceLifecycle({
       record,
       tunnels: this.#tunnels,
+      ...(this.#createProtocol === undefined ? {} : { createProtocol: this.#createProtocol }),
       // Any lifecycle state change is pushed to the browser immediately; the
       // REST snapshot stays available for manual refresh.
       onFacts: () => { this.events.publish(this.statuses()) },
@@ -139,6 +173,9 @@ export class ConnectivityService implements OnApplicationShutdown {
   async #detach(deviceId: string): Promise<void> {
     const lifecycle = this.#lifecycles.get(deviceId)
     this.#lifecycles.delete(deviceId)
+    // A device that goes away must not leave a validation operation running:
+    // this is the ONLY owner allowed to abort shared work (see the coordinator).
+    this.#launchCoordinator.cancelDevice(deviceId)
     await lifecycle?.stop()
     // Publishable ports and their forwards are facts about a live device run;
     // lifecycle.stop() already disposes every tunnel of this device, so only
@@ -370,18 +407,99 @@ export class ConnectivityService implements OnApplicationShutdown {
     lifecycle.clearAllCompleted()
   }
 
-  /** Returns a one-shot tokenized iframe URL without exposing it in status. */
-  async workbenchLaunch(deviceId: string): Promise<{ url: string; authGeneration: number }> {
+  /** Returns a short-lived tokenized iframe URL.
+   *
+   * For typert, a stored launch token is only handed to the browser after the
+   * CURRENT endpoint has strictly validated it: DSH restarts replace the token
+   * while the persisted server cookie stays valid, so an unvalidated token is
+   * exactly what produced the raw `dsh web authentication required` page in a
+   * fresh browser. When the token is stale AND the device has explicitly
+   * authorized ohmydsh recovery, the same bounded, read-only discovery used for
+   * connection recovery supplies the current token, which is then validated and
+   * committed behind the auth-generation/compare-and-swap fence.
+   *
+   * Nothing here relays a DSH cookie to the browser: the target DSH sets its own
+   * authority-bound cookie during the iframe's own exchange. */
+  async workbenchLaunch(deviceId: string, signal?: AbortSignal): Promise<{ url: string; authGeneration: number }> {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     const facts = lifecycle.current()
-    if (facts.endpoint === undefined) throw new Error(`device ${deviceId} is not connected`)
-    if (lifecycle.protocolKind() === 'rc2') return { url: facts.endpoint, authGeneration: facts.dshAuthGeneration }
+    if (!facts.enabled) throw new Error(`device ${deviceId} is disabled`)
+    if (facts.endpoint === undefined) throw new WorkbenchLaunchError('workbench-unavailable', 'device is not connected')
+    if (facts.state !== 'READY' && facts.state !== 'DEGRADED') {
+      throw new WorkbenchLaunchError('workbench-unavailable', 'device is not ready')
+    }
+    const endpoint = new URL(facts.endpoint)
+    // rc.2 needs no browser-side authentication at all: loading the clean
+    // endpoint IS the workbench.
+    if (lifecycle.protocolKind() === 'rc2') return { url: endpoint.toString(), authGeneration: facts.dshAuthGeneration }
+
     const record = (await this.#registry.load()).find(candidate => candidate.deviceId === deviceId)
-    const url = dshIframeLaunchUrl(new URL(facts.endpoint), record?.dshAuth?.launchToken ?? record?.dshLaunchToken)
-    if (url === undefined) throw new Error('DSH authentication required; paste the current dsh web startup URL')
-    return { url, authGeneration: record?.dshAuth?.generation ?? facts.dshAuthGeneration }
+    if (record === undefined) throw new Error(`unknown device ${deviceId}`)
+    const snapshot: WorkbenchLaunchSnapshot = {
+      deviceId,
+      authority: endpoint.host,
+      authGeneration: record.dshAuth?.generation ?? facts.dshAuthGeneration,
+      connectionGeneration: lifecycle.connectionGeneration(),
+    }
+    const launchToken = record.dshAuth?.launchToken ?? record.dshLaunchToken
+    const discoveryAuthorized = record.dshAuth?.autoDiscovery === 'ohmydsh-log' && record.enabled
+    const outcome = await this.#launchCoordinator.launch(snapshot, endpoint, this.#doFetch(), {
+      ...(launchToken === undefined ? {} : { token: launchToken }),
+      discoveryAuthorized,
+      ...(discoveryAuthorized ? { discover: async () => await this.#discoverAuth(record, signal ?? new AbortController().signal) } : {}),
+      commit: async (target, token, session) => await this.#commitDiscoveredWorkbenchAuth(target, token, session),
+      ...(signal === undefined ? {} : { signal }),
+    })
+    if (!outcome.ok) throw new WorkbenchLaunchError(outcome.code, outcome.message)
+    this.#requireCurrentLaunch(snapshot, endpoint)
+    return { url: outcome.url, authGeneration: outcome.authGeneration }
   }
+
+  /** Post-async fence: a launch result belongs only to the exact tuple that
+   * asked for it. Endpoint drift, a superseded connection generation or a
+   * device that stopped being ready discards the result instead of navigating
+   * the browser to a URL from a previous life. */
+  #requireCurrentLaunch(snapshot: WorkbenchLaunchSnapshot, endpoint: URL): void {
+    const lifecycle = this.#lifecycles.get(snapshot.deviceId)
+    if (lifecycle === undefined) throw new WorkbenchLaunchError('workbench-launch-stale', 'workbench launch superseded')
+    const facts = lifecycle.current()
+    if (facts.endpoint === undefined || new URL(facts.endpoint).host !== endpoint.host) {
+      throw new WorkbenchLaunchError('workbench-launch-stale', 'workbench launch superseded')
+    }
+    if (lifecycle.connectionGeneration() !== snapshot.connectionGeneration) {
+      throw new WorkbenchLaunchError('workbench-launch-stale', 'workbench launch superseded')
+    }
+    if (facts.state !== 'READY' && facts.state !== 'DEGRADED') {
+      throw new WorkbenchLaunchError('workbench-launch-stale', 'workbench launch superseded')
+    }
+  }
+
+  async #commitDiscoveredWorkbenchAuth(
+    snapshot: WorkbenchLaunchSnapshot,
+    launchToken: string,
+    session: { readonly cookie: string; readonly expiresAt: number },
+  ): Promise<number | undefined> {
+    const auth = {
+      version: 1 as const,
+      launchToken,
+      serverCookie: session.cookie,
+      cookieAuthority: snapshot.authority,
+      cookieExpiresAt: session.expiresAt,
+      autoDiscovery: 'ohmydsh-log' as const,
+      updatedAt: Date.now(),
+      generation: snapshot.authGeneration + 1,
+    }
+    const committed = await this.#registry.commitRecoveredAuth(snapshot.deviceId, snapshot.authGeneration, auth, true)
+    if (committed === undefined) return undefined
+    this.#lifecycles.get(snapshot.deviceId)?.updateRecord(committed)
+    this.events.publish(this.statuses())
+    return committed.dshAuth?.generation ?? auth.generation
+  }
+
+  /** The fetch used for workbench validation. Kept as a seam so tests can drive
+   * the DSH exchange without a live endpoint. */
+  #doFetch(): typeof fetch { return this.#fetchImpl ?? fetch }
 
   /** Issues a short-lived bridge capability after the shell (same-origin,
    * cookie-authenticated) has requested it for one of ITS devices. The
@@ -553,6 +671,7 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   async onApplicationShutdown(): Promise<void> {
+    for (const deviceId of this.#lifecycles.keys()) this.#launchCoordinator.cancelDevice(deviceId)
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     this.#publishablePorts.clear()
     this.#publishedChannels.clear()

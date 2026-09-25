@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Logge
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
+import { WorkbenchLaunchError } from '../connectivity/workbench-launch.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
@@ -69,12 +70,33 @@ export class DevicesController {
     }
   }
 
+  /** Returns the short-lived tokenized workbench URL.
+   *
+   * This response is the ONE place a current DSH launch token leaves the server
+   * for the browser, so it carries two extra gates beyond the global
+   * `cockpit_token` cookie:
+   *
+   * - Exact-Origin: `Origin` must equal the origin this server actually saw, so
+   *   another loopback page cannot read the tokenized JSON. Cookies are NOT
+   *   port-isolated and every `127.0.0.1` port is same-site, so the cookie alone
+   *   cannot express "the cockpit's own page". This mitigates browser-origin
+   *   CSRF/CORS reads ONLY; a local process that can issue its own HTTP requests
+   *   is inside the existing loopback trust boundary and is not stopped here.
+   * - `no-store` + `no-referrer`: the body and any redirect derived from it must
+   *   never be cached or leak the token through a referrer. */
   @Post('devices/:deviceId/workbench-launch')
-  async workbenchLaunch(@Param('deviceId') deviceId: string): Promise<{ url: string; authGeneration: number }> {
+  async workbenchLaunch(
+    @Param('deviceId') deviceId: string,
+    @Req() request: import('express').Request,
+    @Res({ passthrough: true }) response: import('express').Response,
+  ): Promise<{ url: string; authGeneration: number }> {
+    requireExactCockpitOrigin(request)
+    response.setHeader('Cache-Control', 'no-store')
+    response.setHeader('Referrer-Policy', 'no-referrer')
     try {
-      return await this.connectivity.workbenchLaunch(decodeDeviceId(deviceId))
+      return await this.connectivity.workbenchLaunch(decodeDeviceId(deviceId), requestAbortSignal(request))
     } catch (cause) {
-      throw toHttp(cause)
+      throw toWorkbenchHttp(cause)
     }
   }
 
@@ -381,6 +403,78 @@ function requireLaunchUrl(value: unknown): string {
 }
 
 function toError(code: string, message: string): ApiError { return { code, message } }
+
+/** Stable HTTP mapping for the sensitive workbench-launch route. Every message
+ * is fixed text chosen here: an internal cause (fetch error, registry path, SSH
+ * diagnostic) must never reach the client, because it can carry endpoint or
+ * discovery detail. */
+function toWorkbenchHttp(cause: unknown): HttpException {
+  if (cause instanceof HttpException) return cause
+  if (cause instanceof WorkbenchLaunchError) {
+    switch (cause.code) {
+      case 'workbench-origin-forbidden':
+        return new HttpException(toError(cause.code, cause.message), HttpStatus.FORBIDDEN)
+      case 'workbench-launch-stale':
+        return new HttpException(toError(cause.code, cause.message), HttpStatus.CONFLICT)
+      case 'workbench-auth-required':
+        return new HttpException(toError(cause.code, cause.message), HttpStatus.FAILED_DEPENDENCY)
+      case 'workbench-unavailable':
+        return new HttpException(toError(cause.code, cause.message), HttpStatus.SERVICE_UNAVAILABLE)
+    }
+  }
+  if (cause instanceof Error && cause.name === 'AbortError') {
+    return new HttpException(toError('workbench-unavailable', 'workbench launch aborted'), HttpStatus.SERVICE_UNAVAILABLE)
+  }
+  return toHttp(cause)
+}
+
+/**
+ * The browser's own origin, derived ONLY from what this server observed.
+ *
+ * `Host` must be a bare `127.0.0.1:<port>` and is validated by re-serializing
+ * it as a URL. `Forwarded` / `X-Forwarded-*` are deliberately never read: this
+ * app does not enable `trust proxy`, so honouring them would let a caller
+ * rewrite the expected origin. Their mere presence is not an error — a matching
+ * raw `Origin`/`Host` pair still proceeds.
+ */
+export function exactCockpitOrigin(request: Pick<import('express').Request, 'headers' | 'protocol'>): string {
+  if (request.protocol !== 'http') throw originForbidden()
+  const host = request.headers.host
+  if (typeof host !== 'string' || host === '') throw originForbidden()
+  let expected: URL
+  try {
+    expected = new URL(`http://${host}`)
+  } catch {
+    throw originForbidden()
+  }
+  if (expected.protocol !== 'http:' || expected.hostname !== '127.0.0.1') throw originForbidden()
+  if (expected.host !== host || expected.pathname !== '/' || expected.search !== '' || expected.hash !== '') throw originForbidden()
+  return expected.origin
+}
+
+function requireExactCockpitOrigin(request: import('express').Request): void {
+  const raw = request.headers.origin
+  if (typeof raw !== 'string' || raw === '') throw originForbidden()
+  let presented: URL
+  try {
+    presented = new URL(raw)
+  } catch {
+    throw originForbidden()
+  }
+  if (presented.origin !== exactCockpitOrigin(request)) throw originForbidden()
+}
+
+function originForbidden(): HttpException {
+  return new HttpException(toError('workbench-origin-forbidden', 'workbench launch requires the cockpit origin'), HttpStatus.FORBIDDEN)
+}
+
+/** The requesting browser's own cancellation. A client that navigates away
+ * stops waiting; the shared validation keeps running for other callers. */
+function requestAbortSignal(request: import('express').Request): AbortSignal {
+  const controller = new AbortController()
+  request.on('close', () => { controller.abort(new Error('workbench launch request closed')) })
+  return controller.signal
+}
 
 function toHttp(cause: unknown): HttpException {
   // An already-shaped HttpException carries a deliberate status (e.g. 401 for

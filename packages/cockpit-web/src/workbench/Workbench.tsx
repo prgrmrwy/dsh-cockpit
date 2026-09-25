@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { BRIDGE_CONFIG_MESSAGE, CAPABILITY_EXPIRED_MESSAGE, DEVICE_ACTIVATED_MESSAGE, isValidSshAlias, type DeviceStatusFacts } from '@dsh-cockpit/shared'
+import { ApiRequestError } from '../api/client.js'
 
 interface BridgeCapabilityPayload {
   readonly capability: string
@@ -20,9 +21,23 @@ export interface WorkbenchProps {
   readonly requestBridgeCapability?: (deviceId: string) => Promise<BridgeCapabilityPayload>
   /** Supplies a one-shot tokenized root and the auth generation it represents. */
   readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string; authGeneration: number }>
+  /** Navigation deadline for the tokenized URL; test seam only. */
+  readonly navigationDeadlineMs?: number
 }
 
 const DEVICE_ACTIVATED_PAYLOAD = { type: DEVICE_ACTIVATED_MESSAGE } as const
+
+/** Fixed, user-facing wording per STABLE server code. The raw server message is
+ * deliberately never rendered: it is chosen by the server for logs, and a
+ * regression there must not be able to put endpoint or discovery detail — or
+ * anything token-shaped — on screen. */
+const AUTH_FAILURE_TEXT: Record<string, string> = {
+  'workbench-auth-required': '需要当前认证信息：在设备上重新执行 dsh web，或在设备设置中启用自动恢复后重试。',
+  'workbench-unavailable': '工作台暂时不可用，请稍后重试。',
+  'workbench-launch-stale': '设备连接已更新，请重试。',
+  'workbench-origin-forbidden': '请求来源不被允许。',
+}
+const AUTH_FAILURE_FALLBACK = '工作台认证未建立，请重试。'
 
 /** Bridge capabilities expire on the server after a short TTL. The parent
  * renews before expiry (grace window below) so a user staying on one device
@@ -34,14 +49,39 @@ const CAPABILITY_RENEW_RETRY_MAX_MS = 120_000
 /** The bridge reports an invalid/expired capability as backstop for hidden
  * iframes where timers are throttled; the parent rate-limits its renewal. */
 const CAPABILITY_RENEW_THROTTLE_MS = 5_000
+/** Upper bound on how long the parent keeps its own reference to a tokenized
+ * launch URL. After this it drops the reference even if the cross-origin iframe
+ * never reported a load, because the navigation outcome is unobservable and
+ * waiting forever helps nobody. Overridable so tests stay fast. */
+const DEFAULT_NAVIGATION_DEADLINE_MS = 10_000
+
+/** Observable launch phases for one mounted frame.
+ *
+ * `unobservable` is a real state, not a placeholder: a cross-origin iframe
+ * hides its HTTP status, final URL and cookies from the parent, so after a
+ * tokenized navigation the parent genuinely does NOT know whether the exchange
+ * succeeded. It must therefore never claim success, and never treat the
+ * unknown as a failure worth retrying automatically. */
+type LaunchPhase = 'idle' | 'pending' | 'tokenized' | 'clean' | 'unobservable' | 'failed'
+
+export interface WorkbenchLaunchFailure {
+  readonly code: string
+  readonly message: string
+}
 
 interface FrameInfo {
   readonly deviceId: string
+  /** The frame's steady, token-free src. A tokenized URL is NEVER stored here:
+   * it lives in `tokenUrlRef` only for the duration of one navigation. */
   readonly url: string
   readonly state: DeviceStatusFacts['state']
   readonly diagnostic: string | undefined
   readonly lastUpdatedAt: number
   readonly sshAlias?: string
+  readonly launchPhase: LaunchPhase
+  /** `undefined` means "no failure"; the key is present so a FrameInfo is a
+   * complete value rather than something whose shape depends on its state. */
+  readonly launchFailure: WorkbenchLaunchFailure | undefined
 }
 
 /** Workbench keeps every created iframe MOUNTED and merely hides non-current
@@ -50,7 +90,8 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch }: WorkbenchProps) {
+export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs }: WorkbenchProps) {
+  const deadlineMs = navigationDeadlineMs ?? DEFAULT_NAVIGATION_DEADLINE_MS
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
@@ -66,6 +107,61 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   /** Current endpoint/generation target per device. A late response must still
    * match it before it may update that device's mounted frame. */
   const launchTargetRef = useRef<Map<string, string>>(new Map())
+  /** The one-shot tokenized URL a frame is currently navigating to. Deliberately
+   * OUTSIDE React state: state would keep the token alive across renders, and
+   * clearing it here is what "the parent no longer holds the token" means. */
+  const tokenUrlRef = useRef<Map<string, string>>(new Map())
+  const deadlineTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  /** Explicit user retries, which are the ONLY way a failed or unobservable
+   * tuple may be attempted again. */
+  const [retryNonce, setRetryNonce] = useState(0)
+
+  /** Merge a partial update into one device's frame and republish. */
+  const publishFrame = (deviceId: string, patch: Partial<FrameInfo>): void => {
+    const frame = registryRef.current.get(deviceId)
+    if (frame === undefined) return
+    registryRef.current.set(deviceId, { ...frame, ...patch })
+    setFrames([...registryRef.current.values()])
+  }
+
+  const clearDeadline = (deviceId: string): void => {
+    const timer = deadlineTimersRef.current.get(deviceId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    deadlineTimersRef.current.delete(deviceId)
+  }
+
+  /**
+   * Bounds how long the parent keeps its OWN reference to a tokenized URL.
+   *
+   * On expiry the reference is dropped but the in-flight iframe `src` is left
+   * ALONE on purpose: replacing it with the clean endpoint would abort a
+   * navigation that may be about to succeed. The DOM attribute may therefore
+   * keep the token until the frame loads, is destroyed or the device changes —
+   * an accepted, documented residue, not a claim of cleanup. The phase becomes
+   * `unobservable` because that is genuinely all the parent knows.
+   */
+  const startDeadline = (deviceId: string, endpoint: URL): void => {
+    clearDeadline(deviceId)
+    deadlineTimersRef.current.set(deviceId, setTimeout(() => {
+      deadlineTimersRef.current.delete(deviceId)
+      tokenUrlRef.current.delete(deviceId)
+      const frame = registryRef.current.get(deviceId)
+      if (frame === undefined || frame.launchPhase !== 'tokenized') return
+      publishFrame(deviceId, { url: endpoint.toString(), launchPhase: 'unobservable' })
+    }, deadlineMs))
+  }
+
+  /** The user's explicit retry is the only path back from a failed or
+   * unobservable tuple: it clears the recorded attempt so the effect runs once
+   * more, without touching the device's connection. */
+  const retryLaunch = (deviceId: string, origin: string | undefined, generation: number): void => {
+    clearDeadline(deviceId)
+    tokenUrlRef.current.delete(deviceId)
+    launchAttemptsRef.current.delete(`${deviceId}\u0000${origin ?? ''}\u0000${generation}`)
+    publishFrame(deviceId, { launchPhase: 'idle', launchFailure: undefined })
+    setRetryNonce(nonce => nonce + 1)
+  }
 
   const notifyActivated = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
@@ -216,6 +312,12 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       iframeRefs.current.delete(deviceId)
       launchTargetRef.current.delete(deviceId)
       latestLaunchGenerationRef.current.delete(deviceId)
+      tokenUrlRef.current.delete(deviceId)
+      const timer = deadlineTimersRef.current.get(deviceId)
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        deadlineTimersRef.current.delete(deviceId)
+      }
       for (const key of launchAttemptsRef.current) {
         if (key.startsWith(`${deviceId}\u0000`)) launchAttemptsRef.current.delete(key)
       }
@@ -235,6 +337,8 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         diagnostic: device.diagnostic,
         lastUpdatedAt: device.lastUpdatedAt,
         ...(isValidSshAlias(device.sshAlias) ? { sshAlias: device.sshAlias } : {}),
+        launchPhase: requestWorkbenchLaunch === undefined ? 'clean' : 'idle',
+        launchFailure: undefined,
       })
       setFrames([...registryRef.current.values()])
       return
@@ -290,24 +394,47 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     launchTargetRef.current.set(device.deviceId, attemptKey)
     if (launchAttemptsRef.current.has(attemptKey)) return
     launchAttemptsRef.current.add(attemptKey)
+    publishFrame(device.deviceId, { launchPhase: 'pending', launchFailure: undefined })
 
     void requestWorkbenchLaunch(device.deviceId).then(({ url, authGeneration }) => {
       if (launchTargetRef.current.get(device.deviceId) !== attemptKey) return
       // The response is useful only for the exact endpoint/auth generation that
-      // caused it. Later lifecycle results must not overwrite a newer frame.
-      if (authGeneration !== generation) return
+      // caused it — except that a successful recovery COMMITS a new generation,
+      // and its response legitimately carries the higher one. Accept it only
+      // when it is at least what we asked for AND still the newest generation
+      // this component has seen; a smaller late reply must never navigate.
+      if (authGeneration < generation) return
+      const accepted = latestLaunchGenerationRef.current.get(device.deviceId)
+      if (accepted !== undefined && authGeneration > accepted) {
+        latestLaunchGenerationRef.current.set(device.deviceId, authGeneration)
+        // A generation bump changes the tuple identity, so the frame's steady
+        // target follows it while the tokenized URL stays out of state.
+        launchTargetRef.current.set(device.deviceId, `${device.deviceId}\u0000${origin}\u0000${authGeneration}`)
+      }
+      let parsed: URL
       try {
-        if (new URL(url).origin !== origin) return
+        parsed = new URL(url)
       } catch {
         return
       }
+      if (parsed.origin !== origin) return
       const frame = registryRef.current.get(device.deviceId)
       if (frame === undefined) return
-      registryRef.current.set(device.deviceId, { ...frame, url })
-      setFrames([...registryRef.current.values()])
-    }).catch(() => {
-      // This tuple remains attempted. Connectivity diagnostics provide the
-      // recovery path; retrying the same generation would create a load loop.
+      // The tokenized URL is handed to the iframe through a ref, never state.
+      tokenUrlRef.current.set(device.deviceId, url)
+      publishFrame(device.deviceId, { launchPhase: 'tokenized', launchFailure: undefined })
+      startDeadline(device.deviceId, parsed)
+    }).catch((cause: unknown) => {
+      if (launchTargetRef.current.get(device.deviceId) !== attemptKey) return
+      // This tuple stays attempted: an automatic retry would spin. The overlay
+      // offers one explicit retry, and a new generation is a new tuple.
+      publishFrame(device.deviceId, {
+        launchPhase: 'failed',
+        launchFailure: {
+          code: cause instanceof ApiRequestError ? cause.code : 'workbench-unavailable',
+          message: cause instanceof Error ? cause.message : 'workbench launch failed',
+        },
+      })
     })
   }, [
     device?.deviceId,
@@ -316,6 +443,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     device?.endpoint,
     device?.state,
     requestWorkbenchLaunch,
+    retryNonce,
   ])
 
   // Device tab switches keep every iframe mounted, so the child page observes
@@ -327,19 +455,29 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   }, [device?.deviceId, device?.sshAlias])
 
 
+  /** A cross-origin load event says NOTHING about whether the DSH exchange
+   * succeeded: an error page fires it too, and the parent cannot read the
+   * status, final URL or cookies. So the load is used for exactly two bounded
+   * things — drop the parent's token reference and scrub its own DOM attribute
+   * with one deliberate clean-endpoint navigation — and never as proof. */
   const handleFrameLoad = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
     if (frame === undefined) return
-    try {
-      const loaded = new URL(frame.url)
-      if (loaded.searchParams.has('token')) {
+    const pendingToken = tokenUrlRef.current.get(deviceId)
+    clearDeadline(deviceId)
+    if (pendingToken !== undefined) {
+      tokenUrlRef.current.delete(deviceId)
+      let clean = frame.url
+      try {
+        const loaded = new URL(pendingToken)
         loaded.search = ''
         loaded.hash = ''
-        registryRef.current.set(deviceId, { ...frame, url: loaded.toString() })
-        setFrames([...registryRef.current.values()])
-        return
-      }
-    } catch { /* malformed endpoint stays covered by lifecycle diagnostics */ }
+        clean = loaded.toString()
+      } catch { /* malformed endpoint stays covered by lifecycle diagnostics */ }
+      publishFrame(deviceId, { url: clean, launchPhase: 'clean' })
+      return
+    }
+    if (frame.launchPhase === 'tokenized') return
     if (device?.deviceId === deviceId) notifyActivated(deviceId)
   }
 
@@ -369,6 +507,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         // hidden behind an honest status panel.
         const busy = active && frame.state === 'CONNECTING'
         const offline = active && frame.state !== 'READY' && frame.state !== 'DEGRADED'
+        // The auth overlay is strictly a fallback for a device that IS ready at
+        // the connection layer: the connection overlay owns every other case.
+        const authFailure = active && !offline && frame.launchFailure
+        const source = tokenUrlRef.current.get(frame.deviceId) ?? frame.url
         return (
           <div
             key={frame.deviceId}
@@ -381,14 +523,37 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
                 if (element === null) iframeRefs.current.delete(frame.deviceId)
                 else iframeRefs.current.set(frame.deviceId, element)
               }}
-              src={frame.url}
+              src={source}
               title={frame.deviceId}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               allow="clipboard-read; clipboard-write"
               className="workbench-iframe"
               data-workbench-device={frame.deviceId}
+              data-workbench-phase={frame.launchPhase}
+              // The iframe element is what actually governs the cross-origin
+              // navigation that carries the token, so the referrer control has
+              // to live HERE and not only on the API response.
+              referrerPolicy="no-referrer"
               onLoad={() => { handleFrameLoad(frame.deviceId) }}
             />
+            {authFailure && (
+              <div
+                className="workbench-overlay"
+                role="status"
+                data-cockpit-auth={frame.deviceId}
+                data-cockpit-auth-code={frame.launchFailure!.code}
+              >
+                <p className="overlay-title">工作台认证未建立</p>
+                <p className="overlay-diagnostic">{AUTH_FAILURE_TEXT[frame.launchFailure!.code] ?? AUTH_FAILURE_FALLBACK}</p>
+                <button
+                  className="overlay-action"
+                  data-cockpit-auth-retry={frame.deviceId}
+                  onClick={() => { retryLaunch(frame.deviceId, new URL(frame.url === '' ? (device.endpoint ?? 'http://127.0.0.1') : frame.url).origin, device.dshAuthGeneration) }}
+                >
+                  重试
+                </button>
+              </div>
+            )}
             {offline && (
               <div
                 className="workbench-overlay"

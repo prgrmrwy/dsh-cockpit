@@ -190,15 +190,30 @@ async function createProbedTypertAdapter(
 }
 
 async function exchangeLaunchToken(endpoint: URL, launchToken: string, doFetch: typeof fetch): Promise<DshCookieSession> {
-  return exchangeDshLaunchToken(endpoint, launchToken, {
-    fetch: async (input, init) => {
-      const response = await fetchResponse(doFetch, input, init)
-      if (response.status === 401 || response.status === 403) {
-        throw new HttpStatusError('DSH authentication exchange HTTP ' + String(response.status), response.status)
-      }
-      return response
-    },
-  })
+  return exchangeDshLaunchToken(endpoint, launchToken, { fetch: exchangeFetch(doFetch) })
+}
+
+/**
+ * Fetch wrapper for the DSH token exchange.
+ *
+ * An HTTP 401 means "this token was refused", which is exactly the observation
+ * that may authorize discovery of a current token. Any other status (403, 5xx,
+ * …) means the endpoint answered but NOT with a plain rejection, and that must
+ * NOT be mistaken for a stale token: it is surfaced as a typed status error so
+ * callers can tell the two apart.
+ *
+ * ALSO used by the workbench validation path (see `workbench-launch.ts`), so
+ * both consumers classify the exchange identically instead of each inventing
+ * its own rule.
+ */
+export function exchangeFetch(doFetch: typeof fetch): typeof fetch {
+  return async (input, init) => {
+    const response = await fetchResponse(doFetch, input, init)
+    if (response.status === 401 || response.status === 403) {
+      throw new HttpStatusError('DSH authentication exchange HTTP ' + String(response.status), response.status)
+    }
+    return response
+  }
 }
 
 async function fetchResponse(doFetch: typeof fetch, input: Parameters<typeof fetch>[0], init?: RequestInit): Promise<Response> {

@@ -8,6 +8,19 @@ import type {
 
 const BASE = '/api'
 
+/** A failed API call carrying the server's STABLE code.
+ *
+ * Callers that must react differently per outcome (workbench launch: paste a
+ * URL vs retry vs re-read the device) need the code, not a sentence. The code
+ * is a fixed enum chosen by the server; the message is already redacted there
+ * and is kept for humans/logs only. */
+export class ApiRequestError extends Error {
+  constructor(readonly code: string, message: string, readonly status: number) {
+    super(message)
+    this.name = 'ApiRequestError'
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${BASE}${path}`, {
     headers: { 'content-type': 'application/json' },
@@ -21,7 +34,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       error = { code: 'http-error', message: `HTTP ${response.status}` }
     }
-    throw new Error(error.message || error.code)
+    throw new ApiRequestError(error.code || 'http-error', error.message || error.code, response.status)
   }
   return await response.json() as T
 }

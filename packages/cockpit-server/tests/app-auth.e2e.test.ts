@@ -1,3 +1,4 @@
+import { request as httpRequest } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
@@ -51,6 +52,19 @@ describe('auth gate (real NestJS + Express integration)', () => {
     if (previousPort === undefined) delete process.env.COCKPIT_PORT
     else process.env.COCKPIT_PORT = previousPort
     await rm(directory, { recursive: true, force: true })
+  })
+
+  it('actually resolves the whole production dependency graph at boot', async () => {
+    // `beforeEach` already boots the REAL AppModule through NestFactory, so
+    // reaching this assertion means every provider resolved. That is the point:
+    // a controller/service constructor that unit tests instantiate DIRECTLY can
+    // still be un-injectable, and Nest only reports it while starting the app
+    // (a live "cockpit server exited early with code 1"). A route smoke-check
+    // makes that class of regression fail here instead of in production.
+    const response = await fetch(`${baseUrl}/api/bootstrap`)
+    expect(response.status).toBe(200)
+    const devices = await fetch(`${baseUrl}/api/devices`, { headers: { cookie: (await fetch(`${baseUrl}/api/bootstrap`)).headers.get('set-cookie')!.split(';')[0]! } })
+    expect(devices.status).toBe(200)
   })
 
   it('rejects GET /api/devices with no cookie — the exact route the bug let through', async () => {
@@ -126,5 +140,133 @@ describe('auth gate (real NestJS + Express integration)', () => {
       // Past the gate; the controller then rejects the forged capability.
       expect(response.status, `${path} must not be gated at the auth layer`).not.toBe(401)
     }
+  })
+
+  /** The workbench-launch response is the ONE place a current DSH launch token
+   * leaves the server for the browser. Cookies are not port-isolated and every
+   * `127.0.0.1` port is same-site, so the persistent cookie alone cannot say
+   * "this is the cockpit's own page" — another loopback page could otherwise
+   * read the tokenized JSON. These cases drive the REAL Express router. */
+  describe('workbench launch origin gate', () => {
+    async function cockpitCookie(): Promise<string> {
+      const bootstrap = await fetch(`${baseUrl}/api/bootstrap`)
+      return bootstrap.headers.get('set-cookie')!.split(';')[0]!
+    }
+
+    async function launch(init: RequestInit): Promise<Response> {
+      return await fetch(`${baseUrl}/api/devices/device-1/workbench-launch`, { method: 'POST', ...init })
+    }
+
+    /**
+     * Raw HTTP for the cases `fetch` cannot express.
+     *
+     * Node's fetch treats `Host` as a forbidden header name and silently drops
+     * whatever the caller sets, so a "missing Host" case built on fetch would
+     * actually be tested against a perfectly valid Host — a false pass. The raw
+     * client sends exactly the headers given, including a missing or repeated
+     * `Host`, and also lets one request carry a duplicated `Origin`.
+     */
+    function rawLaunch(rawHeaders: Array<[string, string]>): Promise<{ status: number; body: string }> {
+      const target = new URL(baseUrl)
+      return new Promise((resolve, reject) => {
+        const request = httpRequest({
+          host: target.hostname,
+          port: target.port,
+          method: 'POST',
+          path: '/api/devices/device-1/workbench-launch',
+          // setHost:false keeps Node from inventing a Host header, so the
+          // caller's header list is the ONLY source of truth. Passing an array
+          // of tuples (rather than an object) is what lets a name repeat.
+          setHost: false,
+          headers: rawHeaders,
+        }, response => {
+          let body = ''
+          response.setEncoding('utf8')
+          response.on('data', chunk => { body += chunk })
+          response.on('end', () => { resolve({ status: response.statusCode ?? 0, body }) })
+        })
+        request.on('error', reject)
+        request.end()
+      })
+    }
+
+    it('rejects every non-exact workbench launch Origin and Host before secret access', async () => {
+      const cookie = await cockpitCookie()
+      const cockpitOrigin = new URL(baseUrl).origin
+      const cockpitHost = new URL(baseUrl).host
+      const cases: Array<[string, Record<string, string>]> = [
+        ['missing Origin', { host: cockpitHost, cookie }],
+        ['empty Origin', { host: cockpitHost, origin: '', cookie }],
+        ['different loopback port', { host: cockpitHost, origin: 'http://127.0.0.1:1', cookie }],
+        ['localhost instead of 127.0.0.1', { host: cockpitHost, origin: `http://localhost:${new URL(baseUrl).port}`, cookie }],
+        ['unparsable Origin', { host: cockpitHost, origin: 'not-a-url', cookie }],
+        ['zero port', { host: cockpitHost, origin: 'http://127.0.0.1:0', cookie }],
+        ['forwarded disguise', { host: cockpitHost, origin: 'http://127.0.0.1:1', 'x-forwarded-host': cockpitHost, 'x-forwarded-proto': 'http', cookie }],
+      ]
+      for (const [label, headers] of cases) {
+        const response = await launch({ headers })
+        expect(response.status, label).toBe(403)
+        const body = await response.text()
+        expect(body, label).toContain('workbench-origin-forbidden')
+        expect(body, label).not.toMatch(/token|dsh-auth|cookie/iu)
+      }
+
+      // Host cases `fetch` cannot express: it silently drops a caller-supplied
+      // Host and rejects control characters before the wire.
+      const rawCases: Array<[string, Array<[string, string]>]> = [
+        ['missing Host', [['Origin', cockpitOrigin], ['Cookie', cookie]]],
+        ['empty Host', [['Host', ''], ['Origin', cockpitOrigin], ['Cookie', cookie]]],
+        ['duplicate Host', [['Host', cockpitHost], ['Host', '127.0.0.1:1'], ['Origin', cockpitOrigin], ['Cookie', cookie]]],
+        ['duplicate Origin', [['Host', cockpitHost], ['Origin', cockpitOrigin], ['Origin', 'http://127.0.0.1:1'], ['Cookie', cookie]]],
+        ['scheme-less Origin', [['Host', cockpitHost], ['Origin', '127.0.0.1:1'], ['Cookie', cookie]]],
+      ]
+      for (const [label, rawHeaders] of rawCases) {
+        const response = await rawLaunch(rawHeaders)
+        // A request with no usable Host is refused before routing (Express
+        // answers 400); every other shape reaches the gate and gets 403. Both
+        // are fail-closed, and neither may carry authentication material.
+        expect(response.status, label).toBeGreaterThanOrEqual(400)
+        expect(response.status, label).toBeLessThan(500)
+        if (response.status === 403) expect(response.body, label).toContain('workbench-origin-forbidden')
+        expect(response.body, label).not.toMatch(/token=|dsh-auth|cookie/iu)
+      }
+    })
+
+    it('uses raw matching Origin and Host while ignoring forwarded headers', async () => {
+      const cookie = await cockpitCookie()
+      const cockpitOrigin = new URL(baseUrl).origin
+      const cockpitHost = new URL(baseUrl).host
+      const response = await launch({
+        headers: {
+          host: cockpitHost,
+          origin: cockpitOrigin,
+          forwarded: 'for=203.0.113.7;host=evil.test;proto=https',
+          'x-forwarded-host': 'evil.test',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-for': '203.0.113.7',
+          cookie,
+        },
+      })
+      // Forwarded headers must NOT rewrite the expected origin; the raw pair
+      // matches, so the request proceeds past the gate (the id is unknown).
+      expect(response.status).not.toBe(403)
+      expect(response.status).toBe(404)
+    })
+
+    it('returns only the launch URL and generation with no-store and no-referrer headers', async () => {
+      const cookie = await cockpitCookie()
+      const response = await launch({
+        headers: { host: new URL(baseUrl).host, origin: new URL(baseUrl).origin, cookie },
+        body: JSON.stringify({}),
+      })
+      // Unknown device id: the gate passed and the handler answered. The
+      // security headers must be present on this response regardless, and the
+      // body must carry no authentication material.
+      expect(response.status).not.toBe(403)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      expect(response.headers.get('referrer-policy')).toBe('no-referrer')
+      const body = await response.text()
+      expect(body).not.toMatch(/token=|dsh-auth|cookie/iu)
+    })
   })
 })
