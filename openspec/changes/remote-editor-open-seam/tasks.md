@@ -37,6 +37,6 @@
 - [x] 6.1 `pnpm build` + `pnpm typecheck` + `pnpm lint` 全绿；bridge 发布 bundle 自包含 shared 代码且 host/client/source map 齐全
 - [x] 6.2 `pnpm test` 全绿（root 8 + shared 1 + web 63 + bridge 19 + server 141）
 - [x] 6.3 真机验收：消费方 shim 接入后，从远端设备工作台触发打开，宿主机 VS Code 新窗口经 Remote-SSH 打开目标目录（2026-09-24 所有者验收通过，bridge 0.5.1 + ohmydsh cockpit-worktree-open-shim）
-- [ ] 6.4 真机验收（降级/故障）：本机设备或非法 alias/path 不产出远程 URI，消费方回落且工作台其它功能正常
+- [x] 6.4 真机验收（降级/故障）：本机设备或非法 alias/path 不产出远程 URI，消费方回落且工作台其它功能正常（所有者实机验收通过：本机设备点击分支名打开本地 VS Code、不走 Remote-SSH，工作台其它功能正常；非法 alias/path 由 bridge 单测 `rejects invalid aliases and paths without opening a URI` 覆盖）
 - [x] 6.5 发布 `dsh-cockpit-bridge` 0.4.0，并在 ohmydsh 更新精确 pin（tag `dsh-cockpit-bridge-v0.4.0`；ohmydsh 现 pin 0.5.1，`editorOpen` 契约不变）
 - [ ] 6.6 确认 current spec 已同步最终行为后归档 change
