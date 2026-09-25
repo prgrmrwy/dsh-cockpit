@@ -537,6 +537,43 @@ describe('cockpit bridge client', () => {
     expect(fixture.getService('cockpitBridge.editorOpen')).toBeUndefined()
   })
 
+  it('lets a rejected window.open reach the consumer without breaking bridge reporting', async () => {
+    // The consumer calls `open()` inside its own click handler, so a rejected
+    // `window.open` (popup blocker, no registered handler) surfaces
+    // SYNCHRONOUSLY to that caller. The bridge must neither swallow it into a
+    // false success nor leave it unhandled, and its unrelated reporting has to
+    // keep working afterwards.
+    const pending = new Map([
+      ['approval:a1', { sessionId: 's1', kind: 'approval' as const, key: 'approval:a1' }],
+    ])
+    const fixture = fakeCtx({ current: 'a' }, pending)
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    configure(undefined, 'vm-a')
+    await vi.advanceTimersByTimeAsync(0)
+    const service = fixture.getService<{ open(path: string): void }>('cockpitBridge.editorOpen')!
+    const fakeWindow = window as unknown as FakeWindow
+
+    fakeWindow.open.mockImplementation(() => { throw new Error('popup blocked') })
+    expect(() => service.open('/work/project')).toThrow('popup blocked')
+    // It was still a real attempt at the validated URI, not a silent no-op.
+    expect(fakeWindow.open).toHaveBeenCalledWith(
+      'vscode://vscode-remote/ssh-remote+vm-a/work/project?windowId=_blank',
+      '_blank',
+    )
+
+    // Reporting is unaffected by the failure: activation still re-asserts the
+    // selection and pending snapshots still publish.
+    fetchMock.mockClear()
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:device-activated' })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/session-opened').at(-1)).toMatchObject({ sessionId: 'a' })
+    fixture.setPending(new Map())
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)).toMatchObject({ items: [] })
+    fixture.cleanup()
+  })
+
   it('provides a port-forward seam that is unavailable until configured', async () => {
     const fixture = fakeCtx()
     const apply = await loadApply()
@@ -633,8 +670,12 @@ describe('cockpit bridge client', () => {
     // times out and the original rejection surfaces unchanged.
     fetchMock.mockResolvedValue(failResponse(401))
     const rejected = service.publish('cards')
+    // Attach the expectation BEFORE advancing the clock. The seam rejects while
+    // the fake timers run, and a promise with no handler at that moment is
+    // reported as an unhandled rejection even though this test awaits it later.
+    const rejection = expect(rejected).rejects.toThrow('rejected (401)')
     await vi.advanceTimersByTimeAsync(6_000)
-    await expect(rejected).rejects.toThrow('rejected (401)')
+    await rejection
 
     // A 200 with no url must NOT become a usable handle: an address that does
     // not exist on the host would silently reach some other local service.
