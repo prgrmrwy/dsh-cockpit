@@ -39,4 +39,4 @@
 - [x] 6.3 真机验收：消费方 shim 接入后，从远端设备工作台触发打开，宿主机 VS Code 新窗口经 Remote-SSH 打开目标目录（2026-09-24 所有者验收通过，bridge 0.5.1 + ohmydsh cockpit-worktree-open-shim）
 - [x] 6.4 真机验收（降级/故障）：本机设备或非法 alias/path 不产出远程 URI，消费方回落且工作台其它功能正常（所有者实机验收通过：本机设备点击分支名打开本地 VS Code、不走 Remote-SSH，工作台其它功能正常；非法 alias/path 由 bridge 单测 `rejects invalid aliases and paths without opening a URI` 覆盖）
 - [x] 6.5 发布 `dsh-cockpit-bridge` 0.4.0，并在 ohmydsh 更新精确 pin（tag `dsh-cockpit-bridge-v0.4.0`；ohmydsh 现 pin 0.5.1，`editorOpen` 契约不变）
-- [ ] 6.6 确认 current spec 已同步最终行为后归档 change
+- [x] 6.6 确认 current spec 已同步最终行为后归档 change（cockpit-workbench：MODIFIED 远端边界与安全，ADDED 远程编辑器打开接缝、bridge 唯一跨边界通信切面）
