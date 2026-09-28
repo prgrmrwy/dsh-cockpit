@@ -109,3 +109,24 @@ CHANGES_APPLIED: yes
    - Spec line 154 adds the "bridge preflight response also carries frame-ancestors" scenario.
 
 CHANGES_APPLIED is set to yes.
+
+## Implementation Review (post-apply)
+
+Fresh-context security review of the implementation, three rounds; full report kept outside the repo.
+
+1. **88c0c2d — REVISE.**
+   - C1: absolute-form request targets skipped the whole guard.
+   - M1: bridge preflights were answered by CORS before the Host check.
+   - M2: weak assertions.
+   - Fix 653ee6a: a request-target + Host guard (`requestGuard`) mounted in `createCockpitApp()` ahead of CORS.
+   - Artifacts amended: spec +2 scenarios, design D1/D4 revised, test-plan +2 rows, tasks 3a.
+2. **653ee6a — REVISE.**
+   - C1': with `\` + `#`, parseurl's slow path rewrote `\` to `/`, so `/api\devices#x` routed to `/api/devices`.
+   - Fix 80146cc: reject RFC 9112-invalid origin-form characters, and reject when the router's reading (`request.path`) differs from the guard's.
+   - Artifacts amended: spec origin-form tightened, design D1 layer 0 rewritten, tasks 3b.
+3. **80146cc — APPROVE.**
+   - Covers the re-review of the amended spec/design (the amendments voided the earlier verdict, per apply rules).
+   - About 30 further path variants were probed on a real server; none reached a handler.
+   - Two non-blocking suggestions applied in 18b3aef: a generic 400 message, and a comment in `main.ts` stating the static/`api/` constraint.
+
+IMPLEMENTATION_VERDICT: APPROVE
