@@ -65,26 +65,56 @@ const takenPorts = new Set<number>()
 let nextFreshPort = 51000
 const tunnelConnects: { deviceId: string; preferredLocalPort?: number; channelId?: string; remoteDshPort?: number }[] = []
 
+/** One fake ssh child per (device, channel), mirroring the real manager's
+ * ownership: connecting a channel replaces only that channel, disposeNode kills
+ * every channel of the device, disposeChannel exactly one. */
+interface FakeChild {
+  readonly pid: number
+  readonly deviceId: string
+  readonly channelId: string
+  readonly sshAlias: string
+  readonly localPort: number
+  alive: boolean
+}
+const children: FakeChild[] = []
+let nextPid = 7000
+
 class FakeTunnelManager {
+  readonly #active = new Map<string, FakeChild>()
   constructor(readonly options: unknown) {}
-  async connect(request: { deviceId: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number }) {
+  async connect(request: { deviceId: string; sshAlias: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number }) {
     tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort, channelId: request.channelId, remoteDshPort: request.remoteDshPort })
     if (!tunnel.established) throw new Error('no ssh in test environment')
+    const channelId = request.channelId ?? 'workbench'
+    const key = `${request.deviceId}\u0000${channelId}`
+    this.#kill(key)
     const preferred = request.preferredLocalPort
     const localPort = preferred !== undefined && !takenPorts.has(preferred) ? preferred : nextFreshPort++
+    const child: FakeChild = { pid: nextPid++, deviceId: request.deviceId, channelId, sshAlias: request.sshAlias, localPort, alive: true }
+    children.push(child)
+    this.#active.set(key, child)
     return {
       deviceId: request.deviceId,
-      channelId: request.channelId ?? 'workbench',
+      channelId,
       generation: 1,
       endpoint: new URL(`http://127.0.0.1:${localPort}`),
       localPort,
+      pid: child.pid,
       diagnostic: 'ok',
-      dispose: async () => {},
+      dispose: async () => { if (this.#active.get(key) === child) this.#kill(key) },
     }
   }
-  async disposeNode() {}
-  async disposeChannel() {}
-  async disposeAll() {}
+  #kill(key: string): void {
+    const child = this.#active.get(key)
+    if (child === undefined) return
+    child.alive = false
+    this.#active.delete(key)
+  }
+  async disposeNode(deviceId: string) {
+    for (const [key, child] of [...this.#active]) if (child.deviceId === deviceId) this.#kill(key)
+  }
+  async disposeChannel(deviceId: string, channelId: string) { this.#kill(`${deviceId}\u0000${channelId}`) }
+  async disposeAll() { for (const key of [...this.#active.keys()]) this.#kill(key) }
 }
 
 vi.mock('../src/connectivity/tunnel-manager.js', async importOriginal => {
@@ -305,6 +335,7 @@ beforeEach(() => {
   streamInstances.length = 0
   takenPorts.clear()
   tunnelConnects.length = 0
+  children.length = 0
   nextFreshPort = 51000
   tunnel.established = false
   rc2.available = true
@@ -636,6 +667,88 @@ describe('connectivity device updates', () => {
       ['a', 1],
       ['b', 2],
     ])
+    await service.onApplicationShutdown()
+  })
+})
+
+/** Ownership split (design D1): a device's additional forwards belong to the
+ * device, not to one connection-lifecycle instance, so replacing the workbench
+ * connection must never take them down. */
+describe('additional forwards survive workbench connection replacement', () => {
+  async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 400 && !check(); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(check()).toBe(true)
+  }
+
+  async function readyRemoteWithForward(overrides: Partial<DeviceRecord> = {}) {
+    tunnel.established = true
+    const built = await serviceFor([remote('a', 0, { enabled: true, ...overrides })])
+    await waitFor(() => built.service.statuses()[0]?.state === 'READY')
+    const origin = new URL(built.service.statuses()[0]!.endpoint!).origin
+    built.service.registerPublishablePort(origin, 'cards', 3939)
+    const forward = await built.service.publishPort(origin, 'cards')
+    const child = children.find(candidate => candidate.channelId === 'cards' && candidate.alive)!
+    expect(child).toBeDefined()
+    return { ...built, origin, forward, child }
+  }
+
+  const workbenchChildren = () => children.filter(child => child.channelId === 'workbench')
+
+  it('keeps an additional forward on its port across a workbench reconnect and never persists its local port', async () => {
+    const { service, registry, forward, child } = await readyRemoteWithForward()
+    const workbenchPort = registry.records[0]!.localPort
+    expect(workbenchPort).toBeDefined()
+    const before = workbenchChildren().length
+
+    await service.reconnectDevice('a')
+    await waitFor(() => workbenchChildren().length > before && service.statuses()[0]?.state === 'READY')
+
+    // Same child, same port: the workbench replacement did not touch it.
+    expect(child.alive).toBe(true)
+    expect(children.filter(candidate => candidate.channelId === 'cards')).toEqual([child])
+    expect(child.localPort).toBe(forward.localPort)
+    // Only the workbench port is ever persisted; the additional port never
+    // reaches the registry.
+    expect(registry.localPortWrites.every(([, port]) => port === workbenchPort)).toBe(true)
+    expect(registry.records[0]!.localPort).toBe(workbenchPort)
+    expect(JSON.stringify(registry.records)).not.toContain(String(forward.localPort))
+
+    await service.onApplicationShutdown()
+  })
+
+  it('keeps a live additional forward running across a workbench reconnect', async () => {
+    const { service, child } = await readyRemoteWithForward()
+    const before = workbenchChildren().length
+
+    // Remote `dsh web` restarts: the event stream drops and the lifecycle's
+    // own backoff loop rebuilds the workbench tunnel.
+    streamInstances.at(-1)!.emit('disconnect')
+    await waitFor(() => service.statuses()[0]?.state === 'CONNECTING')
+    await waitFor(() => workbenchChildren().length > before && service.statuses()[0]?.state === 'READY')
+
+    expect(child.alive).toBe(true)
+    expect(children.filter(candidate => candidate.channelId === 'cards')).toEqual([child])
+
+    await service.onApplicationShutdown()
+  })
+
+  it('keeps additional forwards across a manual reconnect and a launch URL update', async () => {
+    const { service, child } = await readyRemoteWithForward()
+
+    await service.reconnectDevice('a')
+    await waitFor(() => service.statuses()[0]?.state === 'READY')
+    expect(child.alive).toBe(true)
+
+    // A new launch URL replaces the whole connection lifecycle (auth
+    // generation moves), but that is not device-level termination.
+    await service.updateDevice('a', { dshLaunchUrl: 'http://127.0.0.1:3080/?token=abcdefghijklmnop' })
+    await waitFor(() => service.statuses()[0]?.state === 'READY')
+
+    expect(child.alive).toBe(true)
+    expect(children.filter(candidate => candidate.channelId === 'cards')).toEqual([child])
+
     await service.onApplicationShutdown()
   })
 })

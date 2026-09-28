@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common'
 import type { CockpitEvent, DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { createDeviceProtocol, DshAuthenticationRequiredError, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
-import { TunnelManager } from './tunnel-manager.js'
+import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 
 /** Completion-coordination retention ceiling: one entry per session id ever
@@ -422,7 +422,7 @@ export class DeviceLifecycle {
     this.#abort.abort(new Error('device stopped'))
     this.#runAbort?.abort(new Error('device stopped'))
     await this.#stream?.dispose()
-    await this.#tunnels.disposeNode(this.deviceId)
+    await this.#tunnels.disposeChannel(this.deviceId, WORKBENCH_CHANNEL)
     await this.#awaitRunSettled()
     this.#stream = undefined
     this.#client = undefined
@@ -454,7 +454,7 @@ export class DeviceLifecycle {
   async #replaceLoop(): Promise<void> {
     this.#runAbort?.abort(new Error('manual reconnect'))
     await this.#stream?.dispose()
-    await this.#tunnels.disposeNode(this.deviceId)
+    await this.#tunnels.disposeChannel(this.deviceId, WORKBENCH_CHANNEL)
     await this.#awaitRunSettled()
     if (this.#stopped || !this.#record.enabled) return
     this.#stream = undefined

@@ -29,6 +29,22 @@ export interface TunnelRequest {
    * requester's business, not the tunnel's.
    */
   readonly probeForDsh?: boolean
+  /**
+   * Called at most once when this channel's ssh child exits AFTER it was
+   * reported ready. A dispose initiated by the manager (explicit dispose,
+   * same-channel replacement, disposeNode/All) never reports: only an
+   * unexpected death does, so the owner can self-heal without mistaking its
+   * own teardown for a failure.
+   */
+  readonly onExit?: (exit: TunnelExit) => void
+}
+
+export interface TunnelExit {
+  readonly deviceId: string
+  readonly channelId: string
+  readonly generation: number
+  /** OpenSSH stderr (untrusted input; bounded by `maxStderrBytes`). */
+  readonly diagnostic: string
 }
 
 export interface TunnelHandle {
@@ -39,6 +55,8 @@ export interface TunnelHandle {
   /** Local forward port actually bound by this tunnel; persist it as the next
    * connection's preferred port. */
   readonly localPort: number
+  /** Host pid of the owned ssh child backing this channel. */
+  readonly pid: number
   readonly diagnostic: string
   dispose(): Promise<void>
 }
@@ -191,6 +209,15 @@ export class TunnelManager {
         await this.#disposeExact(key, active)
         throw new Error('tunnel generation was replaced')
       }
+      // Post-ready exit: anything other than our own dispose is an unexpected
+      // death the owner must hear about. Our dispose sets `disposed` first, so
+      // the check below cleanly separates the two.
+      void process.exited.then(() => {
+        if (active.disposed) return
+        active.disposed = true
+        if (this.#active.get(key) === active) this.#active.delete(key)
+        request.onExit?.({ deviceId: request.deviceId, channelId, generation, diagnostic: diagnostic() })
+      })
       if (persistedPort !== undefined && localPort !== persistedPort) {
         this.#logger?.warn(`tunnel local port drift: device=${request.deviceId} channel=${channelId} from=${persistedPort} to=${localPort} reason=${abandonPreferred ? 'preferred-port-unavailable' : 'unknown'}`)
       }
@@ -200,6 +227,7 @@ export class TunnelManager {
         generation,
         endpoint,
         localPort,
+        pid: process.pid,
         diagnostic: outcome.result.diagnostic,
         dispose: () => this.#disposeExact(key, active),
       }

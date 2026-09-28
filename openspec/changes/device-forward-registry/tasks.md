@@ -2,28 +2,28 @@
 
 ## 0. 前置条件
 
-- [ ] 0.1 确认 `cockpit-api-same-origin` 已实现并归档：`openspec/specs/cockpit-api-auth/spec.md` 含 requirement“bridge 回调路由名单”，`createCockpitApp()` 已存在；未满足则停止，不开始本 change
-- [ ] 0.2 Run `pnpm test` on the base commit; confirm the suite is green before any change
+- [x] 0.1 确认 `cockpit-api-same-origin` 已实现并归档：`openspec/specs/cockpit-api-auth/spec.md` 含 requirement“bridge 回调路由名单”，`createCockpitApp()` 已存在；未满足则停止，不开始本 change
+- [x] 0.2 Run `pnpm test` on the base commit; confirm the suite is green before any change
 
 ## 1. 服务端所有权切分（design D1、Migration 1）
 
-- [ ] 1.1 Write failing test: `keeps an additional forward on its port across a workbench reconnect and never persists its local port` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 1.2 Implement: `TunnelManager` 就绪后退出回调与 pid；`DeviceLifecycle` 只处置主通道；`#detach` 拆为 `#replaceLifecycle` / `#terminateDevice` to pass 1.1
-- [ ] 1.3 Refactor; full suite stays green
-- [ ] 1.4 Write failing test: `keeps a live additional forward running across a workbench reconnect` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 1.5 Implement: 主通道重连不再终止附加通道 to pass 1.4
-- [ ] 1.6 Refactor; full suite stays green
-- [ ] 1.7 Write failing test: `keeps additional forwards across a manual reconnect and a launch URL update` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 1.8 Implement: 手动重连与启动 URL 更新走 `#replaceLifecycle`，转发表保留 to pass 1.7
-- [ ] 1.9 Refactor; full suite stays green
-- [ ] 1.10 Re-run existing test `reuses the persisted port so the endpoint origin survives a reconnect` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.11 Re-run existing test `falls back to a fresh port and still connects when the persisted port is taken` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.12 Re-run existing test `assigns a fresh port on a first connection with nothing persisted` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.13 Re-run existing test `retries on a fresh port when the reused one is stolen inside the bind window` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.14 Re-run existing test `keeps the persisted port across a link-level failure so the origin does not drift` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.15 Re-run existing test `keeps the persisted port when an early exit cannot be attributed` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.16 Re-run existing test `warns once with attribution when the local port drifts, and stays silent when it does not` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
-- [ ] 1.17 Re-run existing test `does not persist a forward port for a local device` in `packages/cockpit-server/tests/connectivity.service.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.1 Write failing test: `keeps an additional forward on its port across a workbench reconnect and never persists its local port` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 1.2 Implement: `TunnelManager` 就绪后退出回调与 pid；`DeviceLifecycle` 只处置主通道；`#detach` 拆为 `#replaceLifecycle` / `#terminateDevice` to pass 1.1
+- [x] 1.3 Refactor; full suite stays green
+- [x] 1.4 Write failing test: `keeps a live additional forward running across a workbench reconnect` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason) — 注：基线上即为绿（退避重连路径本就只替换同通道，不调用 `disposeNode`），作为特征测试保留；1.1 / 1.7 在基线上按预期失败
+- [x] 1.5 Implement: 主通道重连不再终止附加通道 to pass 1.4
+- [x] 1.6 Refactor; full suite stays green
+- [x] 1.7 Write failing test: `keeps additional forwards across a manual reconnect and a launch URL update` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 1.8 Implement: 手动重连与启动 URL 更新走 `#replaceLifecycle`，转发表保留 to pass 1.7
+- [x] 1.9 Refactor; full suite stays green
+- [x] 1.10 Re-run existing test `reuses the persisted port so the endpoint origin survives a reconnect` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.11 Re-run existing test `falls back to a fresh port and still connects when the persisted port is taken` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.12 Re-run existing test `assigns a fresh port on a first connection with nothing persisted` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.13 Re-run existing test `retries on a fresh port when the reused one is stolen inside the bind window` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.14 Re-run existing test `keeps the persisted port across a link-level failure so the origin does not drift` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.15 Re-run existing test `keeps the persisted port when an early exit cannot be attributed` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.16 Re-run existing test `warns once with attribution when the local port drifts, and stays silent when it does not` in `packages/cockpit-server/tests/ssh-tunnel.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
+- [x] 1.17 Re-run existing test `does not persist a forward port for a local device` in `packages/cockpit-server/tests/connectivity.service.test.ts` after the ownership split; confirm it passes and flip its test-plan row 🟢 (behavior unchanged, no red phase)
 
 ## 2. 转发表核心（design D1–D3、D5；新文件 `connectivity/forward-table.ts`）
 

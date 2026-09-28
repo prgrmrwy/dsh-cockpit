@@ -170,21 +170,29 @@ export class ConnectivityService implements OnApplicationShutdown {
     }
   }
 
-  async #detach(deviceId: string): Promise<void> {
+  /** Replace the device's connection lifecycle WITHOUT touching its
+   * additional forwards (design D1). The lifecycle only ever owns the
+   * workbench channel; forwards belong to the device and outlive any one
+   * lifecycle instance — manual reconnects, auth/launch-URL updates and
+   * auto-recovery toggles all come through here. */
+  async #replaceLifecycle(deviceId: string): Promise<void> {
     const lifecycle = this.#lifecycles.get(deviceId)
     this.#lifecycles.delete(deviceId)
-    // A device that goes away must not leave a validation operation running:
+    // A replaced lifecycle must not leave a validation operation running:
     // this is the ONLY owner allowed to abort shared work (see the coordinator).
     this.#launchCoordinator.cancelDevice(deviceId)
     await lifecycle?.stop()
-    // Publishable ports and their forwards are facts about a live device run;
-    // lifecycle.stop() already disposes every tunnel of this device, so only
-    // the bookkeeping is left to clear here. Leaving it would let a later run
-    // publish a channel whose port was never re-registered.
-    await this.releasePublishedPorts(deviceId)
     this.#bridgeRejections.forget(deviceId)
     const prefix = `${deviceId}\u0000`
     for (const key of this.#authDiscoveryAttemptedAt.keys()) if (key.startsWith(prefix)) this.#authDiscoveryAttemptedAt.delete(key)
+  }
+
+  /** Device-level termination (disable, delete): the lifecycle goes AND every
+   * additional forward of the device is killed, so nothing outlives its
+   * device. */
+  async #terminateDevice(deviceId: string): Promise<void> {
+    await this.#replaceLifecycle(deviceId)
+    await this.releasePublishedPorts(deviceId)
   }
 
   /** Live aggregated statuses for all registered devices. */
@@ -358,12 +366,16 @@ export class ConnectivityService implements OnApplicationShutdown {
       return reordered.map((record, order): DeviceRecord => ({ ...record, order }))
     })
     const next = normalized.find(record => record.deviceId === deviceId)!
-    if ((update.enabled !== undefined && update.enabled !== committedPrevious.enabled) || authChanged || discoveryChanged) {
+    const enabledFlipped = update.enabled !== undefined && update.enabled !== committedPrevious.enabled
+    if (enabledFlipped || authChanged || discoveryChanged) {
       // stop() is terminal. Replace the lifecycle when the enabled bit flips;
       // reusing an aborted instance would make a later enable a no-op. A
       // disable also invalidates bridge presence: it describes a live page,
-      // not a durable device capability.
-      await this.#detach(deviceId)
+      // not a durable device capability. Only an enabled flip is device-level
+      // termination; an auth or recovery-setting change merely replaces the
+      // workbench connection and leaves additional forwards running.
+      if (enabledFlipped) await this.#terminateDevice(deviceId)
+      else await this.#replaceLifecycle(deviceId)
       this.#bridgeSeenAt.delete(deviceId)
       this.#capabilities.revokeDevice(deviceId)
       this.#attach(next)
@@ -377,10 +389,12 @@ export class ConnectivityService implements OnApplicationShutdown {
     const records = await this.#registry.load()
     if (!records.some(r => r.deviceId === deviceId)) throw new Error(`unknown device ${deviceId}`)
     if (!confirmed) return { removed: false, requiresConfirmation: true }
-    await this.#detach(deviceId)
+    await this.#terminateDevice(deviceId)
     this.#bridgeSeenAt.delete(deviceId)
     this.#capabilities.revokeDevice(deviceId)
-    await this.#registry.save(records.filter(r => r.deviceId !== deviceId))
+    // Filter against the LATEST records: a load-then-save would drop any write
+    // that landed while the device was being torn down.
+    await this.#registry.mutateDevices(latest => latest.filter(r => r.deviceId !== deviceId))
     return { removed: true, requiresConfirmation: false }
   }
 

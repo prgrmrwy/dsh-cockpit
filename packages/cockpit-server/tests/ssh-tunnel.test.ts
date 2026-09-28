@@ -478,6 +478,34 @@ describe('tunnel manager additional channels', () => {
     await manager.disposeAll()
   })
 
+  it('reports the child pid and an unexpected post-ready exit, but never its own dispose', async () => {
+    const children: FakeProcess[] = []
+    const manager = new TunnelManager({
+      spawn: () => { const c = new FakeProcess(800 + children.length); children.push(c); return c },
+      readinessProbe: ready,
+    })
+    const exits: { channelId: string; diagnostic: string }[] = []
+    const onExit = (exit: { channelId: string; diagnostic: string }) => { exits.push(exit) }
+
+    const died = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'cards', remoteDshPort: 3939, onExit })
+    const disposed = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'docs', remoteDshPort: 4000, onExit })
+    expect(died.pid).toBe(800)
+    expect(disposed.pid).toBe(801)
+
+    children[0]!.emitStderrThenExit('Connection reset by peer', 255)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await disposed.dispose()
+    children[1]!.exit(0)
+    await new Promise(resolve => setTimeout(resolve, 20))
+
+    expect(exits).toEqual([{ deviceId: 'd1', channelId: 'cards', generation: 1, diagnostic: 'Connection reset by peer' }])
+    // A dead channel is no longer active: disposing it again is a no-op.
+    await manager.disposeChannel('d1', 'cards')
+    expect(children[0]!.signals()).toEqual([])
+
+    await manager.disposeAll()
+  })
+
   it('never offers a persisted port to an additional channel', async () => {
     // D3: only the workbench tunnel has a stable-origin requirement. An extra
     // channel must not inherit the device's persisted port, or two channels

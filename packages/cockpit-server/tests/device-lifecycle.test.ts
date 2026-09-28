@@ -322,7 +322,7 @@ describe('device lifecycle', () => {
           diagnostic: 'ok', dispose,
         }
       },
-      disposeNode: async () => { await activeDispose?.() },
+      disposeChannel: async () => { await activeDispose?.() },
     } as unknown as TunnelManager
     const lifecycle = new DeviceLifecycle({
       record: record(),
