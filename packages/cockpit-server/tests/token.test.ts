@@ -24,6 +24,10 @@ describe('token middleware', () => {
     expect(requiresToken('/api/bootstrap')).toBe(false)
     expect(requiresToken('/')).toBe(false)
     expect(requiresToken('/assets/index-abc.js')).toBe(false)
+    // Express routes case-insensitively, so the gate must fold case too.
+    expect(requiresToken('/API/devices')).toBe(true)
+    expect(requiresToken('/Api/runtime/status')).toBe(true)
+    expect(requiresToken('/API/Bootstrap')).toBe(false)
   })
 
   it('parses the cockpit cookie from a cookie header', () => {

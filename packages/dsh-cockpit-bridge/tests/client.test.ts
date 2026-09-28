@@ -632,9 +632,11 @@ describe('cockpit bridge client', () => {
     // A 401 now triggers one renewal attempt; with no parent reply the wait
     // times out and the original rejection surfaces unchanged.
     fetchMock.mockResolvedValue(failResponse(401))
-    const rejected = service.publish('cards')
+    // Attach the assertion before advancing the clock: the promise rejects
+    // while timers run, and an unobserved rejection fails the whole run.
+    const rejected = expect(service.publish('cards')).rejects.toThrow('rejected (401)')
     await vi.advanceTimersByTimeAsync(6_000)
-    await expect(rejected).rejects.toThrow('rejected (401)')
+    await rejected
 
     // A 200 with no url must NOT become a usable handle: an address that does
     // not exist on the host would silently reach some other local service.

@@ -22,7 +22,11 @@ export class TokenMiddleware implements NestMiddleware {
     // "/" no matter what was actually requested — `requiresToken('/')` would
     // then be false and this middleware would gate NOTHING. `originalUrl` is
     // never rebased by mounting, so it is the only reliable source here.
-    const pathname = requestPathname(request)
+    // Lowercased because Express routes case-insensitively by default: a
+    // request for `/API/devices` reaches the `/api/devices` handler, so every
+    // path decision here MUST fold case the same way, or a mixed-case path
+    // skips the gate entirely while still being served.
+    const pathname = requestPathname(request).toLowerCase()
     if (!requiresToken(pathname)) {
       next()
       return
@@ -59,9 +63,11 @@ export function requestPathname(request: Pick<Request, 'originalUrl' | 'path'>):
 }
 
 /** Only API paths need the cookie; static assets and the bootstrap endpoint
- * (which issues the cookie) are exempt. */
+ * (which issues the cookie) are exempt. Case-insensitive, matching Express's
+ * default routing — see the comment in `use()`. */
 export function requiresToken(pathname: string): boolean {
-  return pathname.startsWith('/api/') && pathname !== '/api/bootstrap'
+  const folded = pathname.toLowerCase()
+  return folded.startsWith('/api/') && folded !== '/api/bootstrap'
 }
 
 /**
