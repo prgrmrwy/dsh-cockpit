@@ -1,9 +1,12 @@
-import { Inject, Injectable, type NestMiddleware } from '@nestjs/common'
+import { Inject, Injectable, Logger, type NestMiddleware } from '@nestjs/common'
 import type { NextFunction, Request, Response } from 'express'
 import { TokenService } from './token.js'
 
+export const BRIDGE_CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
+
 /**
- * Gates the cockpit API behind an HttpOnly cookie. Static assets (the shell
+ * Gates the cockpit API: first the request's own addressing (Host) and origin,
+ * then an HttpOnly cookie. Static assets (the shell
  * bundle, which contains no secrets) and `/api/bootstrap` (which issues the
  * cookie on first visit) are exempt; everything under `/api/` requires it.
  * Other local processes or malicious web pages cannot read an HttpOnly cookie,
@@ -11,6 +14,8 @@ import { TokenService } from './token.js'
  */
 @Injectable()
 export class TokenMiddleware implements NestMiddleware {
+  readonly #logger = new Logger('CockpitApiGuard')
+
   constructor(@Inject(TokenService) private readonly tokens: TokenService) {}
 
   async use(request: Request, response: Response, next: NextFunction): Promise<void> {
@@ -26,19 +31,43 @@ export class TokenMiddleware implements NestMiddleware {
     // request for `/API/devices` reaches the `/api/devices` handler, so every
     // path decision here MUST fold case the same way, or a mixed-case path
     // skips the gate entirely while still being served.
-    const pathname = requestPathname(request).toLowerCase()
-    if (!requiresToken(pathname)) {
+    const route = classifyApiPath(requestPathname(request))
+    if (!route.api) {
+      next()
+      return
+    }
+    // Host first, before ANY exemption: a DNS-rebinding page reaches this
+    // loopback port under its own hostname, and must not get the bootstrap
+    // cookie or the 401's Set-Cookie either.
+    const host = headerValue(request.headers.host)
+    if (!isCockpitHost(host)) {
+      this.#reject(request, response, 'host')
+      return
+    }
+    // A bridge callback uses its own short-lived capability and is validated by
+    // the controller. Never treat this header as the persistent cockpit token.
+    const bridgeCallback = route.bridgeCallback && request.headers[BRIDGE_CAPABILITY_HEADER] !== undefined
+    if (!route.bootstrap && !bridgeCallback) {
+      // The cockpit cookie is not port-isolated: every device page and any
+      // other local page on this host is "same-site" and sends it. Only the
+      // cockpit's own origin — whatever Host it was reached under — may use it.
+      const origin = headerValue(request.headers.origin)
+      if (origin !== undefined && origin !== `http://${host}`) {
+        this.#reject(request, response, 'origin')
+        return
+      }
+      const fetchSite = headerValue(request.headers['sec-fetch-site'])
+      if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
+        this.#reject(request, response, 'fetch-site')
+        return
+      }
+    }
+    if (route.bootstrap || bridgeCallback) {
       next()
       return
     }
     const token = await this.tokens.resolve()
     const cookie = parseCookie(request.headers.cookie)
-    // A bridge callback uses its own short-lived capability and is validated by
-    // the controller. Never treat this header as the persistent cockpit token.
-    if (isBridgeCallback(pathname) && request.headers['x-dsh-cockpit-bridge-capability'] !== undefined) {
-      next()
-      return
-    }
     if (!this.tokens.verify(cookie?.cockpit_token)) {
       // First visit to an API route: issue the HttpOnly cookie alongside the
       // 401; the frontend retries once the cookie is stored.
@@ -48,6 +77,48 @@ export class TokenMiddleware implements NestMiddleware {
     }
     next()
   }
+
+  #reject(request: Request, response: Response, reason: 'host' | 'origin' | 'fetch-site'): void {
+    // Never echo request headers back (attacker-controlled), never log cookies.
+    this.#logger.debug({ event: 'cross-origin-rejected', method: request.method, path: requestPathname(request), reason })
+    response.status(403).json({ code: 'cross-origin-rejected', message: 'request origin is not the cockpit' })
+  }
+}
+
+export interface ApiRoute {
+  /** Case-folded pathname, the form every decision below is made on. */
+  readonly pathname: string
+  readonly api: boolean
+  readonly bootstrap: boolean
+  readonly bridgeCallback: boolean
+}
+
+/**
+ * The single classification of a request path shared by the auth guard and
+ * the CORS policy. Case-folded because Express routes case-insensitively by
+ * default (`/API/devices` reaches the `/api/devices` handler): any decision
+ * made on the raw path would let a mixed-case variant skip it.
+ */
+export function classifyApiPath(pathname: string): ApiRoute {
+  const folded = pathname.toLowerCase()
+  const api = folded.startsWith('/api/')
+  return {
+    pathname: folded,
+    api,
+    bootstrap: api && folded === '/api/bootstrap',
+    bridgeCallback: api && BRIDGE_CALLBACK_ROUTES.includes(folded),
+  }
+}
+
+/** The cockpit only listens on the IPv4 loopback; it is reachable as
+ * `127.0.0.1` or `localhost`, with an optional port, and nothing else — no
+ * userinfo, no path, no other hostname that merely resolves here. */
+export function isCockpitHost(host: string | undefined): host is string {
+  return host !== undefined && /^(?:127\.0\.0\.1|localhost)(?::\d{1,5})?$/i.test(host)
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
 }
 
 /** Extracts the true request pathname (no query string), from `originalUrl`
@@ -66,25 +137,27 @@ export function requestPathname(request: Pick<Request, 'originalUrl' | 'path'>):
  * (which issues the cookie) are exempt. Case-insensitive, matching Express's
  * default routing — see the comment in `use()`. */
 export function requiresToken(pathname: string): boolean {
-  const folded = pathname.toLowerCase()
-  return folded.startsWith('/api/') && folded !== '/api/bootstrap'
+  const route = classifyApiPath(pathname)
+  return route.api && !route.bootstrap
 }
 
 /**
- * Routes a device's bridge plugin calls directly.
+ * Routes a device's bridge plugin calls directly — the implementation of the
+ * spec requirement "bridge 回调路由名单" (cockpit-api-auth), its single
+ * authoritative source. Exact, lowercase, no prefix matching.
  *
  * These arrive cross-origin from the device's own DSH page, so they carry no
  * cockpit cookie by construction — the capability header is their credential
  * and the controller validates it. Anything reachable from the bridge MUST be
- * listed here, or it answers 401 no matter how valid its capability is.
+ * listed here, or it is rejected no matter how valid its capability is.
  */
-function isBridgeCallback(pathname: string): boolean {
-  return pathname === '/api/bridge/hello'
-    || pathname === '/api/bridge/session-opened'
-    || pathname === '/api/bridge/pending-snapshot'
-    || pathname === '/api/bridge/publishable-port'
-    || pathname === '/api/bridge/publish-port'
-}
+export const BRIDGE_CALLBACK_ROUTES: readonly string[] = [
+  '/api/bridge/hello',
+  '/api/bridge/session-opened',
+  '/api/bridge/pending-snapshot',
+  '/api/bridge/publishable-port',
+  '/api/bridge/publish-port',
+]
 
 export function parseCookie(header: string | undefined): Record<string, string> {
   if (header === undefined) return {}

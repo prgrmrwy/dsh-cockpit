@@ -13,9 +13,13 @@ import { TokenService } from '../src/auth/token.js'
  * `request.path` instead of `request.originalUrl` and therefore gating
  * NOTHING, because `requiresToken('/')` is always false. */
 const mountedRequest = (fullPath: string, headers: Record<string, string> = {}) => ({
+  method: 'GET',
   path: '/',
   originalUrl: fullPath,
-  headers,
+  // A real browser/CLI request to the cockpit always names a loopback Host;
+  // without one the same-origin guard (cockpit-api-auth) rejects with 403
+  // before the token check these cases exercise ever runs.
+  headers: { host: '127.0.0.1:3090', ...headers },
 }) as never
 
 describe('token middleware', () => {

@@ -2,9 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
-import { AppModule } from '../src/app.module.js'
+import { createCockpitApp } from '../src/app-factory.js'
 
 /**
  * A REAL end-to-end regression guard for the auth-gate wiring bug found during
@@ -37,7 +36,7 @@ describe('auth gate (real NestJS + Express integration)', () => {
     // for, not just the documented default.
     process.env.COCKPIT_PORT = '0'
 
-    app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false })
+    app = await createCockpitApp({ logger: false })
     await app.listen(0, '127.0.0.1')
     const address = app.getHttpServer().address()
     const port = typeof address === 'object' && address !== null ? address.port : 0
