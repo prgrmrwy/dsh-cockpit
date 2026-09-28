@@ -1,43 +1,22 @@
 import 'reflect-metadata'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
-import { NestFactory } from '@nestjs/core'
-import type { NestExpressApplication } from '@nestjs/platform-express'
-import { AppModule } from './app.module.js'
+import { createCockpitApp } from './app-factory.js'
 import { resolveCockpitPort } from './runtime/config.js'
 import { RuntimeControlService } from './runtime/runtime-control.service.js'
 
 export async function bootstrap(): Promise<void> {
-  // `debug` is enabled deliberately: bridge callbacks that fail capability or
-  // origin validation are the NORMAL self-healing path and are recorded at
-  // debug with full structure (device/origin/reason/class) so they stay
-  // diagnosable on demand, while WARN is reserved for genuine self-healing
-  // failures. Without this level those entries would be unrecoverable rather
-  // than merely quiet. See connectivity/bridge-rejection-log.ts.
-  const app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: ['error', 'warn', 'log', 'debug'] })
+  const app = await createCockpitApp()
   app.enableShutdownHooks()
-  // The bridge plugin runs inside each device's own DSH web client, which is a
-  // DIFFERENT origin (127.0.0.1:<device port>). Cross-origin fetches to the
-  // cockpit API need CORS; only loopback origins are allowed and cookies
-  // (SameSite=Strict is cross-origin-hostile) are NOT relied on by the bridge
-  // — the plugin sends the same-origin token in a header instead.
-  app.enableCors({
-    origin: (origin, callback) => {
-      if (origin === undefined) { callback(null, false); return }
-      try {
-        const url = new URL(origin)
-        const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
-        callback(null, loopback)
-      } catch { callback(null, false) }
-    },
-    credentials: true,
-    allowedHeaders: ['content-type', 'accept', 'x-dsh-cockpit-bridge-capability'],
-  })
 
   const here = path.dirname(fileURLToPath(import.meta.url))
   // src/main.ts (dev) or dist/main.js (built) both resolve to repository root.
   const repoRoot = path.resolve(here, '../../..')
   const webDist = path.join(repoRoot, 'packages/cockpit-web/dist')
+  // Static files are served BEFORE the module middleware (TokenMiddleware),
+  // behind only the factory's request-target/Host guard. The web build must
+  // therefore never emit anything under `api/`: such a file would be served
+  // without the cockpit cookie. (The Vite build does not.)
   app.useStaticAssets(webDist)
 
   const port = resolveCockpitPort()

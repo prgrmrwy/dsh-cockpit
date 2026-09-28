@@ -3,9 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { NestFactory } from '@nestjs/core'
 import type { NestExpressApplication } from '@nestjs/platform-express'
-import { AppModule } from '../src/app.module.js'
+import { createCockpitApp } from '../src/app-factory.js'
 
 /**
  * A REAL end-to-end regression guard for the auth-gate wiring bug found during
@@ -38,7 +37,7 @@ describe('auth gate (real NestJS + Express integration)', () => {
     // for, not just the documented default.
     process.env.COCKPIT_PORT = '0'
 
-    app = await NestFactory.create<NestExpressApplication>(AppModule, { logger: false })
+    app = await createCockpitApp({ logger: false })
     await app.listen(0, '127.0.0.1')
     const address = app.getHttpServer().address()
     const port = typeof address === 'object' && address !== null ? address.port : 0
@@ -88,6 +87,34 @@ describe('auth gate (real NestJS + Express integration)', () => {
       const response = await fetch(`${baseUrl}${pathname}`, init)
       expect(response.status, `${String(init.method ?? 'GET')} ${pathname} must be gated`).toBe(401)
     }
+  })
+
+  it('gates mixed-case /api/ paths too — Express routes case-insensitively, so the gate must match the router', async () => {
+    // Regression for a full auth bypass: the gate compared the raw path
+    // against the lowercase `/api/` prefix, while Express resolved `/API/...`
+    // to the same handlers, so every gated route answered with no cookie.
+    const cases: Array<[string, RequestInit]> = [
+      ['/API/devices', { method: 'GET' }],
+      ['/Api/devices', { method: 'GET' }],
+      ['/aPi/runtime/status', { method: 'GET' }],
+      ['/API/devices/some-id/workbench-launch', { method: 'POST' }],
+      ['/Api/devices/some-id', { method: 'PUT', body: '{}', headers: { 'content-type': 'application/json' } }],
+      ['/API/devices/some-id', { method: 'DELETE' }],
+      // A mixed-case bootstrap must not grant the bootstrap exemption to some
+      // other route, and must itself still behave as bootstrap (see below).
+      ['/API/Devices', { method: 'GET' }],
+    ]
+    for (const [pathname, init] of cases) {
+      const response = await fetch(`${baseUrl}${pathname}`, init)
+      expect(response.status, `${String(init.method ?? 'GET')} ${pathname} must be gated`).toBe(401)
+    }
+  })
+
+  it('treats a mixed-case bootstrap path as the bootstrap route, not as an ungated API route', async () => {
+    const response = await fetch(`${baseUrl}/API/Bootstrap`)
+    // Same contract as the canonical path: served without a cookie and issues one.
+    expect(response.status).toBe(200)
+    expect(response.headers.get('set-cookie')).toMatch(/^cockpit_token=/)
   })
 
   it('serves /api/bootstrap without a cookie, and issues one via Set-Cookie', async () => {
