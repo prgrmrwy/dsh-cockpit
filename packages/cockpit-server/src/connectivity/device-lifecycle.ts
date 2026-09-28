@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common'
-import type { CockpitEvent, DeviceState, SessionActivitySummary } from '@dsh-cockpit/shared'
+import type { CockpitEvent, DeviceState, SessionActivitySummary, SystemForwardRow } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { createDeviceProtocol, DshAuthenticationRequiredError, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
 import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
@@ -88,6 +88,8 @@ export class DeviceLifecycle {
   readonly #abort = new AbortController()
   #runAbort: AbortController | undefined
   #reconnectTask: Promise<void> | undefined
+  /** Host pid of the ssh child behind the current workbench tunnel. */
+  #workbenchPid: number | undefined
   /** Volatile completion coordination for one root-session generation. A
    * false→true edge starts a generation; an acknowledgement belongs only to
    * that generation, so it cannot suppress a later run. Unobserved entries are
@@ -176,6 +178,24 @@ export class DeviceLifecycle {
    * before validating and re-checks it afterwards, so a result produced by a
    * superseded connection can never be navigated. */
   connectionGeneration(): number { return this.#connectionGeneration }
+
+  /** The workbench channel as a forward-table `system` row (design D1): a
+   * projection only, never an entry. Its address and pid are exposed only
+   * while the channel is usable (READY/DEGRADED). */
+  workbenchForward(): SystemForwardRow {
+    const state = this.#stateExplicit
+    if ((state === 'READY' || state === 'DEGRADED') && this.#endpoint !== undefined) {
+      return {
+        kind: 'system',
+        devicePort: this.#record.remoteDshPort,
+        state: 'ready',
+        localPort: Number(this.#endpoint.port),
+        ...(this.#workbenchPid === undefined ? {} : { pid: this.#workbenchPid }),
+      }
+    }
+    const retrying = state === 'CONNECTING' || state === 'SSH_UNREACHABLE' || state === 'TUNNEL_ERROR' || state === 'DSH_UNAVAILABLE'
+    return { kind: 'system', devicePort: this.#record.remoteDshPort, state: retrying ? 'retrying' : 'paused' }
+  }
 
   /** Facts currently aggregated for this device. */
   current(): LiveDeviceFacts {
@@ -530,6 +550,7 @@ export class DeviceLifecycle {
       ...(this.#record.localPort === undefined ? {} : { preferredLocalPort: this.#record.localPort }),
     })
     this.#endpoint = handle.endpoint
+    this.#workbenchPid = handle.pid
     if (handle.localPort !== this.#record.localPort) this.#onLocalPort?.(this.deviceId, handle.localPort)
     return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() }, connectionGeneration)
   }

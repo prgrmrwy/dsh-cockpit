@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import type { DeviceRecord, DshAuthMaterial } from '@dsh-cockpit/shared'
+import { Logger } from '@nestjs/common'
+import { FORWARD_LIMIT, isValidDevicePort, isValidForwardLabel, type DeviceRecord, type DshAuthMaterial, type PinnedForwardRecord } from '@dsh-cockpit/shared'
 
 const FILE_NAME = 'devices.json'
 const DIR_MODE = 0o700
@@ -56,6 +57,40 @@ function validateDshAuth(value: unknown, legacyToken: unknown): DshAuthMaterial 
   }
 }
 
+const logger = new Logger('DeviceRegistry')
+
+/** Pinned forward marks (design D3). Unlike the rest of the record these are
+ * tolerant: one bad entry is dropped with a warning rather than failing the
+ * whole file closed — fail-closed guards an unparseable file, not one stale
+ * mark. Only `devicePort` and `label` survive: a local port is never stored. */
+function validatePinnedForwards(deviceId: string, value: unknown): PinnedForwardRecord[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    logger.warn(`device ${deviceId}: ignoring a non-array forwards field`)
+    return []
+  }
+  const kept: PinnedForwardRecord[] = []
+  for (const candidate of value as unknown[]) {
+    const entry = typeof candidate === 'object' && candidate !== null ? candidate as Record<string, unknown> : undefined
+    const devicePort = entry?.devicePort
+    const label = entry?.label
+    if (entry === undefined || !isValidDevicePort(devicePort) || (label !== undefined && !isValidForwardLabel(label))) {
+      logger.warn(`device ${deviceId}: ignoring an invalid pinned forward entry`)
+      continue
+    }
+    if (kept.some(existing => existing.devicePort === devicePort)) {
+      logger.warn(`device ${deviceId}: ignoring a duplicate pinned forward for device port ${devicePort}`)
+      continue
+    }
+    if (kept.length >= FORWARD_LIMIT) {
+      logger.warn(`device ${deviceId}: ignoring pinned forwards beyond the limit of ${FORWARD_LIMIT}`)
+      break
+    }
+    kept.push(label === undefined ? { devicePort } : { devicePort, label: label as string })
+  }
+  return kept
+}
+
 function validateDevice(value: unknown): DeviceRecord | undefined {
   if (typeof value !== 'object' || value === null) return undefined
   const row = value as Record<string, unknown>
@@ -70,6 +105,7 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
   ) return undefined
   const dshAuth = validateDshAuth(row.dshAuth, row.dshLaunchToken)
   if (dshAuth === null) return undefined
+  const forwards = validatePinnedForwards(row.deviceId, row.forwards)
   const record: DeviceRecord = {
     deviceId: row.deviceId,
     displayName: row.displayName,
@@ -87,6 +123,7 @@ function validateDevice(value: unknown): DeviceRecord | undefined {
     ...(isValidLocalPort(row.localPort) ? { localPort: row.localPort } : {}),
     ...(typeof row.dshLaunchToken === 'string' ? { dshLaunchToken: row.dshLaunchToken } : {}),
     ...(dshAuth === undefined ? {} : { dshAuth }),
+    ...(forwards === undefined || forwards.length === 0 ? {} : { forwards }),
   }
   if (record.kind === 'remote' && record.sshAlias === undefined) return undefined
   return record

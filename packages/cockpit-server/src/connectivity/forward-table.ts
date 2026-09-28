@@ -102,6 +102,8 @@ export class DeviceForwards {
   readonly #random: () => number
   #mainAvailable: boolean
   #terminated = false
+  #sshAlias: string
+  #remoteDshPort: number
 
   constructor(options: DeviceForwardsOptions) {
     this.deviceId = options.deviceId
@@ -109,6 +111,35 @@ export class DeviceForwards {
     this.#now = options.now ?? Date.now
     this.#random = options.random ?? Math.random
     this.#mainAvailable = options.mainAvailable
+    this.#sshAlias = options.sshAlias ?? ''
+    this.#remoteDshPort = options.remoteDshPort
+  }
+
+  /** The device's SSH alias changed (design D5): every live child still talks
+   * to the OLD host, so kill them all and park every entry as `paused`. The
+   * table treats the workbench channel as unavailable until the new lifecycle
+   * reports READY on the new alias, which rebuilds the entries — so an
+   * additional child never runs against a host the workbench is not on. */
+  async rehost(sshAlias: string): Promise<void> {
+    this.#sshAlias = sshAlias
+    this.#mainAvailable = false
+    const handles = [...this.#entries.values()].map(entry => {
+      this.#clearRetry(entry)
+      entry.generation += 1
+      const handle = entry.handle
+      entry.handle = undefined
+      this.#setState(entry, 'paused')
+      return handle
+    })
+    this.#changed()
+    await Promise.all(handles.map(handle => handle?.dispose()))
+  }
+
+  /** The workbench's remote DSH port changed: later requests for it are
+   * `reserved-port`. Existing entries are deliberately left alone (design D1:
+   * no conflict rejection on edit). */
+  setReservedPort(remoteDshPort: number): void {
+    this.#remoteDshPort = remoteDshPort
   }
 
   /** Follow the workbench channel (READY/DEGRADED = available). While it is
@@ -145,13 +176,20 @@ export class DeviceForwards {
    * mark FIRST; this only commits it to memory and starts the child. Pinning a
    * held entry just adds the mark. */
   pin(devicePort: number, label?: string): AcquireResult {
-    this.#validatePort(devicePort)
-    if (label !== undefined && !isValidForwardLabel(label)) throw new ForwardRejection('invalid-label')
+    this.checkPin(devicePort, label)
     const entry = this.#ensure(devicePort)
     entry.pinned = true
     if (label !== undefined) entry.label = label
     this.#changed()
     return this.#result(entry)
+  }
+
+  /** Every rejection `pin` could raise, without touching anything: the caller
+   * runs this BEFORE persisting the mark, so a doomed pin never reaches disk. */
+  checkPin(devicePort: number, label?: string): void {
+    this.#validatePort(devicePort)
+    if (label !== undefined && !isValidForwardLabel(label)) throw new ForwardRejection('invalid-label')
+    if (!this.#entries.has(devicePort) && this.#entries.size >= FORWARD_LIMIT) throw new ForwardRejection('forward-limit')
   }
 
   /** Release one holder. Unknown holders and unknown ports succeed without
@@ -240,7 +278,7 @@ export class DeviceForwards {
   #validatePort(devicePort: number): void {
     if (this.#options.kind === 'local') throw new ForwardRejection('local-device')
     if (!isValidDevicePort(devicePort)) throw new ForwardRejection('invalid-port')
-    if (devicePort === this.#options.remoteDshPort) throw new ForwardRejection('reserved-port')
+    if (devicePort === this.#remoteDshPort) throw new ForwardRejection('reserved-port')
   }
 
   #insert(devicePort: number): Entry {
@@ -274,7 +312,7 @@ export class DeviceForwards {
     if (entry.state !== 'retrying') this.#setState(entry, 'starting')
     void this.#options.connector.connect({
       deviceId: this.deviceId,
-      sshAlias: this.#options.sshAlias ?? '',
+      sshAlias: this.#sshAlias,
       channelId: forwardChannelId(entry.devicePort),
       remoteDshPort: entry.devicePort,
       onExit: exit => { this.#onExit(entry, generation, exit.diagnostic) },

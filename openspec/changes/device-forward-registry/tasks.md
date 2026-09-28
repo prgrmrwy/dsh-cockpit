@@ -57,30 +57,30 @@
 
 ## 3. 转发表接入 ConnectivityService 与注册表（design D1、D3、D5、D6）
 
-- [ ] 3.1 Write failing test: `reads a pre-change record with only a singular localPort and no forwards field` in `packages/cockpit-server/tests/registry.test.ts` (assert it fails for the right reason)
-- [ ] 3.2 Implement: `DeviceRecord.forwards?`（仅常驻 `{devicePort,label?}`）进入 `validateDevice` 白名单；单个非法条目忽略并告警 to pass 3.1
-- [ ] 3.3 Refactor; full suite stays green
-- [ ] 3.4 Write failing test: `projects the workbench channel as a system row plus ready additional rows with pids` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 3.5 Implement: 投影合成 `kind: system` 行并附 pid，附加条目 ready 时带本地端口 to pass 3.4
-- [ ] 3.6 Refactor; full suite stays green
-- [ ] 3.7 Write failing test: `restores only pinned entries after a cockpit restart` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 3.8 Implement: 启动时只从注册表重建常驻条目；随持有者条目不落盘 to pass 3.7
-- [ ] 3.9 Refactor; full suite stays green
-- [ ] 3.10 Write failing test: `drops holders and keeps pinned entries across disable and re-enable` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 3.11 Implement: `#terminateDevice` 调用 `forwards.terminate()`，重新启用后重建常驻 to pass 3.10
-- [ ] 3.12 Refactor; full suite stays green
-- [ ] 3.13 Write failing test: `terminates every forward on disable and keeps the pinned mark` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 3.14 Implement: 禁用期间不启动新子进程，注册表保留常驻标记 to pass 3.13
-- [ ] 3.15 Refactor; full suite stays green
-- [ ] 3.16 Write failing test: `rehosts additional forwards on the new alias only after the workbench is READY` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [ ] 3.17 Implement: 别名变更触发 `#replaceLifecycle` 与 `forwards.rehost()` to pass 3.16
-- [ ] 3.18 Refactor; full suite stays green
-- [ ] 3.19 Write failing test: `terminates owned additional forward children on shutdown without touching foreign ssh` in `packages/cockpit-server/tests/runtime-control.test.ts` (assert it fails for the right reason)
-- [ ] 3.20 Implement: `onApplicationShutdown` 经 `disposeAll` 终止附加子进程 to pass 3.19
-- [ ] 3.21 Refactor; full suite stays green
-- [ ] 3.22 Write failing test (extra, no test-plan row): 删除常驻条目时写盘失败，请求失败且内存表、持有者、子进程不变 (assert it fails for the right reason)
-- [ ] 3.23 Implement: 删除常驻条目先经 `mutateDevice` 写盘，成功后才改内存与终止子进程（design D3），to pass 3.22
-- [ ] 3.24 Refactor; full suite stays green
+- [x] 3.1 Write failing test: `reads a pre-change record with only a singular localPort and no forwards field` in `packages/cockpit-server/tests/registry.test.ts` (assert it fails for the right reason)
+- [x] 3.2 Implement: `DeviceRecord.forwards?`（仅常驻 `{devicePort,label?}`）进入 `validateDevice` 白名单；单个非法条目忽略并告警 to pass 3.1
+- [x] 3.3 Refactor; full suite stays green
+- [x] 3.4 Write failing test: `projects the workbench channel as a system row plus ready additional rows with pids` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 3.5 Implement: 投影合成 `kind: system` 行并附 pid，附加条目 ready 时带本地端口 to pass 3.4
+- [x] 3.6 Refactor; full suite stays green
+- [x] 3.7 Write failing test: `restores only pinned entries after a cockpit restart` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 3.8 Implement: 启动时只从注册表重建常驻条目；随持有者条目不落盘 to pass 3.7
+- [x] 3.9 Refactor; full suite stays green
+- [x] 3.10 Write failing test: `drops holders and keeps pinned entries across disable and re-enable` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 3.11 Implement: `#terminateDevice` 调用 `forwards.terminate()`，重新启用后重建常驻 to pass 3.10
+- [x] 3.12 Refactor; full suite stays green
+- [x] 3.13 Write failing test: `terminates every forward on disable and keeps the pinned mark` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 3.14 Implement: 禁用期间不启动新子进程，注册表保留常驻标记 to pass 3.13
+- [x] 3.15 Refactor; full suite stays green
+- [x] 3.16 Write failing test: `rehosts additional forwards on the new alias only after the workbench is READY` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
+- [x] 3.17 Implement: 别名变更触发 `#replaceLifecycle` 与 `forwards.rehost()` to pass 3.16
+- [x] 3.18 Refactor; full suite stays green
+- [x] 3.19 Write failing test: `terminates owned additional forward children on shutdown without touching foreign ssh` in `packages/cockpit-server/tests/runtime-control.test.ts` (assert it fails for the right reason) — 注：既有 `disposeAll` 已终止全部自有通道，写成时即为绿；以变异（去掉 `terminate()` 与 `disposeAll()`）确认测试失败
+- [x] 3.20 Implement: `onApplicationShutdown` 经 `disposeAll` 终止附加子进程 to pass 3.19
+- [x] 3.21 Refactor; full suite stays green
+- [x] 3.22 Write failing test (extra, no test-plan row): 删除常驻条目时写盘失败，请求失败且内存表、持有者、子进程不变（`fails a pinned delete whose disk write fails and leaves the table, holders and child unchanged`） (assert it fails for the right reason)
+- [x] 3.23 Implement: 删除常驻条目先经 `mutateDevice` 写盘，成功后才改内存与终止子进程（design D3），to pass 3.22
+- [x] 3.24 Refactor; full suite stays green
 
 ## 4. 页面与实例回收（design D4）
 

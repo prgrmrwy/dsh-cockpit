@@ -1,3 +1,4 @@
+import type { DeviceForwardsProjection, PinnedForwardRecord } from './forwards.js'
 /** Device category. Local devices need no tunnel; remote devices are reached
  * through an owned localhost SSH forward. */
 export type DeviceKind = 'local' | 'remote'
@@ -48,6 +49,9 @@ export interface DeviceRecord {
   readonly dshLaunchToken?: string
   /** Versioned private browser-session material. */
   readonly dshAuth?: DshAuthMaterial
+  /** Pinned additional forwards (device-forward-registry D3): device port and
+   * optional label only. Held entries and every local port stay in memory. */
+  readonly forwards?: readonly PinnedForwardRecord[]
   readonly enabled: boolean
   readonly order: number
 }
@@ -108,6 +112,9 @@ export interface DeviceStatusFacts {
   readonly dshAuthAutoDiscovery: boolean
   readonly dshAuthGeneration: number
   readonly dshAuthExpiresAt?: number
+  /** Forward table projection (remote devices only): the workbench channel as
+   * a `system` row plus every additional entry. No page or instance ids. */
+  readonly forwards?: DeviceForwardsProjection
 }
 
 /** One session status as reported by the remote rc.2 session.list / events. */

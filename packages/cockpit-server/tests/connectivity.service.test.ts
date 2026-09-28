@@ -753,6 +753,174 @@ describe('additional forwards survive workbench connection replacement', () => {
   })
 })
 
+describe('per-device forward table', () => {
+  async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 400 && !check(); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(check()).toBe(true)
+  }
+  const H = { pageId: 'page-aaaaaaaaaaaaaaaa', instanceId: 'inst-aaaaaaaaaaaaaaaa', holder: 'memex' }
+  const rows = (service: InstanceType<typeof ConnectivityService>, deviceId = 'a') =>
+    service.statuses().find(status => status.deviceId === deviceId)?.forwards?.rows ?? []
+  const additional = (service: InstanceType<typeof ConnectivityService>, devicePort: number, deviceId = 'a') =>
+    rows(service, deviceId).find(row => row.kind === 'additional' && row.devicePort === devicePort)
+  const live = (channelId: string) => children.filter(child => child.channelId === channelId && child.alive)
+
+  async function readyRemote(overrides: Partial<DeviceRecord> = {}) {
+    tunnel.established = true
+    const built = await serviceFor([remote('a', 0, { enabled: true, ...overrides })])
+    await waitFor(() => built.service.statuses()[0]?.state === 'READY')
+    return built
+  }
+
+  it('projects the workbench channel as a system row plus ready additional rows with pids', async () => {
+    const { service } = await readyRemote()
+    service.acquireForward('a', 5432, H)
+    await waitFor(() => additional(service, 5432)?.state === 'ready')
+
+    const workbench = live('workbench')[0]!
+    const forward = live('fwd-5432')[0]!
+    const facts = service.statuses()[0]!
+    expect(facts.forwards).toEqual({
+      rows: [
+        { kind: 'system', devicePort: 3080, state: 'ready', localPort: workbench.localPort, pid: workbench.pid },
+        expect.objectContaining({ kind: 'additional', devicePort: 5432, state: 'ready', localPort: forward.localPort, pid: forward.pid, holders: ['memex'], holderCount: 1, pinned: false }),
+      ],
+      additionalCount: 1,
+      limit: 8,
+    })
+    expect(forward.localPort).not.toBe(workbench.localPort)
+
+    await service.onApplicationShutdown()
+  })
+
+  it('restores only pinned entries after a cockpit restart', async () => {
+    const first = await readyRemote()
+    await first.service.pinForward('a', 5432, 'db')
+    first.service.acquireForward('a', 3939, H)
+    await waitFor(() => additional(first.service, 5432)?.state === 'ready' && additional(first.service, 3939)?.state === 'ready')
+    const oldPort = additional(first.service, 5432)!.localPort!
+    await first.service.onApplicationShutdown()
+    expect(live('fwd-5432')).toEqual([])
+    expect(live('fwd-3939')).toEqual([])
+
+    // Only the pinned mark is on disk: device port and label, no local port.
+    expect(first.registry.records[0]!.forwards).toEqual([{ devicePort: 5432, label: 'db' }])
+    expect(JSON.stringify(first.registry.records)).not.toContain(String(oldPort))
+
+    // A new process over the same registry.
+    const service = new ConnectivityService(first.registry as never, new DeviceEventsService())
+    await waitFor(() => service.statuses()[0]?.state === 'READY')
+    await waitFor(() => additional(service, 5432)?.state === 'ready')
+    expect(additional(service, 5432)).toEqual(expect.objectContaining({ pinned: true, label: 'db', holderCount: 0 }))
+    expect(additional(service, 3939)).toBeUndefined()
+    expect(live('fwd-3939')).toEqual([])
+    await service.onApplicationShutdown()
+  })
+
+  it('terminates every forward on disable and keeps the pinned mark', async () => {
+    const { service, registry } = await readyRemote()
+    await service.pinForward('a', 5432)
+    service.acquireForward('a', 3939, H)
+    await waitFor(() => additional(service, 5432)?.state === 'ready' && additional(service, 3939)?.state === 'ready')
+    const spawnedBefore = children.length
+
+    await service.updateDevice('a', { enabled: false })
+
+    // Workbench and both additional children are gone.
+    expect(children.filter(child => child.deviceId === 'a' && child.alive)).toEqual([])
+    expect(registry.records[0]!.forwards).toEqual([{ devicePort: 5432 }])
+    // Nothing starts while disabled: a bridge acquire is refused, and no
+    // leftover retry or restore spawns a child later.
+    expect(() => service.acquireForward('a', 7000, H)).toThrow(expect.objectContaining({ code: 'device-unavailable' }))
+    await new Promise(resolve => setTimeout(resolve, 60))
+    expect(children).toHaveLength(spawnedBefore)
+    // The pinned mark stays visible, parked without an address; the held
+    // entry is gone.
+    expect(service.statuses()[0]!.forwards?.rows.filter(row => row.kind === 'additional')).toEqual([
+      expect.objectContaining({ devicePort: 5432, state: 'paused', pinned: true, holderCount: 0 }),
+    ])
+    expect(additional(service, 5432)).not.toHaveProperty('localPort')
+    await service.onApplicationShutdown()
+  })
+
+  it('rehosts additional forwards on the new alias only after the workbench is READY', async () => {
+    probeSshIdentity.mockResolvedValue({ ok: true, diagnostic: 'ok' })
+    const { service } = await readyRemote({ sshAlias: 'vm-a' })
+    service.acquireForward('a', 3939, H)
+    await waitFor(() => additional(service, 3939)?.state === 'ready')
+    const [old] = live('fwd-3939')
+    expect(old!.sshAlias).toBe('vm-a')
+
+    // Hold the new workbench connection so the "between" window is observable.
+    tunnel.established = false
+    await service.updateDevice('a', { sshAlias: 'vm-b' })
+    expect(old!.alive).toBe(false)
+    expect(additional(service, 3939)).toEqual(expect.objectContaining({ state: 'paused', holderCount: 1 }))
+    expect(additional(service, 3939)).not.toHaveProperty('localPort')
+    // The workbench is not READY on vm-b yet: no additional child exists.
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(live('fwd-3939')).toEqual([])
+    expect(tunnelConnects.filter(request => request.channelId === 'fwd-3939')).toHaveLength(1)
+
+    tunnel.established = true
+    await waitFor(() => service.statuses()[0]?.state === 'READY' && additional(service, 3939)?.state === 'ready')
+    const [rebuilt] = live('fwd-3939')
+    expect(rebuilt!.sshAlias).toBe('vm-b')
+    expect(live('workbench').map(child => child.sshAlias)).toEqual(['vm-b'])
+    expect(additional(service, 3939)).toEqual(expect.objectContaining({ holderCount: 1, pid: rebuilt!.pid }))
+    await service.onApplicationShutdown()
+  })
+
+  it('fails a pinned delete whose disk write fails and leaves the table, holders and child unchanged', async () => {
+    const { service, registry } = await readyRemote()
+    await service.pinForward('a', 5432, 'db')
+    service.acquireForward('a', 5432, H)
+    await waitFor(() => additional(service, 5432)?.state === 'ready')
+    const before = additional(service, 5432)
+    const [child] = live('fwd-5432')
+
+    const original = registry.mutateDevice.bind(registry)
+    registry.mutateDevice = async () => { throw new Error('disk full') }
+    await expect(service.removeForward('a', 5432)).rejects.toThrow('disk full')
+    expect(additional(service, 5432)).toEqual(before)
+    expect(child!.alive).toBe(true)
+    expect(registry.records[0]!.forwards).toEqual([{ devicePort: 5432, label: 'db' }])
+
+    // Once the write succeeds the mark, the holders and the child all go.
+    registry.mutateDevice = original
+    await service.removeForward('a', 5432)
+    expect(additional(service, 5432)).toBeUndefined()
+    expect(child!.alive).toBe(false)
+    expect(registry.records[0]!.forwards ?? []).toEqual([])
+    // Idempotent: an unknown entry succeeds without touching anything.
+    await service.removeForward('a', 5432)
+    await service.onApplicationShutdown()
+  })
+
+  it('drops holders and keeps pinned entries across disable and re-enable', async () => {
+    const { service } = await readyRemote()
+    await service.pinForward('a', 5432)
+    service.acquireForward('a', 3939, H)
+    await waitFor(() => additional(service, 5432)?.state === 'ready' && additional(service, 3939)?.state === 'ready')
+    const [pinnedChild] = live('fwd-5432')
+    const [heldChild] = live('fwd-3939')
+
+    await service.updateDevice('a', { enabled: false })
+    expect(pinnedChild!.alive).toBe(false)
+    expect(heldChild!.alive).toBe(false)
+
+    await service.updateDevice('a', { enabled: true })
+    await waitFor(() => service.statuses()[0]?.state === 'READY' && additional(service, 5432)?.state === 'ready')
+    expect(live('fwd-5432')).toHaveLength(1)
+    expect(live('fwd-5432')[0]).not.toBe(pinnedChild)
+    expect(additional(service, 3939)).toBeUndefined()
+    expect(live('fwd-3939')).toEqual([])
+    await service.onApplicationShutdown()
+  })
+})
+
 describe('bridge capability and protocol', () => {
   it('issues a capability only for a connected, enabled device and rejects an unknown one', async () => {
     const { service } = await serviceFor([remote('local', 0, {

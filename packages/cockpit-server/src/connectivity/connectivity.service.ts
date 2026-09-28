@@ -1,8 +1,9 @@
 import { Inject, Injectable, Logger, Optional, OnApplicationShutdown } from '@nestjs/common'
-import type { DeviceConnectionStatus, DeviceRecord, DeviceStatusFacts } from '@dsh-cockpit/shared'
+import { FORWARD_LIMIT, type DeviceConnectionStatus, type DeviceForwardsProjection, type DeviceRecord, type DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle, type DeviceLifecycleOptions } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
+import { DeviceForwards, ForwardRejection, type AcquireResult, type ForwardHolder } from './forward-table.js'
 import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { probeDshCarrier } from './protocol-client.js'
@@ -29,6 +30,8 @@ export interface ConnectivityServiceSeams {
   readonly fetch?: typeof fetch
   readonly launchCoordinator?: WorkbenchLaunchCoordinator
   readonly createProtocol?: DeviceLifecycleOptions['createProtocol']
+  /** Pre-built tunnel manager (tests drive fake ssh children through it). */
+  readonly tunnels?: TunnelManager
 }
 
 @Injectable()
@@ -42,6 +45,9 @@ export class ConnectivityService implements OnApplicationShutdown {
   readonly #publishablePorts = new Map<string, Map<string, number>>()
   /** device+channel -> the live forward delivered for it. */
   readonly #publishedChannels = new Map<string, { url: string; localPort: number }>()
+  /** Per-device forward tables (design D1). Owned by the device, not by any
+   * one lifecycle instance: replacing the workbench connection keeps them. */
+  readonly #forwards = new Map<string, DeviceForwards>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
   /** Per-device bridge rejection grading (see bridge-rejection-log.ts). */
@@ -75,7 +81,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#fetchImpl = seams.fetch
     this.#createProtocol = seams.createProtocol
     this.#launchCoordinator = seams.launchCoordinator ?? new WorkbenchLaunchCoordinator({ logger: this.#logger })
-    this.#tunnels = new TunnelManager({
+    this.#tunnels = seams.tunnels ?? new TunnelManager({
       sshExecutable: this.#sshExecutable,
       readinessProbe: probeDshCarrier,
       logger: { warn: message => this.#logger.warn(message) },
@@ -96,7 +102,14 @@ export class ConnectivityService implements OnApplicationShutdown {
       ...(this.#createProtocol === undefined ? {} : { createProtocol: this.#createProtocol }),
       // Any lifecycle state change is pushed to the browser immediately; the
       // REST snapshot stays available for manual refresh.
-      onFacts: () => { this.events.publish(this.statuses()) },
+      onFacts: facts => {
+        // Only the device's CURRENT lifecycle drives its forwards; a replaced
+        // one may still emit while it winds down.
+        if (this.#lifecycles.get(facts.deviceId) === lifecycle) {
+          this.#forwards.get(facts.deviceId)?.setMainAvailable(facts.state === 'READY' || facts.state === 'DEGRADED')
+        }
+        this.events.publish(this.statuses())
+      },
       onLocalPort: (deviceId, localPort) => { void this.#persistLocalPort(deviceId, localPort) },
       recoverAuth: async (current, signal) => this.#discoverAuth(current, signal),
       onAuthAccepted: async (deviceId, expectedGeneration, accepted) => {
@@ -125,7 +138,101 @@ export class ConnectivityService implements OnApplicationShutdown {
       },
     })
     this.#lifecycles.set(record.deviceId, lifecycle)
+    this.#attachForwards(record)
     if (record.enabled) lifecycle.start()
+  }
+
+  /** Create the device's forward table once; later lifecycle replacements
+   * reuse it. A local device gets one too, so every request is refused
+   * uniformly with `local-device`. */
+  #attachForwards(record: DeviceRecord): void {
+    if (this.#forwards.has(record.deviceId)) return
+    const table = new DeviceForwards({
+      deviceId: record.deviceId,
+      kind: record.kind,
+      ...(record.sshAlias === undefined ? {} : { sshAlias: record.sshAlias }),
+      remoteDshPort: record.remoteDshPort,
+      connector: this.#tunnels,
+      mainAvailable: false,
+      onChange: () => { this.events.publish(this.statuses()) },
+    })
+    this.#forwards.set(record.deviceId, table)
+    // Only pinned marks survive a restart or a re-enable (design D3); they
+    // park as `paused` until the workbench channel is READY.
+    for (const pinned of record.forwards ?? []) {
+      try {
+        table.pin(pinned.devicePort, pinned.label)
+      } catch (cause) {
+        const code = cause instanceof ForwardRejection ? cause.code : String(cause)
+        this.#logger.warn(`pinned forward not restored: device=${record.deviceId} port=${pinned.devicePort} reason=${code}`)
+      }
+    }
+  }
+
+  /** The device's forward table, or a stable rejection when it has none. */
+  #forwardTable(deviceId: string): DeviceForwards {
+    const table = this.#forwards.get(deviceId)
+    if (table === undefined) throw new ForwardRejection('device-unavailable')
+    return table
+  }
+
+  /** Bridge acquire (design D3): create or reuse a held entry. */
+  acquireForward(deviceId: string, devicePort: number, holder: ForwardHolder): AcquireResult {
+    // A disabled device keeps its table only to show pinned marks (paused);
+    // it never takes new holders, so nothing can start while disabled.
+    if (this.#lifecycles.get(deviceId)?.current().enabled !== true) throw new ForwardRejection('device-unavailable')
+    return this.#forwardTable(deviceId).acquire(devicePort, holder)
+  }
+
+  /** Cockpit panel: create a pinned entry (or pin a held one). Disk first
+   * (design D3): the mark is written through `mutateDevice`, and only after
+   * that succeeds does memory change and a child start. */
+  async pinForward(deviceId: string, devicePort: number, label?: string): Promise<AcquireResult> {
+    const table = this.#forwardTable(deviceId)
+    table.checkPin(devicePort, label)
+    const committed = await this.#registry.mutateDevice(deviceId, current => {
+      const existing = current.forwards ?? []
+      const previous = existing.find(entry => entry.devicePort === devicePort)
+      const nextLabel = label ?? previous?.label
+      if (previous !== undefined && previous.label === nextLabel) return current
+      const mark = nextLabel === undefined ? { devicePort } : { devicePort, label: nextLabel }
+      return { ...current, forwards: [...existing.filter(entry => entry.devicePort !== devicePort), mark] }
+    })
+    if (committed === undefined) throw new ForwardRejection('device-unavailable')
+    if (this.#forwards.get(deviceId) !== table) throw new ForwardRejection('device-unavailable')
+    return table.pin(devicePort, label)
+  }
+
+  /** Cockpit panel: delete an entry — pin mark, every holder, the child.
+   * Disk first (design D3): if the mark cannot be removed from the registry
+   * the request fails and memory, holders and the child are untouched.
+   * Idempotent for unknown devices and ports. */
+  async removeForward(deviceId: string, devicePort: number): Promise<void> {
+    const table = this.#forwards.get(deviceId)
+    const persisted = (await this.#registry.load()).find(record => record.deviceId === deviceId)?.forwards ?? []
+    if (persisted.some(entry => entry.devicePort === devicePort)) {
+      await this.#registry.mutateDevice(deviceId, current => {
+        const existing = current.forwards ?? []
+        if (!existing.some(entry => entry.devicePort === devicePort)) return current
+        const { forwards: _forwards, ...rest } = current
+        const kept = existing.filter(entry => entry.devicePort !== devicePort)
+        return kept.length === 0 ? rest : { ...rest, forwards: kept }
+      })
+    }
+    await table?.remove(devicePort)
+  }
+
+  /** Release one holder; idempotent. */
+  async releaseForward(deviceId: string, devicePort: number, holder: ForwardHolder): Promise<void> {
+    await this.#forwards.get(deviceId)?.release(devicePort, holder)
+  }
+
+  /** Projection for the status stream: remote devices only. */
+  #forwardProjection(deviceId: string, lifecycle: DeviceLifecycle): DeviceForwardsProjection | undefined {
+    const table = this.#forwards.get(deviceId)
+    if (table === undefined || lifecycle.current().kind === 'local') return undefined
+    const additional = table.projection()
+    return { rows: [lifecycle.workbenchForward(), ...additional], additionalCount: additional.length, limit: FORWARD_LIMIT }
   }
 
   async #discoverAuth(record: DeviceRecord, signal: AbortSignal): Promise<string | undefined> {
@@ -192,6 +299,11 @@ export class ConnectivityService implements OnApplicationShutdown {
    * device. */
   async #terminateDevice(deviceId: string): Promise<void> {
     await this.#replaceLifecycle(deviceId)
+    // Holders are memory-only and die with the table; pinned marks stay in
+    // the registry and are rebuilt when the device is attached again.
+    const table = this.#forwards.get(deviceId)
+    this.#forwards.delete(deviceId)
+    await table?.terminate()
     await this.releasePublishedPorts(deviceId)
   }
 
@@ -226,6 +338,7 @@ export class ConnectivityService implements OnApplicationShutdown {
           dshAuthAutoDiscovery: facts.dshAuthAutoDiscovery,
           dshAuthGeneration: facts.dshAuthGeneration,
           ...(facts.dshAuthExpiresAt === undefined ? {} : { dshAuthExpiresAt: facts.dshAuthExpiresAt }),
+          ...forwardsField(this.#forwardProjection(facts.deviceId, l)),
         }
       })
   }
@@ -367,7 +480,11 @@ export class ConnectivityService implements OnApplicationShutdown {
     })
     const next = normalized.find(record => record.deviceId === deviceId)!
     const enabledFlipped = update.enabled !== undefined && update.enabled !== committedPrevious.enabled
-    if (enabledFlipped || authChanged || discoveryChanged) {
+    // An alias edit must move the workbench AND the additional forwards to
+    // the new host together (design D5), so it replaces the lifecycle too.
+    const aliasChanged = next.sshAlias !== committedPrevious.sshAlias
+    if (next.remoteDshPort !== committedPrevious.remoteDshPort) this.#forwards.get(deviceId)?.setReservedPort(next.remoteDshPort)
+    if (enabledFlipped || authChanged || discoveryChanged || aliasChanged) {
       // stop() is terminal. Replace the lifecycle when the enabled bit flips;
       // reusing an aborted instance would make a later enable a no-op. A
       // disable also invalidates bridge presence: it describes a live page,
@@ -376,6 +493,7 @@ export class ConnectivityService implements OnApplicationShutdown {
       // workbench connection and leaves additional forwards running.
       if (enabledFlipped) await this.#terminateDevice(deviceId)
       else await this.#replaceLifecycle(deviceId)
+      if (!enabledFlipped && aliasChanged) await this.#forwards.get(deviceId)?.rehost(next.sshAlias ?? '')
       this.#bridgeSeenAt.delete(deviceId)
       this.#capabilities.revokeDevice(deviceId)
       this.#attach(next)
@@ -685,12 +803,19 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   async onApplicationShutdown(): Promise<void> {
+    const tables = [...this.#forwards.values()]
+    this.#forwards.clear()
+    await Promise.all(tables.map(table => table.terminate()))
     for (const deviceId of this.#lifecycles.keys()) this.#launchCoordinator.cancelDevice(deviceId)
     await Promise.all([...this.#lifecycles.values()].map(l => l.stop()))
     this.#publishablePorts.clear()
     this.#publishedChannels.clear()
     await this.#tunnels.disposeAll()
   }
+}
+
+function forwardsField(projection: DeviceForwardsProjection | undefined): { forwards?: DeviceForwardsProjection } {
+  return projection === undefined ? {} : { forwards: projection }
 }
 
 function redactDeviceRecord(record: DeviceRecord): DeviceRecord {

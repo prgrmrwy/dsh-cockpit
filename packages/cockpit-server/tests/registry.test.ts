@@ -1,7 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Logger } from '@nestjs/common'
 import { DeviceRegistry, DeviceRegistryError } from '../src/storage/registry.js'
 
 let dir: string
@@ -137,5 +138,34 @@ describe('device registry', () => {
     const bad = path.join(dir, 'devices.json')
     await writeFile(bad, JSON.stringify({ version: 1, devices: [{ deviceId: 'x', displayName: 'x', kind: 'remote', remoteDshPort: 0, enabled: true, order: 0 }] }))
     await expect(new DeviceRegistry(dir).load()).rejects.toBeInstanceOf(DeviceRegistryError)
+  })
+
+  it('reads a pre-change record with only a singular localPort and no forwards field', async () => {
+    // Written before the forward table existed: no `forwards` at all.
+    await writeFile(registry.file, JSON.stringify({ version: 1, devices: [{ ...remote(), localPort: 45123 }] }))
+    const [legacy] = await new DeviceRegistry(dir).load()
+    expect(legacy?.localPort).toBe(45123)
+    expect(legacy?.forwards ?? []).toEqual([])
+
+    // Pinned marks round-trip; only devicePort and label, never a local port.
+    await registry.mutateDevice('device-1', current => ({
+      ...current,
+      forwards: [{ devicePort: 5432, label: 'db' }, { devicePort: 6379 }],
+    }))
+    const [pinned] = await new DeviceRegistry(dir).load()
+    expect(pinned?.localPort).toBe(45123)
+    expect(pinned?.forwards).toEqual([{ devicePort: 5432, label: 'db' }, { devicePort: 6379 }])
+
+    // One bad pinned entry is dropped with a warning; the file is NOT failed
+    // closed (fail-closed is for an unparseable file, design D3).
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {})
+    await writeFile(registry.file, JSON.stringify({ version: 1, devices: [{
+      ...remote(),
+      forwards: [{ devicePort: 5432, localPort: 52000 }, { devicePort: 0 }, { devicePort: 6379, label: 'bad\nlabel' }, 'junk'],
+    }] }))
+    const [tolerant] = await new DeviceRegistry(dir).load()
+    expect(tolerant?.forwards).toEqual([{ devicePort: 5432 }])
+    expect(warn).toHaveBeenCalled()
+    warn.mockRestore()
   })
 })
