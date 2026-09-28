@@ -39,4 +39,4 @@
 - [x] 6.3 真机验收：消费方 shim 接入后，从远端设备工作台触发打开，宿主机 VS Code 新窗口经 Remote-SSH 打开目标目录（主路径已于 2026-09-24 由所有者验收通过，消费方归档证据为 ohmydsh `b9748d5`，部署 bridge 0.5.1。2026-09-25 补测 Windows 浏览器路径时，点击已成功拉起 Windows VS Code 并进入 `lumevm` Remote-SSH 连接；连接失败归因于 Windows 未具备 Mac 专属 Lume `ProxyCommand`/密钥链路。所有者确认 Windows 不是主路径，本项不以该可选客户端环境为阻塞）
 - [x] 6.4 真机验收（降级/故障）：本机设备或非法 alias/path 不产出远程 URI，消费方回落且工作台其它功能正常（本机设备回落由所有者实机验收通过；非法 alias/path、注册方异常与 shim 缺席路径由 web/bridge/shared 及消费方回落测试覆盖，消费方归档账本见 ohmydsh `b9748d5`）
 - [x] 6.5 发布 `dsh-cockpit-bridge` 0.4.0，并在 ohmydsh 更新精确 pin（0.4.0 已发布为 GitHub tag/release；当前已后续发布并精确 pin 到兼容超集 0.5.1，远端 tag `dsh-cockpit-bridge-v0.5.1`、ohmydsh `dsh.yaml` 均已核验）
-- [ ] 6.6 确认 current spec 已同步最终行为后归档 change
+- [x] 6.6 确认 current spec 已同步最终行为后归档 change
