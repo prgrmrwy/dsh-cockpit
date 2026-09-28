@@ -27,33 +27,33 @@
 
 ## 2. 转发表核心（design D1–D3、D5；新文件 `connectivity/forward-table.ts`）
 
-- [ ] 2.1 Write failing test: `reuses one entry per device port and spawns once under concurrent acquires` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.2 Implement: 按设备端口单飞建立、持有者三元组幂等 to pass 2.1
-- [ ] 2.3 Refactor; full suite stays green
-- [ ] 2.4 Write failing test: `admits exactly one of two concurrent acquires at 7 of 8` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.5 Implement: 上限 8 在同步段内占位，失败者以 `forward-limit` 拒绝 to pass 2.4
-- [ ] 2.6 Refactor; full suite stays green
-- [ ] 2.7 Write failing test: `rejects invalid, reserved and local-device ports without touching the table` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.8 Implement: `invalid-port` / `reserved-port`（主通道远端端口）/ `local-device` 校验 to pass 2.7
-- [ ] 2.9 Refactor; full suite stays green
-- [ ] 2.10 Write failing test: `reclaims a held entry after its last holder and keeps a pinned one` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.11 Implement: “常驻或至少一个持有者”存续规则；释放幂等 to pass 2.10
-- [ ] 2.12 Refactor; full suite stays green
-- [ ] 2.13 Write failing test: `kills the child that finishes starting after its entry was deleted` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.14 Implement: 删除时标记条目已移除，建立完成后立即终止子进程 to pass 2.13
-- [ ] 2.15 Refactor; full suite stays green
-- [ ] 2.16 Write failing test: `marks a ready entry retrying without an address and rebuilds it after backoff` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.17 Implement: 就绪后退出 → `retrying`，退避 1s 起加倍、上限 60s、可注入抖动；非 ready 不带地址 to pass 2.16
-- [ ] 2.18 Refactor; full suite stays green
-- [ ] 2.19 Write failing test: `pauses self-heal while the workbench channel is unavailable and rebuilds on READY` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.20 Implement: 主通道不可用时 `paused` 且暂停新建，`READY` 后重建 to pass 2.19
-- [ ] 2.21 Refactor; full suite stays green
-- [ ] 2.22 Write failing test: `rejects a newline holder and a 65-char label and truncates a 5000-char diagnostic to 300` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.23 Implement: 持有者标签 / 常驻标签校验（`invalid-holder` / `invalid-label`），诊断截断到 300 字符 to pass 2.22
-- [ ] 2.24 Refactor; full suite stays green
-- [ ] 2.25 Write failing test: `spawns ssh -L to device loopback and never opens the forwarded port itself` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
-- [ ] 2.26 Implement: 子进程只以 `-L 127.0.0.1:<local>:127.0.0.1:<devicePort>` 启动，转发表不打开任何 socket to pass 2.25
-- [ ] 2.27 Refactor; full suite stays green
+- [x] 2.1 Write failing test: `reuses one entry per device port and spawns once under concurrent acquires` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.2 Implement: 按设备端口单飞建立、持有者三元组幂等 to pass 2.1
+- [x] 2.3 Refactor; full suite stays green
+- [x] 2.4 Write failing test: `admits exactly one of two concurrent acquires at 7 of 8` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.5 Implement: 上限 8 在同步段内占位，失败者以 `forward-limit` 拒绝 to pass 2.4
+- [x] 2.6 Refactor; full suite stays green
+- [x] 2.7 Write failing test: `rejects invalid, reserved and local-device ports without touching the table` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.8 Implement: `invalid-port` / `reserved-port`（主通道远端端口）/ `local-device` 校验 to pass 2.7
+- [x] 2.9 Refactor; full suite stays green
+- [x] 2.10 Write failing test: `reclaims a held entry after its last holder and keeps a pinned one` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.11 Implement: “常驻或至少一个持有者”存续规则；释放幂等 to pass 2.10
+- [x] 2.12 Refactor; full suite stays green
+- [x] 2.13 Write failing test: `kills the child that finishes starting after its entry was deleted` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason) — 注：2.2 的 generation 围栏已使其在写成时即为绿；以变异检查（`#stale` 恒 false → 失败于 `disposed` 断言）确认测试能抓到该缺陷
+- [x] 2.14 Implement: 删除时标记条目已移除，建立完成后立即终止子进程 to pass 2.13
+- [x] 2.15 Refactor; full suite stays green
+- [x] 2.16 Write failing test: `marks a ready entry retrying without an address and rebuilds it after backoff` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.17 Implement: 就绪后退出 → `retrying`，退避 1s 起加倍、上限 60s、可注入抖动；非 ready 不带地址 to pass 2.16
+- [x] 2.18 Refactor; full suite stays green
+- [x] 2.19 Write failing test: `pauses self-heal while the workbench channel is unavailable and rebuilds on READY` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.20 Implement: 主通道不可用时 `paused` 且暂停新建，`READY` 后重建 to pass 2.19
+- [x] 2.21 Refactor; full suite stays green
+- [x] 2.22 Write failing test: `rejects a newline holder and a 65-char label and truncates a 5000-char diagnostic to 300` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason)
+- [x] 2.23 Implement: 持有者标签 / 常驻标签校验（`invalid-holder` / `invalid-label`），诊断截断到 300 字符 to pass 2.22
+- [x] 2.24 Refactor; full suite stays green
+- [x] 2.25 Write failing test: `spawns ssh -L to device loopback and never opens the forwarded port itself` in `packages/cockpit-server/tests/forward-table.test.ts` (assert it fails for the right reason) — 注：`TunnelManager` 已满足 argv 约束，写成时即为绿；以两处变异（表内打开 `net.createServer`；`-L` 去掉 `127.0.0.1` 绑定）确认测试均失败
+- [x] 2.26 Implement: 子进程只以 `-L 127.0.0.1:<local>:127.0.0.1:<devicePort>` 启动，转发表不打开任何 socket to pass 2.25
+- [x] 2.27 Refactor; full suite stays green
 
 ## 3. 转发表接入 ConnectivityService 与注册表（design D1、D3、D5、D6）
 
