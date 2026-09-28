@@ -1,152 +1,129 @@
 ## Test Plan
 
-Test names are vitest `describe › it` titles. Paths are relative to the repo root.
-
-Legend:
-- 🔴 red — new test, must fail first.
-- 🟢 green (existing) — existing regression test, kept unchanged or with its assertions extended; re-run as a guard.
-- 🟢 green (guard) — new test for behavior that already holds today; it must stay green through the change. For example, the origin guard must not break the cockpit's own page. It is written before the guard is implemented. It is not TDD evidence: an implementation that breaks it turns it red.
-
-### specs/cockpit-api-auth/spec.md
-
 | Requirement | Scenario | Test File | Test Name | Initial State |
 |-------------|----------|-----------|-----------|---------------|
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 驾驶舱自身页面正常调用 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › accepts same-origin cockpit page (Origin == http://Host, Sec-Fetch-Site same-origin) | 🟢 green (guard) |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 开发代理下的驾驶舱页面正常调用 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › accepts vite dev proxy (Host and Origin 127.0.0.1:5173) | 🟢 green (guard) |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 设备页面带 cookie 获取启动 URL 被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › rejects workbench-launch from device origin with 403 cross-origin-rejected and no token in body | 🔴 red |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 设备页面带 cookie 修改或删除设备被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › rejects PUT and DELETE device from device origin without side effects | 🔴 red |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 跨站点提示头被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › rejects Sec-Fetch-Site same-site without Origin | 🔴 red |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | bridge 回调不受来源校验影响 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › bridge callback with capability header from device origin is not origin-checked | 🟢 green (guard) |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 非 bridge 路由不再获得凭据 CORS 许可 | packages/cockpit-server/tests/app-auth.e2e.test.ts | cors › preflight for non-bridge route from device origin has no Access-Control-Allow-Credentials | 🔴 red |
-| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | DNS rebinding 的同源读取被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | origin guard › rejects non-loopback Host without Origin on /api/devices and /api/bootstrap, no Set-Cookie | 🔴 red |
+| specs/cockpit-api-auth/spec.md → bridge 回调路由名单 | 名单外的 bridge 路径不被豁免 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | forwards list: does not exempt an unlisted /api/bridge/ path | 🔴 red |
+| specs/cockpit-api-auth/spec.md → bridge 回调路由名单 | 名单内路径的大小写变体按名单匹配 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | forwards list: treats /API/Bridge/Hello and /API/Bridge/Forwards/Acquire as listed routes | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 已持久化端口仍然可用 | packages/cockpit-server/tests/ssh-tunnel.test.ts | reuses the persisted port so the endpoint origin survives a reconnect | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 已持久化端口被其它进程占用 | packages/cockpit-server/tests/ssh-tunnel.test.ts | falls back to a fresh port and still connects when the persisted port is taken | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 首次连接没有已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | assigns a fresh port on a first connection with nothing persisted | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 复用端口在绑定窗口内被抢占 | packages/cockpit-server/tests/ssh-tunnel.test.ts | retries on a fresh port when the reused one is stolen inside the bind window | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 首次尝试因链路原因失败后仍保留已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | keeps the persisted port across a link-level failure so the origin does not drift | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 无法归因的提前退出保留已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | keeps the persisted port when an early exit cannot be attributed | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 端口漂移可从日志定位 | packages/cockpit-server/tests/ssh-tunnel.test.ts | warns once with attribution when the local port drifts, and stays silent when it does not | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 本机设备不涉及端口复用 | packages/cockpit-server/tests/connectivity.service.test.ts | does not persist a forward port for a local device | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 附加通道端口不被持久化 | packages/cockpit-server/tests/connectivity.service.test.ts | keeps an additional forward on its port across a workbench reconnect and never persists its local port | 🔴 red |
+| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 旧记录的单数端口字段仍被识别 | packages/cockpit-server/tests/registry.test.ts | reads a pre-change record with only a singular localPort and no forwards field | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 表中列出主通道与附加条目 | packages/cockpit-server/tests/connectivity.service.test.ts | projects the workbench channel as a system row plus ready additional rows with pids | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 同一设备端口复用条目且并发只建立一次 | packages/cockpit-server/tests/forward-table.test.ts | reuses one entry per device port and spawns once under concurrent acquires | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 并发申请不突破上限 | packages/cockpit-server/tests/forward-table.test.ts | admits exactly one of two concurrent acquires at 7 of 8 | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 非法、保留端口与本机设备被拒绝 | packages/cockpit-server/tests/forward-table.test.ts | rejects invalid, reserved and local-device ports without touching the table | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目只有常驻与随持有者两种寿命 | 持有者全部释放后回收，常驻条目不回收 | packages/cockpit-server/tests/forward-table.test.ts | reclaims a held entry after its last holder and keeps a pinned one | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目只有常驻与随持有者两种寿命 | 删除发生在建立过程中 | packages/cockpit-server/tests/forward-table.test.ts | kills the child that finishes starting after its entry was deleted | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目只有常驻与随持有者两种寿命 | 驾驶舱重启后只恢复常驻条目 | packages/cockpit-server/tests/connectivity.service.test.ts | restores only pinned entries after a cockpit restart | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目只有常驻与随持有者两种寿命 | 禁用设备丢弃持有者、保留常驻 | packages/cockpit-server/tests/connectivity.service.test.ts | drops holders and keeps pinned entries across disable and re-enable | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 设备页面重载后旧实例的持有被释放 | packages/cockpit-web/tests/workbench-forwards.test.tsx | forwards instance-ended from a device iframe to release-instance with the page id | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 主通道端口漂移后，旧实例的结束消息仍被接受 | packages/cockpit-web/tests/workbench-forwards.test.tsx | accepts instance-ended from a previously loaded origin after the iframe drifts | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 非所属来源的实例结束消息被忽略 | packages/cockpit-web/tests/workbench-forwards.test.tsx | ignores instance-ended from a foreign source or an origin never loaded by that iframe | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 释放实例先于同实例的在途申请到达 | packages/cockpit-server/tests/forward-page-reclaim.test.ts | rejects an acquire whose instance was already ended for that page | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 驾驶舱页面关闭后宽限期满回收 | packages/cockpit-server/tests/forward-page-reclaim.test.ts | reclaims a page's holders 30s after its last stream connection closes | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 设备状态流短暂断线，宽限期内重连不触发回收 | packages/cockpit-server/tests/forward-page-reclaim.test.ts | keeps holders when the page reconnects within the grace period | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 设备页面经 bfcache 恢复后以新实例标识申请 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | switches to a fresh instance id on persisted pageshow and acquires with it | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 请求体中的页面标识被忽略 | packages/cockpit-server/tests/forward-page-reclaim.test.ts | takes the holder page id from the capability grant, not the request body | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 持有随所属 bridge 页面实例或驾驶舱页面结束而回收 | 签发请求缺少页面标识被拒绝，无页面标识的状态流不计数 | packages/cockpit-server/tests/forward-page-reclaim.test.ts | rejects capability issue without a page id and serves but does not count a page-less stream | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 转发中途断开后自动重建，期间不交付地址 | packages/cockpit-server/tests/forward-table.test.ts | marks a ready entry retrying without an address and rebuilds it after backoff | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 主通道断开期间不重建附加条目 | packages/cockpit-server/tests/forward-table.test.ts | pauses self-heal while the workbench channel is unavailable and rebuilds on READY | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 主通道断开不终止仍存活的附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | keeps a live additional forward running across a workbench reconnect | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 编辑 SSH 别名后附加转发改连新主机 | packages/cockpit-server/tests/connectivity.service.test.ts | rehosts additional forwards on the new alias only after the workbench is READY | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 申请立即返回，就绪后通知地址 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | returns starting immediately and notifies ready with loopback address and URL | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 条目被删除后持有者收到 removed，且不自动重新申请 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | notifies removed when a snapshot drops the entry and does not re-acquire within 60s | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 地址变化时通知持有者 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | notifies retrying then ready with the new port when the address changes | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 不在驾驶舱中时接缝不可用 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | throws unavailable synchronously without fetching when not configured | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 驾驶舱父页面向设备页面推送转发表快照 | 配置下发后及转发表变化时推送到对应设备 | packages/cockpit-web/tests/workbench-forwards.test.tsx | pushes a snapshot right after config and on each change, only to that device origin | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 驾驶舱父页面向设备页面推送转发表快照 | 伪造来源的快照消息被忽略 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | ignores a forwards snapshot from a non-cockpit origin | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 投影不含实例与页面标识 | packages/cockpit-server/tests/connectivity.service.test.ts | omits instance and page ids from the projection, the snapshot payload and logs | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 非法标签被拒绝，超长诊断被截断 | packages/cockpit-server/tests/forward-table.test.ts | rejects a newline holder and a 65-char label and truncates a 5000-char diagnostic to 300 | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅供驾驶舱自身页面使用 | 驾驶舱页面创建常驻条目 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | creates a pinned 6379 entry from the cockpit page and records it in the registry | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅供驾驶舱自身页面使用 | 只携带能力串的请求不能使用管理端点 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | rejects capability-only calls to the forward management endpoints | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 设置页列出转发 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | lists the system and 3939 rows with 1 / 8 and no mutation controls | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 不在驾驶舱中时显示说明 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | shows not-connected text and no rows outside the cockpit | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 设备禁用时终止全部附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | terminates every forward on disable and keeps the pinned mark | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 主通道重连或认证更新不影响附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | keeps additional forwards across a manual reconnect and a launch URL update | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 驾驶舱退出时清理自有转发 | packages/cockpit-server/tests/runtime-control.test.ts | terminates owned additional forward children on shutdown without touching foreign ssh | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 能力串无效时以既有响应拒绝 | packages/cockpit-server/tests/forwards.controller.test.ts | rejects an expired, unknown or origin-mismatched capability on acquire with 400 | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 不对应在线设备的 origin 带无效能力串返回 400 | packages/cockpit-server/tests/forwards.controller.test.ts | returns 400, not 409, for an invalid capability from an origin with no live device | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 主通道断开期间释放照常生效 | packages/cockpit-server/tests/forwards.controller.test.ts | releases a holder by the grant device while the workbench channel is reconnecting | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 同源页面只带 cookie 调用申请端点被拒绝 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | rejects a cookie-only same-origin call to forwards/acquire with 401 | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 业务拒绝不触发能力串换发 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | surfaces forward-limit from a 409 without renewing or retrying | 🔴 red |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 驾驶舱不进入数据路径 | packages/cockpit-server/tests/forward-table.test.ts | spawns ssh -L to device loopback and never opens the forwarded port itself | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板列出设备转发并实时更新 | packages/cockpit-web/tests/forward-panel.test.tsx | lists system, pinned and held rows and updates to retrying with a diagnostic | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板手动创建常驻转发 | packages/cockpit-web/tests/forward-panel.test.tsx | creates a pinned 6379 redis entry and shows 3 / 8 | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板创建失败时保留输入 | packages/cockpit-web/tests/forward-panel.test.tsx | keeps 6379 in the input and shows the limit message on forward-limit | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 删除仍有持有者的条目需确认 | packages/cockpit-web/tests/forward-panel.test.tsx | does not send delete when the holder confirmation is cancelled | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 本机设备不提供转发操作 | packages/cockpit-web/tests/forward-panel.test.tsx | shows no-forward text and no controls for a local device | 🔴 red |
 
-### specs/cockpit-device-connectivity/spec.md
+### 验收项（人类决策：30 秒宽限期以真实浏览器实测为准）
 
-| Requirement | Scenario | Test File | Test Name | Initial State |
-|-------------|----------|-----------|-----------|---------------|
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 已持久化端口仍然可用 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › reuses the persisted port so the endpoint origin survives a reconnect | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 已持久化端口被其它进程占用 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › falls back to a fresh port and still connects when the persisted port is taken | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 首次连接没有已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › assigns a fresh port on a first connection with nothing persisted | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 复用端口在绑定窗口内被抢占 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › retries on a fresh port when the reused one is stolen inside the bind window | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 首次尝试因链路原因失败后仍保留已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › keeps the persisted port across a link-level failure so the origin does not drift | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 无法归因的提前退出保留已持久化端口 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › keeps the persisted port when an early exit cannot be attributed | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 端口漂移可从日志定位 | packages/cockpit-server/tests/ssh-tunnel.test.ts | tunnel manager local port reuse › warns once with attribution when the local port drifts, and stays silent when it does not | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 本机设备不涉及端口复用 | packages/cockpit-server/tests/connectivity.service.test.ts | does not persist a forward port for a local device | 🟢 green (existing) |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 附加转发重建后复用原本地端口 | packages/cockpit-server/tests/forward-table.test.ts | port stability › rebuilt extra reuses its persisted localPort | 🔴 red |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 附加转发原端口被占用时漂移并可见 | packages/cockpit-server/tests/forward-table.test.ts | port stability › drifts to a fresh port when taken, persists it and warns with attribution | 🔴 red |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 回收的附加条目不保留端口 | packages/cockpit-server/tests/forward-table.test.ts | port stability › reclaimed entry drops its persisted localPort | 🔴 red |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 附加条目不抢占其它设备的主通道端口 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › extras avoid every device's persisted main-channel port including disabled devices | 🔴 red |
-| specs/cockpit-device-connectivity/spec.md → 设备本地转发端口在生命周期内保持稳定 | 旧记录的单数端口字段仍被识别 | packages/cockpit-server/tests/registry.test.ts | forwards › legacy singular forward-port field still maps to the main channel | 🔴 red |
+这一项不对应 spec 场景，所以不计入上表的 59 行，也不替代上表“驾驶舱页面关闭后宽限期满回收”“设备状态流短暂断线，宽限期内重连不触发回收”两行的假计时器测试。它用来确认 30 秒这个常数在真实浏览器中成立。
 
-### specs/cockpit-device-port-forward/spec.md
-
-| Requirement | Scenario | Test File | Test Name | Initial State |
-|-------------|----------|-----------|-----------|---------------|
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 表中列出主通道与附加条目 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › projection lists main channel and extras with state mapped from DeviceState | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 同一设备端口不产生第二个子进程 | packages/cockpit-server/tests/forward-table.test.ts | table › second acquire on same devicePort adds a holder, spawns no child | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 并发申请同一端口只建立一次 | packages/cockpit-server/tests/forward-table.test.ts | table › concurrent acquires of one port are single-flight | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 并发申请不突破上限 | packages/cockpit-server/tests/forward-table.test.ts | table › concurrent acquires never exceed cap 8 | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 超过上限被拒绝 | packages/cockpit-server/tests/forward-table.test.ts | table › ninth port is rejected with 409 forward-limit | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 不允许为主通道端口建立附加条目 | packages/cockpit-server/tests/forward-table.test.ts | table › acquire of the remote DSH port is rejected with reserved-port | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 编辑远端 DSH 端口与附加条目冲突被拒绝 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › updateDevice remoteDshPort onto an extra's port fails with forward-port-conflict | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 非法端口被拒绝 | packages/cockpit-server/tests/forward-table.test.ts | table › rejects out-of-range or non-integer devicePort with invalid-port | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 每台设备的转发表是其全部 SSH 转发的唯一真相源 | 本机设备没有转发表 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › local device has no table and acquire returns local-device | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 租约全部释放后回收 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › reclaims when last lease released and not pinned | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 租约到期后回收 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › reclaims after TTL without renew (fake timers) | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 常驻条目不因租约归零而回收 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › pinned entry survives zero leases | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 续约延长到期时间 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › renew pushes expiry to now + TTL | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 主通道长时间断开期间租约不过期 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › leases are frozen while main channel unavailable and get recovery + TTL | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 手动删除撤销租约且不被续约复活 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › delete revokes leases; later renew returns revoked | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 驾驶舱重启后被撤销租约的续约不复活条目 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › after restart, renew of a deleted entry's lease cannot recreate it | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 删除发生在建立过程中 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › delete during starting disposes the in-flight child and bumps generation | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 未知租约的续约与释放 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › unknown lease renew → lease-expired, release is idempotent success | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 写盘失败时回滚且不启动子进程 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › persist failure returns persist-failed, memory unchanged, no spawn | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 驾驶舱面板提升 DSH 常驻来源 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › cockpit pin promotes pinnedBy dsh → cockpit | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 常驻相关操作幂等 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › repeated pin/unpin are idempotent | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 驾驶舱重启后恢复常驻与租约 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › restart restores pinned entries and leases from registry | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 禁用设备丢弃租约、保留常驻 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › disabling drops leases, keeps pins, stops children | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目的寿命由常驻标记与租约共同决定 | 损坏的转发记录不阻塞设备 | packages/cockpit-server/tests/registry.test.ts | forwards › malformed forwards entries are skipped with a warning, device still loads | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 转发中途断开后自动重建 | packages/cockpit-server/tests/forward-table.test.ts | self-heal › post-ready exit rebuilds with backoff | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 断开期间不交付旧地址 | packages/cockpit-server/tests/forward-table.test.ts | self-heal › projection has no url while retrying | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 首次建立失败进入重试而不静默消失 | packages/cockpit-server/tests/forward-table.test.ts | self-heal › first-start failure enters retrying with diagnostic | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 主通道断开期间不重建附加条目 | packages/cockpit-server/tests/forward-table.test.ts | self-heal › no new spawns while main channel unavailable | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 主通道断开不终止仍存活的附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › main channel reconnect leaves live extras running | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 编辑 SSH 别名后附加转发改连新主机 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › alias edit replaces lifecycle, pauses extras, rebuilds on new alias after READY | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加条目按期望状态自愈，且只在就绪时交付地址 | 编辑远端 DSH 端口与申请同一端口并发 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › concurrent remoteDshPort edit and acquire of same port: exactly one succeeds | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 申请立即返回并在就绪后通知地址 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › acquire resolves immediately, notifies url on ready snapshot | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 租约在页面存活期间自动续约 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › renews each lease at ≤60s interval | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 主通道断开期间续约被拒仍保持租约 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › 400 bad-request / network errors on renew are silent retries | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 页面关闭后租约到期回收 | packages/cockpit-server/tests/forward-table.test.ts | lifetime › lease without renew after holder gone is reclaimed at TTL | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 同页重复申请不产生第二个租约 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › duplicate acquire (including in-flight) reuses one lease | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 删除条目后持有者收到撤销通知且不自动重新申请 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › revoked notifies holder once and does not reacquire | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 地址变化通知持有者 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › url change in snapshot notifies holder | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | DSH 侧不能删除驾驶舱面板建立的常驻条目 | packages/cockpit-server/tests/devices.controller.test.ts | bridge forwards › delete of cockpit-pinned entry returns 409 managed-by-cockpit | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 不在驾驶舱中时接缝不可用 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › outside cockpit, acquire rejects with not-in-cockpit | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 提供转发申请接缝 `cockpitBridge.forwards` | 非法持有者标签被拒绝 | packages/cockpit-server/tests/devices.controller.test.ts | bridge forwards › invalid holder rejected with invalid-holder | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱父页面向设备页面推送转发表快照 | 转发表变化推送到对应设备页面 | packages/cockpit-web/tests/workbench.test.tsx | forward snapshot › projection change posts snapshot to that device iframe with exact targetOrigin | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱父页面向设备页面推送转发表快照 | 配置下发后立即推送快照 | packages/cockpit-web/tests/workbench.test.tsx | forward snapshot › snapshot posted right after each bridge config message | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱父页面向设备页面推送转发表快照 | 伪造来源的快照消息被忽略 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › snapshot from non-cockpit origin is ignored | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 投影不含租约标识 | packages/shared/tests/device-contracts.test.ts | forward projection › schema has no lease id field; server projection omits it | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 非法条目标签被拒绝 | packages/cockpit-server/tests/forward-table.test.ts | hygiene › non-printable or >64 char label rejected with invalid-label | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 超长诊断被截断 | packages/cockpit-server/tests/forward-table.test.ts | hygiene › diagnostic truncated to 300 chars | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 他设备的租约标识无效 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › lease id from another device → lease-expired, no effect | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅接受驾驶舱同源请求 | 驾驶舱页面可以管理转发 | packages/cockpit-server/tests/app-auth.e2e.test.ts | forwards management › same-origin cockpit page can create/delete forwards | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅接受驾驶舱同源请求 | 设备页面带 cookie 调用管理端点被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | forwards management › device origin with cookie → 403 cross-origin-rejected, no spawn | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅接受驾驶舱同源请求 | 仅携带能力串的请求不能使用管理端点 | packages/cockpit-server/tests/app-auth.e2e.test.ts | forwards management › capability-only request rejected (403 from device origin / 401 without Origin) | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页呈现本设备转发清单 | 设置页列出转发 | packages/dsh-cockpit-bridge/tests/settings-section.test.ts | settings section › lists entries with source and state as plain text | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页呈现本设备转发清单 | 在设置页手动创建常驻转发 | packages/dsh-cockpit-bridge/tests/settings-section.test.ts | settings section › create pins with pinnedBy dsh | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页呈现本设备转发清单 | 设置页创建超限时原位提示 | packages/dsh-cockpit-bridge/tests/settings-section.test.ts | settings section › forward-limit shown inline, input kept | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页呈现本设备转发清单 | 不在驾驶舱中时不提供操作 | packages/dsh-cockpit-bridge/tests/settings-section.test.ts | settings section › outside cockpit shows read-only hint, no actions | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页呈现本设备转发清单 | 本机设备不提供操作 | packages/dsh-cockpit-bridge/tests/settings-section.test.ts | settings section › local device shows no actions | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 设备禁用时终止全部附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › disable terminates all extra children | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 主通道手动重连不影响附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › manual reconnect of main channel keeps extras | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 更新启动 URL 不影响附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › launch URL update keeps extras | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 附加转发失败不影响工作台 | packages/cockpit-server/tests/connectivity.service.test.ts | forwards › extra failure leaves device READY | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 驾驶舱退出清理自有转发 | packages/cockpit-server/tests/ssh-tunnel.test.ts | forwards › shutdown disposes every extra child (pid gone) | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 兼容接缝经转发表发布 | packages/dsh-cockpit-bridge/tests/client.test.ts | portForward compat › publish acquires with legacy holder (≤64 chars) and resolves on ready within 8s | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 新版 bridge 搭配旧版驾驶舱时回退旧端点 | packages/dsh-cockpit-bridge/tests/client.test.ts | portForward compat › 401 on forwards endpoint falls back to legacy endpoints without capability renewal | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 未 register 的用途标识不可发布 | packages/dsh-cockpit-bridge/tests/client.test.ts | portForward compat › publish of unregistered id rejects | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 无驾驶舱时消费方仍可工作 | packages/dsh-cockpit-bridge/tests/client.test.ts | portForward compat › outside cockpit publish rejects cleanly, consumer falls back | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 旧版 bridge 不再得到死链接 | packages/cockpit-server/tests/devices.controller.test.ts | legacy publish-port › legacy endpoint routes through the forward table and returns a live url or forward-not-ready | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 驾驶舱为设备提供端口发布接缝 | 本机设备无需转发 | packages/dsh-cockpit-bridge/tests/client.test.ts | portForward compat › local device publish returns direct loopback url | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 有效能力串的申请被接受 | packages/cockpit-server/tests/devices.controller.test.ts | bridge forwards › valid capability acquire accepted | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 能力串无效时以既有响应拒绝 | packages/cockpit-server/tests/devices.controller.test.ts | bridge forwards › invalid capability → 400 bridge-capability-invalid, table unchanged | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 业务拒绝不触发能力串换发 | packages/dsh-cockpit-bridge/tests/client.test.ts | forwards › 409 business codes are surfaced without capability renewal | 🔴 red |
-| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 驾驶舱不进入数据路径 | packages/cockpit-server/tests/devices.controller.test.ts | bridge forwards › returned url is http://127.0.0.1:<localPort> and no proxy route exists | 🔴 red |
-
-### specs/cockpit-device-shell/spec.md
-
-| Requirement | Scenario | Test File | Test Name | Initial State |
-|-------------|----------|-----------|-----------|---------------|
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板列出设备转发 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › renders entries with source cockpit/dsh as plain text | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 转发状态变化实时反映 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › stream update re-renders state | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板手动创建常驻转发 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › create posts pin and shows N / 8 | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板创建失败保留输入 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › error code shown inline, input retained | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 删除持有租约的条目需确认 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › deleting an entry with leases asks confirmation | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 本机设备不提供转发操作 | packages/cockpit-web/tests/device-panel.test.tsx | forwards list › local device shows no forward actions | 🔴 red |
-
-### Supplementary checks (not scenario rows)
-
-| Check | Where | Initial State |
-|-------|-------|---------------|
-| Renewal survives 1-per-minute timer throttling (background tab / Memory Saver) | packages/dsh-cockpit-bridge/tests/client.test.ts › forwards › lease stays alive under throttled timers (fake timers, 60s clamp) | 🔴 red |
-| Real-browser renewal measurement: background tab for 15 min, lease not reclaimed | tasks.md manual verify task; the outcome is recorded in verify | N/A — manual; backed by the fake-timer test above |
-| Change artifacts are consistent | `openspec validate device-forward-registry --strict` | 🟢 green |
+| Acceptance | Check | Test File | Test Name | Initial State |
+|------------|-------|-----------|-----------|---------------|
+| design → 人类决策记录：30 秒宽限期真实浏览器实测 | 真实浏览器中 EventSource 断线重连与后台节流不触发回收；关闭页面后 30–40 秒内回收 | scripts/acceptance/forward-grace.mjs | `node scripts/acceptance/forward-grace.mjs --device <id>` exits 0 | N/A — non-executable |
 
 ## Coverage Notes
 
-- Guard rows (🟢 green (guard)): three rows in api-auth. They verify that the new guard does not misfire on existing callers. They pass the moment they are written, so apply must NOT count them as red→green evidence.
-- Any other row whose test unexpectedly passes when written means the scenario was already satisfied. Record it in verify; do not quietly flip it.
-
-- Every `#### Scenario:` across the 4 delta spec files has one row: api-auth 8, connectivity 13, port-forward 69, shell 6.
-- The 8 connectivity scenarios that already existed keep their current tests, which serve as regression guards; they are marked green (existing). The 5 new or changed scenarios start red.
-- New test files:
-  - `packages/cockpit-server/tests/forward-table.test.ts`: pure unit tests for ForwardTable. Uses an injected fake spawner, a fake clock, and a fake persist callback, and spawns no real ssh.
-  - `packages/dsh-cockpit-bridge/tests/settings-section.test.ts`: tests for the bridge DSH settings section.
-- Shared fixtures:
-  - `fakeForwardSpawner`: records spawns, disposes, and pids, and can trigger post-ready exits.
-  - `fakeClock`: vitest fake timers.
-  - `mainChannelState` stub: switches DeviceState.
-  - `persistStub`: can be made to fail, for persist-failed.
-- `app-auth.e2e.test.ts` uses the real Nest app with a real TokenMiddleware. Origin, Host, and Sec-Fetch-Site are all set explicitly with supertest.
-- A real ssh process is not a CI prerequisite. Pid presence and shutdown cleanup are verified through the fake spawner.
+- **共享夹具（server）**
+  - **fake ssh / TunnelManager**：沿用 `ssh-tunnel.test.ts` 的 `FakeProcess`，以及 `connectivity.service.test.ts` 中 `vi.mock` 替换的 `FakeTunnelManager`。
+    - `FakeTunnelManager` 需要扩展：记录每次 spawn 的 argv 与 pid；能主动触发“就绪后退出”回调（design D5）；能让某条通道停在 `starting`，再手动完成。
+    - `forward-table.test.ts` 直接对 `forward-table.ts` 注入一个假的 channel spawner（design D2 的接缝），不经 `ConnectivityService`。
+  - **fake timers**：
+    - 宽限回收（30 秒）与自愈退避（1 秒起加倍、上限 60 秒、带抖动）一律用 `vi.useFakeTimers()`。
+    - 抖动源须可注入：测试传入固定随机数，使退避时刻可断言。
+    - “60 秒内不自动重新申请”（bridge）同样用 fake timers 推进 60 秒，再断言没有 fetch。
+  - **页面连接计数**：`forward-page-reclaim.test.ts` 直接驱动 `DeviceEventsService` 的 `subscribe(pageId)` / 退订，并与转发表组装；不起 HTTP。签发 400 `invalid-page` 通过 `DevicesController` 断言。
+  - **不带 `page` 的状态流**：在同一文件中，用控制器的 SSE handler 加一个假 `response` 断言“照常收到推送但不计数”。
+  - **e2e（`app-forwards.e2e.test.ts`）**：
+    - 经前置 change 引入的共享工厂 `createCockpitApp()` 启动真实 NestJS 应用，使用临时 `DSH_COCKPIT_HOME`，`listen(0, '127.0.0.1')`，与 `app-same-origin.e2e.test.ts` 相同。
+    - 凡是需要自定义 `Host` 的请求，一律用 `node:http.request`，因为 Node `fetch` 会静默覆盖 `Host`。
+    - `Origin`、`Sec-Fetch-Site` 与能力串头都由测试直接构造。
+  - **设备状态 fixture**：e2e 中没有真实 ssh。需要在线设备的用例，通过 `ConnectivityService` 的测试替身，或在临时 home 中放一台 `local` 设备来构造（取决于用例是否需要主通道端点）。管理端点只校验鉴权与转发表不变，因此 e2e 不启动子进程。
+- **共享夹具（bridge）**：沿用 `client.test.ts` 的 `FakeWindow`、`fakeCtx` 与 `fetchMock`。
+  - `FakeWindow` 需扩展：支持 `pagehide` / `pageshow` 事件（带 `persisted`），并记录 `parent.postMessage` 的 `targetOrigin`。
+  - `fakeCtx` 需扩展：`ctx.slots.inject/register`，用于设置区块。
+  - `forwards-settings.test.ts` 只断言区块的渲染描述（行数据、占用、是否有控件），不引入 DOM 库，因为 bridge 包的测试环境是 `node`。
+- **共享夹具（web）**：
+  - `workbench-forwards.test.tsx` 沿用 `workbench.test.tsx` 的 `device()` 工厂与 jsdom。
+  - 父页面收到的 `MessageEvent` 用 `new MessageEvent('message', { source: iframe.contentWindow, origin })` 构造。
+  - “origin 漂移”用例先渲染 endpoint O1、再换成 O2，然后从 O1 派发消息。
+  - `forward-panel.test.tsx` 沿用 `device-panel.test.tsx` 的渲染方式，并 mock `api/client.ts`。
+- **跨包边界**：
+  - 三个包各自只测本包的边界，并在共享契约处对齐：
+    - server 断言 HTTP 契约（状态码、`code`、转发表）；
+    - bridge 用 `fetchMock` 断言请求形状，并按 409 `{code}` 分层处理；
+    - web 断言 postMessage 与 cookie 路由调用。
+  - 契约类型在 `@dsh-cockpit/shared`：快照、实例结束消息、投影、错误码。`packages/shared/tests/device-contracts.test.ts` 增加额外测试，断言快照类型不含 `pid`、`instanceId`、`pageId`（不占场景行）。
+  - 跨包的端到端行为（iframe → 父页面 → 服务端 → 快照 → bridge）没有自动化测试，由验收项与收尾的手工浏览器检查覆盖。
+- **沿用的既有测试**：
+  - connectivity 中 8 个场景是 MODIFIED 块必须原样携带的旧场景：“已持久化端口仍然可用”到“本机设备不涉及端口复用”。
+  - 它们已有测试（`ssh-tunnel.test.ts`、`connectivity.service.test.ts`），本 change 不改其行为。
+  - 这些行仍按统一规则初始为 🔴，含义是“本 change 中尚未复核”。它们不可能先失败，所以 tasks 对它们只安排“重跑并确认通过”的单步任务，不伪造红阶段。
+  - “旧记录的单数端口字段仍被识别”写成新的回归测试：注册表带 `forwards` 字段后，旧记录仍能读取。
+- **cockpit-api-auth 的两行**：场景名与前置 change 相同。测试名加 `forwards list:` 前缀，放在本 change 的 `app-forwards.e2e.test.ts` 中，避免与 `app-same-origin.e2e.test.ts` 的同名测试冲突。大小写用例同时覆盖 `/API/Bridge/Hello` 与新路由 `/API/Bridge/Forwards/Acquire`。
+- **名单一致性**：沿用前置 change 的额外单测（逐条对照 spec 名单与 `isBridgeCallback`），更新为新名单。
+- **不进入数据路径**：“驾驶舱不进入数据路径”由两点断言：
+  - spawn 的 argv 是 `-L 127.0.0.1:<local>:127.0.0.1:<devicePort>`，只绑定回环；
+  - 转发表模块不创建任何 `net.Server` / `net.Socket`，用 `vi.spyOn(net, 'createServer')` 与 `'connect'` 断言未被调用。
+- **日志卫生**：“投影不含实例与页面标识”一行中，日志部分通过替换 Nest `Logger` 的 `log/warn/error` 收集输出，再断言不含 I1、P1。
+- **驾驶舱退出**：“驾驶舱退出时清理自有转发”扩展 `runtime-control.test.ts` 的 shutdown 用例，断言附加通道的 fake 子进程收到 `SIGTERM`，而非自有的 ssh 替身不被触碰。“不遗留 `ppid=1` 孤儿”依赖 `TunnelManager` 既有的进程组清理，由既有 `ssh-tunnel.test.ts` 覆盖，不另起真实进程。
+- **N/A — 验收项“30 秒宽限期真实浏览器实测”**：
+  - 为什么没有代码测试：它要验证的是真实浏览器的 EventSource 自动重连间隔与后台标签页节流。jsdom 与 fake timers 不能复现，仓库也没有 Playwright 等浏览器驱动。引入浏览器驱动超出本 change 范围。
+  - 门禁检查是一个会失败的脚本 `scripts/acceptance/forward-grace.mjs`，在 tasks 中新建。它按 `bin/cockpit` 的方式从 `DSH_COCKPIT_HOME/token` 读 cookie，然后每秒轮询 `GET /api/devices`，读取目标设备转发表投影。
+  - 前置条件由脚本检查，不满足就失败：目标设备投影中存在非常驻条目 3939，且恰有 1 个持有者。
+    - 持有者由任一 bridge 消费方在设备页面中建立，例如以本地 pin 装载的下游 memex shim。
+    - 脚本不自己伪造持有者，因为它拿不到浏览器页面的 `pageId`；按数据卫生规定，投影中也不出现 `pageId`。
+  - 脚本依次提示操作者完成三步，并对每一步自动判定：
+    1. 在 DevTools 中把驾驶舱标签页设为 Offline 5 秒再恢复，让 EventSource 以同一 URL 自动重连：此后 60 秒内 3939 的 pid 不变。
+    2. 把驾驶舱标签页切到后台 5 分钟再切回：pid 不变，覆盖后台节流。
+    3. 关闭驾驶舱标签页：3939 在关闭后 30–40 秒之间从投影中消失，不早于 30 秒，不晚于 40 秒。
+  - 任一步不满足，脚本就以非零退出码结束并打印实测时间。操作者只负责浏览器操作，是否通过由脚本判定，不是口头签字。
+  - 不测“刷新驾驶舱页面”：刷新会生成新的 `pageId`，旧页面的持有按设计本就应在 30 秒后回收（design Open Questions），不属于宽限期要覆盖的情形。

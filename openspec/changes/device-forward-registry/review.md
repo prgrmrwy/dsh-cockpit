@@ -1,81 +1,65 @@
 ## Review Metadata
 
-- **Review round**: 3
-- **Prior round**: round 2 — REVISE (R2-C1 existing cookie routes cross-origin; escalated to human, who chose a global guard in this change and accepted the trust relaxations)
-- **Reviewer context**: fresh-context subagent (same model family as author; no cross-model CLI used for data-locality reasons)
-- **Tool restrictions**: read-only
-- **Artifacts reviewed**:
-  - 本 change 的产物：`proposal.md`、`design.md`、4 份 delta spec。
-  - 作者提供的轮次摘要：round2-summary。
-  - 用 grep 交叉核对的现行 specs：cockpit-workbench / pwa / runtime-launch / device-shell / device-connectivity / device-port-forward。
-  - 按小窗口阅读的源码：
-    - `token.middleware.ts`、`bootstrap.controller.ts`、`auth.module.ts`；
-    - `main.ts:20-45`；
-    - `devices.controller.ts`，只读路由表与 `authorizeBridge`；
-    - `cockpit-web/src/api/{client,stream}.ts`、`public/sw.js:52-75`、`vite.config.ts`；
-    - `dsh-cockpit-bridge/src/client/index.ts`；
-    - `bin/cockpit`；
-    - `shared/src/index.ts`。
-  - 用 Node 24 `fetch` 实测 CLI 请求头：只带 `sec-fetch-mode: cors`，没有 `Origin`，也没有 `Sec-Fetch-Site`。
-  - Required Changes 应用后，又用 grep 和小窗口 sed 复核了一遍。
+- **Review round**: 5（RC7/RC8 复核已追加于 Rebuttals）
+- **Prior round**: round 4 APPROVE_WITH_CHANGES（0 🔴 / 6 🟡 / 8 📌）；作者应用了 🟡-1 到 🟡-6，并采纳 📌-1/2/3/4/6/7，因内容变更 round 4 verdict 作废
+- **Reviewer context**: fresh-context subagent (same model family; cross-model CLI not used for data locality)
+- **Tool restrictions**: read-only（bash sed/grep/diff 窗口）；唯一写操作为本文件
+- **Artifacts reviewed**: `diff -ru /tmp/dfr-v2-pre-r4 openspec/changes/device-forward-registry` 全部 hunk；新增 `specs/cockpit-api-auth/spec.md`（与 `cockpit-api-same-origin` 中同名 requirement 逐行 diff）；port-forward spec :105-190、:250-300、:420-450；design D4(a)(b)(e)、D7、Round 4 取舍节；proposal 前置依赖与 Capabilities
+- **源码复核**：`devices.controller.ts:256-263`（`requireBridgeCapability` 缺头 401）、`:280-283`（`authorizeBridge` 无头即放行）、`:385-396`（`toHttp`）；`connectivity.service.ts:394-433`（`issueBridgeCapability` 要求 endpoint；`validateBridgeCapability` 先 `#lifecycleByOrigin` 再校验 grant）；bridge `client/index.ts:110/199/492`（`apply` → `ctx.effect` → dispose）
 
-## Round-2 Resolution Check
+<!-- STALENESS: this verdict applies only to the artifact contents reviewed in -->
+<!-- this round. Any later edit to proposal.md, design.md, or specs/ (other than -->
+<!-- applying listed Required Changes) VOIDS the verdict and requires a new round. -->
 
-| finding id | verified? | note |
-|---|---|---|
-| R2-C1 | yes | 新增 `cockpit-api-auth`：<br>• token 校验之前统一检查 Host、Origin、`Sec-Fetch-Site`，不通过返回 403 `cross-origin-rejected`。<br>• bootstrap 与带能力串的 bridge 回调只豁免 Origin 与 `Sec-Fetch-Site` 检查，不豁免 Host 检查。<br>• CORS 只对 bridge 放行凭据。<br>• workbench-launch、设备 PUT/DELETE 都有场景覆盖。<br>• design D11 已写入，spec 的 REMOVED Reason（port-forward spec:706）也引用了它。<br>• 已逐一核对既有调用方，均不受影响：驾驶舱页面（client.ts:14，`credentials:'same-origin'`）、同源 EventSource（stream.ts:16）、SW 只处理同源 GET（sw.js:61-69）、能力串签发（client.ts:52）、CLI（不带 Origin）。<br>• 本轮发现的 rebinding 缺口（M-A）已按 Required Change 1 修复。 |
-| R2-M1 | yes | spec:310-315；场景“主通道断开期间续约被拒仍保持租约”；design D7。 |
-| R2-M2 | yes | spec:235；场景 :273；design D5。 |
-| R2-M3 | yes | spec:610-611；场景 :629。本轮 M-C 已修复。 |
-| R2-M4 | yes | spec:229-234；场景 :268；design D5；proposal:18。 |
-| R2-M5 | yes | spec:621；design:231。字符集问题见 📌6。 |
-| R2-M6 | yes | spec:126；场景 :180。本轮 M-D 已修复。 |
-| R2-M7 | yes | spec:391；场景 :412；proposal:83；design Risks。 |
-| S-a | yes | spec:11-14 覆盖 `DeviceState` 的全部 9 个值。 |
-| S-b | yes | spec:98；场景 :185。 |
-| S-c | yes | 场景 :447。 |
-| S-d | yes | spec:305。 |
-| S-e | 无法逐字核实 | design 中没有发现残留矛盾。 |
-| S-f | yes | Risks。 |
-| S-g | partial → 已落地 | test-plan.md 与 tasks.md 已在本 review 之后生成（见 📌11）。 |
+## 一致性扫描结论（非 finding）
+
+- 残留旧说法已清除：grep `仅限这两条|各接缝所属|由定义各接缝|所有页面` 在 proposal/spec 中无命中；design:201 与收敛表中的“全部页面断开”仅作为历史对照出现。
+- `cockpit-api-auth` delta：标题与前置 change 逐字一致，块完整；与基线的 diff 只有名单两行替换，两个场景原样保留。归档顺序依赖已写入 proposal 与 design Context。
+- 新错误码在 design D7 与 spec “拒绝”段的枚举一致（`invalid-page` 为 400，签发路由；`device-unavailable` 为 409，forwards 路由）。
+- pid 只在 SSE 投影与面板中出现，快照与设置区块均不含 pid，三处一致。
+- 删除常驻条目写盘失败：design D3 与 spec 一致。
+- 60 秒观测窗口：场景可机械断言。
+- D5 别名变更归属说明：已写入，理由成立。
 
 ## Findings
 
 ### 🔴 Critical (blocking)
 
-无。R2-C1 所描述的跨源 cookie 动作，已被新守卫从结构上阻断：
-
-- 跨源非 GET 请求一定带 `Origin`，会被拦截。
-- 跨源 GET 与导航会带 `Sec-Fetch-Site: same-site`，也会被拦截。
+无。
 
 ### 🟡 Moderate
 
-M-A 至 M-F 已由作者按 Required Changes 全部修复，并经复核确认，见 Change Application Check。
+**🟡-7 `device-unavailable` 与 `bridge-capability-invalid` 的判定顺序未定义，两条 SHALL 对同一输入给出不同结果；release 在主通道中断期间必然失败。**
 
-- **M-A**：Host 回环要求原先只在请求带 `Origin` 时生效。DNS rebinding 下的同源 GET 可以通过守卫，拿到 401 时下发的 `Set-Cookie` 后，再读取驾驶舱数据。另外，缺少 Host 的情况未定义。
-- **M-B**：原文说“跨源带凭据请求一定附带 Origin”，但 no-cors GET 不带 Origin。原文也缺少“有副作用的 cookie 路由不得使用 GET/HEAD”这条不变量。
-- **M-C**：旧驾驶舱回退规则与 `seamRequest` 的 401 换发规则互相矛盾，会导致一次无效换发（最长等待 5 秒），并干扰 hello；`forwards.*` 在旧驾驶舱上的行为也未定义。
-- **M-D**：规则写的是“租约到期回收时写盘失败，按过期处理”，但到期时间本身不写盘，这条规则无法实现，并且与冻结规则冲突。
-- **M-E**：spec:661 写“缺少能力串返回 401”，与新守卫矛盾；场景 :483 的 THEN 不可判定。
-- **M-F**：Risks 未写明：被转发的 HTTP 服务可被任意网站经 DNS rebinding 访问。
+先说冲突：
+- spec :435 规定，请求 `Origin` 无法解析到有主通道端点的设备时，返回 409 `device-unavailable`。
+- spec :434 与场景 :444-447 规定，能力串“与请求 `Origin` 不匹配”时返回 400 `bridge-capability-invalid`。
+- 现有 `validateBridgeCapability` 先执行 `#lifecycleByOrigin(origin)`，后校验 grant（`connectivity.service.ts:405-413`）。按这个顺序，“设备 A 的能力串，从一个不对应任何在线设备的回环 origin 发来”会得到 409；按 :444 场景则应得到 400。两种实现都能自称合规，测试结果取决于实现顺序。
+- 附带问题：如果 409 在校验能力串之前返回，任何回环页面只要带上一个垃圾能力串头，就能探测某个 origin 是否对应在线设备。能力串头会让请求豁免来源校验。
+
+再说 release：
+- spec :256 只写了“申请”以 `device-unavailable` 失败。但现有代码对所有 bridge 请求都经 `#lifecycleByOrigin` 解析设备（design:21），主通道断开时 `release` 同样会失败。
+- 主通道断开期间，设备页面仍可能活着（iframe 由遮罩盖住但保持挂载）。此时持有者调用 `release` 会被拒绝，释放丢失，持有一直残留到实例结束或页面关闭。
+- 授权记录本身带有 `deviceId`，release 完全可以按 grant 定位设备，不依赖主通道端点。
+
+见 Required Change 7。
+
+**🟡-8 “已结束实例”集合让实例标识复用变成永久拒绝，并与 design 的 bfcache 叙述矛盾。**
+
+D4(e) 把 `instanceId` 记入 `pageId` 的已结束集合，之后同一 `(pageId, instanceId)` 的 acquire 一律以 `invalid-holder` 拒绝，直到该页面宽限回收。但 spec :111 只规定“每次页面加载生成新的实例标识”，而 :120 要求 bridge 在 `pagehide` **以及自身 dispose** 时发送实例结束消息。至少有两条路径会让同一个 bridge 在发送实例结束之后继续使用原标识：
+
+1. **bfcache**：`pagehide` 在 `event.persisted === true` 时同样会触发。页面从 bfcache 恢复（`pageshow`）后 JS 状态原样保留，`instanceId` 不变。父页面处理这条消息后，服务端把该标识记为已结束，于是 bridge 此后的每次申请都被拒绝，并且一直持续到驾驶舱页面关闭。design:319 写的是“页面恢复后……由消费方决定是否重新申请”。只要驾驶舱 SSE 在 30 秒内重连，已结束集合就不会被清除，这句叙述就不成立。
+2. **fiber 重启**：`instanceId` 在 `apply` 中生成（design:166），而实例结束消息在 `ctx.effect` 的 dispose 中发送（bridge `client/index.ts:199/492`）。如果宿主在同一页面内 dispose 后重跑 effect（插件停用再启用、热重载），新的 effect 会沿用已结束的标识。宿主是否有这条路径，本轮未能读码确认，但 artifacts 没有排除它。
+
+结果：消费方看到的 `invalid-holder` 无法与“标签不合规”（:317）区分，也无法自愈。
+
+见 Required Change 8。
 
 ### 📌 Suggestions
 
-1. **防点击劫持**：驾驶舱 shell 没有 `frame-ancestors` / `X-Frame-Options`，建议加 `Content-Security-Policy: frame-ancestors 'self'`。这是既有问题，且需要用户交互才能利用。
-2. **无能力串的 legacy bridge 路径会被 403**：已写入 Risks。✅
-3. **非回环主机名访问会被 403**：已写入 Risks。✅
-4. **去重需覆盖进行中的申请**：已写入 spec:303。✅
-5. **release 与 renew 竞态**：已释放租约的在途续约得到 `lease-expired` 时，bridge 不应再通知持有者。
-6. **legacy 持有者标签字符集**：替换非 ASCII 字符，并按码点截断。
-7. **只有 legacy 租约的条目**：这类条目不写盘，或在加载时立即回收。
-8. **`avoidLocalPorts`**：纳入驾驶舱自身端口，作为纵深防御。
-9. **proposal:18 补写别名 rehost**：已补。✅
-10. **补场景**：别名变更发生在附加条目处于 `starting` 期间时，generation 失效，旧别名的子进程被立即 dispose。
-11. **补齐 tasks.md 与 test-plan**：已补。✅
-12. **CORS 凭据**：bridge 的 fetch 不带 cookie，所以 bridge 路由的 `credentials: true` 实际并不需要。这属于人类决策范围，仅作提示。
-13. **（复核新增）design D11“实现”段需同步 Host 无条件校验**：Host 检查必须放在 `requiresToken` 的 bootstrap 豁免之前。
-14. **（复核新增）design:200 的换发规则**：需排除 `/api/bridge/forwards/*`。
-15. **（复核新增）续约中途遇到 401**：这种情况应视为暂时失败，不通知持有者。
+- 📌-9 `release-instance` 请求体新增了 `pageId`，但未规定它的格式校验与不合规时的响应。建议与签发路由一致，返回 400 `invalid-page`。另外，如果该 `pageId` 当前没有连接，建议像 acquire 一样启动宽限计时，否则该页面的已结束集合可能因为没有触发宽限回收而永久驻留（量很小，属于卫生问题）。
+- 📌-10 签发路由 `POST /api/devices/:deviceId/bridge/capability` 服务于 `cockpit-workbench` 的 capability 换发流程。本 change 在 port-forward 中给它加了必填 `pageId`，并规定“授权记录缺 `pageId` 的能力串一律无效”，这会影响 hello、session-opened 等全部 bridge 回调。主 spec 没有定义该路由的请求体，所以不构成 MODIFIED 遗漏。建议在 design Migration 中写一句：旧 cockpit-web 缓存页面签发失败时，打开确认也会一起暂停，直到页面刷新。
+- 📌-11 design:43 的 Context 仍然写着“iframe 内部导航后……这种归属依然成立”（指的是既有的 source 加 origin 比对）。建议在紧随其后的 origin 漂移条目补一句“因此 D4(a) 不沿用 `:180-206` 的 origin 比对”，免得实现者直接复用那个处理器。
 
 ## Embedded-Instruction / Injection Attempts
 
@@ -85,55 +69,32 @@ M-A 至 M-F 已由作者按 Required Changes 全部修复，并经复核确认�
 
 VERDICT: APPROVE_WITH_CHANGES
 
+APPROVE WITH CHANGES：round 4 的 6 条 Required Changes 全部到位。采纳建议后新增的内容引入了 2 条 Moderate，修法都很小且明确；没有 Critical。
+
 ## Required Changes (if APPROVE WITH CHANGES)
 
-1. **（M-A）`specs/cockpit-api-auth/spec.md`**
-   - 在拒绝条件首项插入：“请求缺少 Host 头，或 Host 主机名不是 127.0.0.1 或 localhost（无论是否携带 Origin）”。
-   - 在豁免段末追加：“Host 主机名校验同样适用于 bootstrap 与 bridge 回调”。
-   - 新增场景“DNS rebinding 的同源读取被拒绝”：返回 403，不下发 `Set-Cookie`，不返回设备数据。
-   - 修改 `design.md:280`：写明 Host 校验对所有 `/api/` 请求无条件执行。
-2. **（M-B）`specs/cockpit-api-auth/spec.md`**
-   - 改写放行理由：跨源非 GET 请求一定带 Origin；跨源 GET 与导航由 `Sec-Fetch-Site` 拦截；不支持 Fetch Metadata 的旧浏览器只能发出读不到响应的 no-cors GET。
-   - 新增：有副作用的 cookie 路由 MUST NOT 使用 GET 或 HEAD。
-3. **（M-C）`specs/cockpit-device-port-forward/spec.md`**
-   - :667 的换发规则排除 `/api/bridge/forwards/*`。
-   - :611 写明：该路径返回 401 时判定驾驶舱为旧版，不换发能力串；兼容接缝回退旧端点，`forwards.*` 返回“不可用”。
-   - 回退场景的 THEN 追加：“期间 bridge 不请求父页面换发能力串”。
-   - 同步修改 `design.md:226` 与 `:303`。
-4. **（M-D）spec:127 与 `design.md:184`**：残留租约按普通持久化租约恢复（冻结规则，首次可用时刻 + 5 分钟），之后自然到期回收。
-5. **（M-E）spec:661 与场景 :483**
-   - 能力串无效时返回 400 `bridge-capability-invalid`。
-   - 缺少能力串的请求按 `cockpit-api-auth` 处理，来自设备 origin 时返回 403 `cross-origin-rejected`。
-   - 场景 THEN 改为可判定的写法：403，或 401（无 Origin、无 cookie）；转发表不变，不启动子进程。
-6. **（M-F）design Risks**：新增一条，说明 DNS rebinding 可访问不校验 Host 的被转发 HTTP 服务。这是 `ssh -L` 的固有性质，被转发服务应自行校验 Host。
+7. **（🟡-7）** 在 port-forward MODIFIED “拒绝”段写明 forwards 端点的判定顺序：
+   1. 缺能力串头 → 401 `unauthorized`；
+   2. 能力串不存在、已过期，或 grant 的 origin 不等于请求 `Origin` → 400 `bridge-capability-invalid`（按 grant 自身判定，**不**依赖主通道端点）；
+   3. grant 有效，但其 `deviceId` 当前没有主通道端点 → acquire 返回 409 `device-unavailable`；
+   4. 其余业务校验。
 
-## Change Application Check
+   同时规定：`release` 按 grant 的 `deviceId` 定位设备，主通道不可用时 SHALL 照常移除持有者。design D7 与 :277 同步修改。补两个场景：主通道断开期间 release 成功、持有者被移除；不对应在线设备的 origin 携带无效能力串时返回 400 而非 409。
 
-| change# | verified | note |
-|---|---|---|
-| 1 | yes | spec:14、:30、场景 :87、design:280 已修改。与 bootstrap 流程不冲突：驾驶舱页面与 Vite 代理（`changeOrigin: false`）都保留回环 Host，拒绝发生在签发 cookie 之前。 |
-| 2 | yes | spec:39-40 已修改。 |
-| 3 | yes | spec:611、:667、场景 :634、design:226、:308 已修改，彼此一致。 |
-| 4 | yes | spec:127 与 design:184 已修改，与 spec:128 的冻结规则一致。 |
-| 5 | yes | spec:661、场景 :483 已修改，状态码可判定。 |
-| 6 | yes | design:303 已修改。 |
-| 额外 | yes | 📌4、📌9、📌2/📌3 已落地，未引入新矛盾。 |
+8. **（🟡-8）** 在 spec “标识 / 实例结束”与 design D4(a)(e) 中规定：bridge 发出实例结束消息后 MUST NOT 再以该实例标识申请或释放；bridge SHALL 在每次 bridge effect 启动时，以及 `pageshow` 且 `event.persisted === true` 时，生成新的实例标识。design Risks 中 bfcache 一段（:319）相应改写。补一个场景：设备页面经 bfcache 恢复后，以新实例标识申请成功，旧标识对应的持有已被释放。
 
 CHANGES_APPLIED: yes
 
 ## Rebuttals
 
-M9 在第 2 轮被有条件接受：D4 放宽所依赖的安全边界是“不能跨设备”。该条件**现已满足**：
-
-- 设备页面与转发页面无法再带着 cookie 调用 workbench-launch、设备 PUT/DELETE 或管理端点。
-- 跨源非 GET 请求被 Origin 检查拦截；跨源 GET 与导航被 `Sec-Fetch-Site` 检查拦截；rebinding 被无条件的 Host 校验拦截。
-- bridge 请求按 `Origin` 解析设备，无法指定其他设备。
-
-## Author Post-Review Notes
-
-- 📌13–15 已在复核后应用：
-  - design D11“实现”段改为“Host 无条件校验，先于 `requiresToken`/bootstrap 豁免”；
-  - design:200 的换发规则排除 `/api/bridge/forwards/*`；
-  - spec:611 写明“续约得到 401 按暂时失败处理”。
-- 以上修改后 `openspec validate --strict` 通过。三处修改都是按 reviewer 给出的建议文字同步措辞，未引入新的行为。
-- 📌1、5、6、7、8、10 作为实现期提示纳入 tasks.md；📌12 留给人类决策。
+- **🟡-1（origin 漂移下的实例结束消息）**：已修复。spec 按 `event.source` 归属，`event.origin` 需在该 iframe 已加载过的 origin 集合中，iframe 卸载或设备移除时清空；新增漂移场景，负向场景也同步更新。design D4(a) 给出了放宽的风险论证（实例标识不可猜测、端点按设备限定）。**accepted by reviewer**
+- **🟡-2（释放实例与在途申请的竞争）**：已按方案 (ii) 修复。已结束实例集合按 `pageId` 维护，不按时间过期，随宽限回收清除，并有场景“释放实例先于同实例的在途申请到达”。**accepted by reviewer**。它衍生出的标识复用问题另列为 🟡-8。
+- **🟡-3（proposal 与 design 的兜底语义矛盾）**：已修复。proposal 第 21 行改为按 `pageId` 断开满 30 秒。**accepted by reviewer**
+- **🟡-4（pageId 输入契约）**：已修复。格式为 16–64 个 `[A-Za-z0-9_-]` 字符、≥128 位随机量；签发请求缺失或不合规返回 400 `invalid-page`；缺少页面标识的能力串视为无效；不带 `page` 的 SSE 照常推送但不计数；有对应场景。**accepted by reviewer**。`release-instance` 请求体的校验见 📌-9。
+- **🟡-5（缺少能力串的拒绝归属）**：已修复。改为由端点自身返回 401 `unauthorized`，且先于按 `Origin` 解析设备，与 `requireBridgeCapability`（`devices.controller.ts:256-263`）的现状一致；新增“同源页面只带 cookie 调用申请端点被拒绝”场景。**accepted by reviewer**
+- **🟡-6（bridge 回调名单缺 delta）**：已修复。新增 `specs/cockpit-api-auth/spec.md` 的 MODIFIED，只替换名单两行；port-forward 删除了自有名单声明，改为引用；proposal、design、REMOVED 的 Migration 同步；归档顺序依赖已写明。**accepted by reviewer**
+- **🟡-7（forwards 端点判定顺序与主通道断开期间的 release）**：已修复（复核 `diff -ru /tmp/dfr-v2-pre-r5 …`）。spec “拒绝”段写明四步顺序：401 → 400（只依据授权记录，MUST NOT 依赖主通道端点）→ 仅申请返回 409 `device-unavailable` → 其余业务校验；release 按授权记录中的设备定位，主通道不可用时照常移除持有者。“操作”段与“不可用”段也改为按授权记录定位，与之一致。design D7 同步改写，并点明不得沿用 `validateBridgeCapability` 的现有顺序，理由包括存在性探测。新增两个场景：非在线设备 origin 带无效能力串返回 400；主通道断开期间释放照常生效。:444 场景措辞相应收紧。残留 grep：“按 `Origin` 解析”只剩 design:21 Context 对现状代码的描述，属正确的现状事实。**accepted by reviewer**
+- **🟡-8（实例标识复用导致永久拒绝）**：已修复。spec “标识”段规定：每次 bridge effect 启动时、以及 `pageshow` 且 `persisted === true` 时生成新标识；标识一次性，发出实例结束后 MUST NOT 再用；换标识时丢弃旧的本地持有记录，并以 `removed` 通知持有者。design D4(a) 同步，D4(e) 注明依赖这一一次性约定，集合规模改为按“实例结束次数”约束；Risks 的 bfcache 段已改写，与 spec 一致。新增场景“设备页面经 bfcache 恢复后以新实例标识申请”。**accepted by reviewer**
+- **📌-9 / 📌-10 / 📌-11**：deferred by author (non-blocking)。
+- **范围检查**：round 5 的 diff 只涉及 design.md 与 port-forward spec，全部改动都可追溯到 RC7 或 RC8（包括“操作”段、“不可用”段的定位措辞，以及 401 检查改为“先于其它任何校验”），没有超出范围的改动，本轮 verdict 不作废。
+- **📌-8（README/BACKLOG 改写留待实现阶段）**：作者婉拒，接受。Migration 第 5 步已经覆盖。
