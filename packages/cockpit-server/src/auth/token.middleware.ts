@@ -102,7 +102,7 @@ export class TokenMiddleware implements NestMiddleware {
 export function requestGuard(request: Request, response: Response, next: NextFunction): void {
   if (!isOriginForm(request) || request.path !== requestPathname(request)) {
     guardLogger.debug({ event: 'bad-request-target', method: request.method })
-    response.status(400).json({ code: 'bad-request-target', message: 'request target must be an absolute path' })
+    response.status(400).json({ code: 'bad-request-target', message: 'request target is not a plain origin-form path' })
     return
   }
   if (classifyApiPath(requestPathname(request)).api && !isCockpitHost(headerValue(request.headers.host))) {

@@ -13,6 +13,10 @@ export async function bootstrap(): Promise<void> {
   // src/main.ts (dev) or dist/main.js (built) both resolve to repository root.
   const repoRoot = path.resolve(here, '../../..')
   const webDist = path.join(repoRoot, 'packages/cockpit-web/dist')
+  // Static files are served BEFORE the module middleware (TokenMiddleware),
+  // behind only the factory's request-target/Host guard. The web build must
+  // therefore never emit anything under `api/`: such a file would be served
+  // without the cockpit cookie. (The Vite build does not.)
   app.useStaticAssets(webDist)
 
   const port = resolveCockpitPort()
