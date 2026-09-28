@@ -11,12 +11,13 @@
 - `/api/bootstrap`；
 - 携带 bridge 能力串请求头（`x-dsh-cockpit-bridge-capability`）、且路径在“bridge 回调路由名单”（见本 capability 同名 requirement）中的请求。
 
-Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调；只有 `Origin` / `Sec-Fetch-Site` 校验对它们豁免。Host 校验 SHALL 先于一切 token 豁免判断执行。
+Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调（含其 CORS 预检）；只有 `Origin` / `Sec-Fetch-Site` 校验对它们豁免。Host 校验 SHALL 先于 CORS 处理与一切 token 豁免判断执行；Host 不合法的请求（含预检）MUST NOT 获得任何 CORS 许可头。
 
 **路径匹配语义**
 
 - 判定请求是否为 `/api/` 请求、是否为 `/api/bootstrap`、是否在 bridge 回调路由名单中，SHALL 采用与 HTTP 路由器相同的大小写不敏感语义（例如先把路径转为小写再匹配，或让路由器改为大小写敏感，使二者一致）。
 - 任何被路由器分派到 `/api/` 处理器的路径变体 MUST NOT 绕过 Host、来源或 token 校验。
+- 请求目标（request-target）SHALL 为以 `/` 开头的 origin-form。absolute-form（如 `GET http://x/api/devices`）、authority-form、asterisk-form（`OPTIONS *`）SHALL 在任何路由、CORS 处理与业务处理之前以 400 `bad-request-target` 拒绝：路由器会从 absolute-form 中解析出 `/api/...` 路径并分派到处理器，而按原始请求目标做的判定看不到它。浏览器不会发出这类请求目标，拒绝不影响任何合法调用方。
 - CORS 的凭据许可判定（见下文）SHALL 使用同一个匹配函数。
 
 **“驾驶舱自身 origin”的判定**
@@ -104,6 +105,16 @@ Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调；只有 
 - **GIVEN** 来自设备页面 origin `http://127.0.0.1:<设备本地端口>` 的预检请求
 - **WHEN** 预检目标为 `POST /api/bridge/hello`，`Access-Control-Request-Headers` 含 `content-type, x-dsh-cockpit-bridge-capability`
 - **THEN** 响应的 `Access-Control-Allow-Origin` 等于该设备 origin，`Access-Control-Allow-Headers` 含 `x-dsh-cockpit-bridge-capability`
+
+#### Scenario: 非 origin-form 请求目标被拒绝
+- **GIVEN** 驾驶舱正在运行，注册表中有一台设备
+- **WHEN** 不带 cookie 的请求以 `Host: 127.0.0.1:<驾驶舱端口>` 发出 `GET http://127.0.0.1:<驾驶舱端口>/api/devices`、`DELETE http://x/api/devices/<id>?confirmed=true` 或 `OPTIONS *`
+- **THEN** 响应均为 400 `bad-request-target`，携带 `frame-ancestors 'self'`，响应体不含设备数据，注册表不变
+
+#### Scenario: Host 不合法的 bridge 预检不获得 CORS 许可
+- **GIVEN** 来自设备页面 origin 的预检请求
+- **WHEN** 以 `Host: evil.example:3090` 预检 `POST /api/bridge/hello`
+- **THEN** 响应为 403 `cross-origin-rejected`，不含 `Access-Control-Allow-Origin` 与 `Access-Control-Allow-Credentials`
 
 #### Scenario: 大小写变体路径不能绕过校验
 - **GIVEN** 驾驶舱正在运行

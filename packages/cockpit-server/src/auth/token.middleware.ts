@@ -36,12 +36,12 @@ export class TokenMiddleware implements NestMiddleware {
       next()
       return
     }
-    // Host first, before ANY exemption: a DNS-rebinding page reaches this
-    // loopback port under its own hostname, and must not get the bootstrap
-    // cookie or the 401's Set-Cookie either.
+    // The request target and Host were already enforced by `requestGuard`
+    // (app-factory), ahead of CORS; re-checked here so this middleware never
+    // relies on being mounted behind it.
     const host = headerValue(request.headers.host)
-    if (!isCockpitHost(host)) {
-      this.#reject(request, response, 'host')
+    if (!isOriginForm(request) || !isCockpitHost(host)) {
+      rejectCrossOrigin(this.#logger, request, response, 'host')
       return
     }
     // A bridge callback uses its own short-lived capability and is validated by
@@ -53,12 +53,12 @@ export class TokenMiddleware implements NestMiddleware {
       // cockpit's own origin — whatever Host it was reached under — may use it.
       const origin = headerValue(request.headers.origin)
       if (origin !== undefined && origin !== `http://${host}`) {
-        this.#reject(request, response, 'origin')
+        rejectCrossOrigin(this.#logger, request, response, 'origin')
         return
       }
       const fetchSite = headerValue(request.headers['sec-fetch-site'])
       if (fetchSite !== undefined && fetchSite !== 'same-origin' && fetchSite !== 'none') {
-        this.#reject(request, response, 'fetch-site')
+        rejectCrossOrigin(this.#logger, request, response, 'fetch-site')
         return
       }
     }
@@ -77,12 +77,45 @@ export class TokenMiddleware implements NestMiddleware {
     }
     next()
   }
+}
 
-  #reject(request: Request, response: Response, reason: 'host' | 'origin' | 'fetch-site'): void {
-    // Never echo request headers back (attacker-controlled), never log cookies.
-    this.#logger.debug({ event: 'cross-origin-rejected', method: request.method, path: requestPathname(request), reason })
-    response.status(403).json({ code: 'cross-origin-rejected', message: 'request origin is not the cockpit' })
+/**
+ * The first two guard layers (design D1), mounted by `createCockpitApp()`
+ * ahead of CORS so that neither a preflight nor a request the router would
+ * still dispatch can slip past them:
+ *
+ * 0. request target — only origin-form (`/path`). For absolute-form
+ *    (`GET http://x/api/devices`) `originalUrl` does not start with `/api/`,
+ *    yet the router parses the pathname out of it and dispatches to the API
+ *    handler; rejecting it makes "the path the guard sees" and "the path the
+ *    router routes" the same by construction. Browsers never send it.
+ * 1. Host — every `/api/` request, before any exemption, CORS included: a
+ *    DNS-rebinding page reaches this loopback port under its own hostname
+ *    and must get neither the bootstrap cookie nor any CORS grant.
+ */
+export function requestGuard(request: Request, response: Response, next: NextFunction): void {
+  if (!isOriginForm(request)) {
+    guardLogger.debug({ event: 'bad-request-target', method: request.method })
+    response.status(400).json({ code: 'bad-request-target', message: 'request target must be an absolute path' })
+    return
   }
+  if (classifyApiPath(requestPathname(request)).api && !isCockpitHost(headerValue(request.headers.host))) {
+    rejectCrossOrigin(guardLogger, request, response, 'host')
+    return
+  }
+  next()
+}
+
+const guardLogger = new Logger('CockpitApiGuard')
+
+function isOriginForm(request: Pick<Request, 'originalUrl'>): boolean {
+  return request.originalUrl.startsWith('/')
+}
+
+function rejectCrossOrigin(logger: Logger, request: Request, response: Response, reason: 'host' | 'origin' | 'fetch-site'): void {
+  // Never echo request headers back (attacker-controlled), never log cookies.
+  logger.debug({ event: 'cross-origin-rejected', method: request.method, path: requestPathname(request), reason })
+  response.status(403).json({ code: 'cross-origin-rejected', message: 'request origin is not the cockpit' })
 }
 
 export interface ApiRoute {
@@ -114,7 +147,10 @@ export function classifyApiPath(pathname: string): ApiRoute {
  * `127.0.0.1` or `localhost`, with an optional port, and nothing else — no
  * userinfo, no path, no other hostname that merely resolves here. */
 export function isCockpitHost(host: string | undefined): host is string {
-  return host !== undefined && /^(?:127\.0\.0\.1|localhost)(?::\d{1,5})?$/i.test(host)
+  const match = host === undefined ? null : /^(?:127\.0\.0\.1|localhost)(?::(\d{1,5}))?$/i.exec(host)
+  if (match === null) return false
+  const port = match[1] === undefined ? 80 : Number(match[1])
+  return port >= 1 && port <= 65_535
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {

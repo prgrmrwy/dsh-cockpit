@@ -4,7 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express'
 import type { CorsOptions } from '@nestjs/common/interfaces/external/cors-options.interface.js'
 import type { NextFunction, Request, Response } from 'express'
 import { AppModule } from './app.module.js'
-import { BRIDGE_CAPABILITY_HEADER, classifyApiPath, requestPathname } from './auth/token.middleware.js'
+import { BRIDGE_CAPABILITY_HEADER, classifyApiPath, requestGuard, requestPathname } from './auth/token.middleware.js'
 
 export interface CockpitAppOptions {
   readonly logger?: false | LogLevel[]
@@ -16,10 +16,12 @@ export interface CockpitAppOptions {
  * security configuration is what production actually runs.
  *
  * Registration order is part of the contract (design D4):
- * 1. security response headers — first, so even responses that CORS or the
- *    auth guard end early (preflight 204, 401, 403) carry them;
- * 2. CORS;
- * 3. `listen`/`init`, by the caller.
+ * 1. security response headers — first, so even responses a later layer ends
+ *    early (400, 401, 403, preflight 204) carry them;
+ * 2. request-target + Host guard — before CORS, so a rejected request never
+ *    carries a CORS grant;
+ * 3. CORS;
+ * 4. `listen`/`init`, by the caller.
  */
 export async function createCockpitApp(options: CockpitAppOptions = {}): Promise<NestExpressApplication> {
   // `debug` is on by default deliberately: bridge callbacks that fail
@@ -35,6 +37,9 @@ export async function createCockpitApp(options: CockpitAppOptions = {}): Promise
     response.setHeader('Content-Security-Policy', "frame-ancestors 'self'")
     next()
   })
+  // Request target + Host, before CORS: a rejected request gets no CORS grant,
+  // preflights included (design D1 layers 0 and 1).
+  app.use(requestGuard)
   // Only bridge callbacks are cross-origin by design: the bridge plugin runs
   // inside each device's own DSH web client (127.0.0.1:<device port>) and
   // sends its capability in a header, never the cockpit cookie. Every other

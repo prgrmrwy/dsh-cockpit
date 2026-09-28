@@ -12,6 +12,8 @@
 | specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 不带能力串的 bridge 回调按 cookie 路由校验来源 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | rejects a capability-less bridge callback from a device origin | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 非 bridge 路由不再获得凭据 CORS 许可 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | omits Access-Control-Allow-Credentials on a non-bridge preflight | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | bridge 回调的预检仍被放行 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | reflects the device origin and allows the capability header on a bridge preflight | 🟢 green |
+| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 非 origin-form 请求目标被拒绝 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | rejects absolute-form and other non-origin-form request targets before any routing | 🟢 green |
+| specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | Host 不合法的 bridge 预检不获得 CORS 许可 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | applies the Host check to bridge preflights and grants them no CORS | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | 大小写变体路径不能绕过校验 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | gates mixed-case /api/ paths for both the token and the Host checks | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱 cookie 认证的 API 只接受驾驶舱同源请求 | DNS rebinding 的同源读取被拒绝 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | rejects a rebinding Host on /api/devices and /api/bootstrap without Set-Cookie | 🟢 green |
 | specs/cockpit-api-auth/spec.md → bridge 回调路由名单 | 名单外的 bridge 路径不被豁免 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | does not exempt an unlisted /api/bridge/ path | 🟢 green |
@@ -27,5 +29,6 @@
 - **Host 相关请求**：Node `fetch` 会静默覆盖自定义 `Host`，因此“开发代理”“DNS rebinding”“大小写变体（Host 违规部分）”用 `node:http.request` 显式设置 `Host`；“缺少 Host”若需覆盖，只能用 HTTP/1.0 原始 socket（作为额外测试，不占场景行）。
 - **浏览器头**：`Origin`、`Sec-Fetch-Site` 由测试直接构造，模拟设备页面 origin `http://127.0.0.1:<非驾驶舱端口>`。
 - **既有测试**：`app-auth.e2e.test.ts` 改为同样经 `createCockpitApp()` 启动；hotfix `b1ccc9b` 的大小写 e2e 与单测保留，作为额外回归。
-- **`GET /` 的静态托管**：e2e 环境可能没有 web 产物，`GET /` 可能是 404；场景断言的是响应头，不依赖状态码。
+- **原始请求目标**：absolute-form / asterisk-form 只能经原始 socket 发出（`node:http` 会规范化请求路径），与“缺少 Host”共用 raw socket 帮手。
+- **`GET /` 的静态托管**：e2e 按 `main.ts` 的顺序（工厂 → `useStaticAssets` → `listen`）挂载一个临时 web 目录，因此 shell 场景断言 200 与响应头（实现审查 📌）。
 - **名单一致性**：额外单测逐条对照 spec“bridge 回调路由名单”与 `isBridgeCallback` 的实现名单。

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -57,6 +57,17 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
     })
   }
 
+  function raw(requestText: string): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = connect(port, '127.0.0.1', () => { socket.write(requestText) })
+      let text = ''
+      socket.setEncoding('utf8')
+      socket.on('data', chunk => { text += chunk })
+      socket.on('end', () => resolve(text))
+      socket.on('error', reject)
+    })
+  }
+
   function registry(): Promise<string> {
     return readFile(path.join(directory, 'devices.json'), 'utf8')
   }
@@ -77,7 +88,12 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
       devices: [{ deviceId: DEVICE_ID, displayName: 'Device One', kind: 'local', remoteDshPort: 3939, enabled: false, order: 0 }],
     }, null, 2)}\n`, { mode: 0o600 })
 
+    // Same order as main.ts: factory, then static assets, then listen.
+    const web = path.join(directory, 'web')
+    await mkdir(web)
+    await writeFile(path.join(web, 'index.html'), '<!doctype html><title>cockpit</title>')
     app = await createCockpitApp({ logger: false })
+    app.useStaticAssets(web)
     await app.listen(0, '127.0.0.1')
     const address = app.getHttpServer().address()
     port = typeof address === 'object' && address !== null ? address.port : 0
@@ -103,8 +119,9 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
 
   it('accepts the cockpit page itself (Origin == http://Host, same-origin)', async () => {
     const reply = await send('POST', `/api/devices/${DEVICE_ID}/refresh`, { cookie, origin: self, 'sec-fetch-site': 'same-origin' })
-    expect(reply.status).not.toBe(403)
-    expect(code(reply)).not.toBe('cross-origin-rejected')
+    // Past both the origin and the token check, into the handler — which
+    // refuses to refresh a disabled device. A 401 or 403 here would fail.
+    expect([reply.status, code(reply)]).toEqual([400, 'device-command-failed'])
   })
 
   it('accepts the dev-proxy page (Host 127.0.0.1:5173 preserved, matching Origin)', async () => {
@@ -141,9 +158,10 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
 
   it('lets a capability-bearing bridge callback past the origin check', async () => {
     const reply = await send('POST', '/api/bridge/session-opened', { origin: deviceOrigin, 'content-type': 'application/json', [CAPABILITY_HEADER]: 'forged' }, JSON.stringify({ sessionId: 's1' }))
-    // Reaches the controller, which rejects the forged capability itself.
-    expect(code(reply)).not.toBe('cross-origin-rejected')
-    expect(reply.status).toBe(400)
+    // Past the guard into the controller, whose own capability validation
+    // rejects it because no device lives at this origin — not the guard's 403.
+    expect([reply.status, code(reply)]).toEqual([400, 'bad-request'])
+    expect(JSON.parse(reply.body).message).toMatch(/no cockpit device matches origin/)
   })
 
   it('rejects a capability-less bridge callback from a device origin', async () => {
@@ -155,6 +173,9 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
     const reply = await send('OPTIONS', `/api/devices/${DEVICE_ID}`, { origin: deviceOrigin, 'access-control-request-method': 'PUT', 'access-control-request-headers': 'content-type' })
     expect(reply.headers['access-control-allow-credentials']).toBeUndefined()
     expect(reply.headers['access-control-allow-origin']).toBeUndefined()
+    // With no CORS grant the preflight falls through to the guard, which
+    // rejects the device origin: the browser then never sends the request.
+    expect([reply.status, code(reply)]).toEqual([403, 'cross-origin-rejected'])
   })
 
   it('reflects the device origin and allows the capability header on a bridge preflight', async () => {
@@ -162,6 +183,17 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
     expect(reply.status).toBeLessThan(300)
     expect(reply.headers['access-control-allow-origin']).toBe(deviceOrigin)
     expect(String(reply.headers['access-control-allow-headers'])).toContain(CAPABILITY_HEADER)
+  })
+
+  it('applies the Host check to bridge preflights and grants them no CORS', async () => {
+    const preflight = await send('OPTIONS', '/api/bridge/hello', { host: 'evil.example:3090', origin: deviceOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': CAPABILITY_HEADER })
+    expect([preflight.status, code(preflight)]).toEqual([403, 'cross-origin-rejected'])
+    expect(preflight.headers['access-control-allow-origin']).toBeUndefined()
+    expect(preflight.headers['access-control-allow-credentials']).toBeUndefined()
+    const post = await send('POST', '/api/bridge/hello', { host: 'evil.example:3090', origin: deviceOrigin, 'content-type': 'application/json', [CAPABILITY_HEADER]: 'forged' }, '{}')
+    expect([post.status, code(post)]).toEqual([403, 'cross-origin-rejected'])
+    expect(post.headers['access-control-allow-origin']).toBeUndefined()
+    expect(post.headers['access-control-allow-credentials']).toBeUndefined()
   })
 
   it('gates mixed-case /api/ paths for both the token and the Host checks', async () => {
@@ -185,20 +217,37 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
   })
 
   it('rejects an /api/ request with no Host header at all (HTTP/1.0)', async () => {
-    const raw = await new Promise<string>((resolve, reject) => {
-      const socket = connect(port, '127.0.0.1', () => { socket.write(`GET /api/bootstrap HTTP/1.0\r\n\r\n`) })
-      let text = ''
-      socket.setEncoding('utf8')
-      socket.on('data', chunk => { text += chunk })
-      socket.on('end', () => resolve(text))
-      socket.on('error', reject)
-    })
-    expect(raw).toMatch(/^HTTP\/1\.[01] 403/)
-    expect(raw).not.toMatch(/set-cookie/i)
+    const reply = await raw(`GET /api/bootstrap HTTP/1.0\r\n\r\n`)
+    expect(reply).toMatch(/^HTTP\/1\.[01] 403/)
+    expect(reply).not.toMatch(/set-cookie/i)
+  })
+
+  it('rejects absolute-form and other non-origin-form request targets before any routing', async () => {
+    // The router dispatches `GET http://x/api/devices` to /api/devices (it
+    // parses the pathname out of the URL), so a guard deciding on the raw
+    // request target would see "not /api/" and wave it through — with no
+    // cookie, from any local process.
+    const before = await registry()
+    const targets = [
+      ['GET', `http://127.0.0.1:${port}/api/devices`],
+      ['GET', 'http://evil.example/api/bootstrap'],
+      ['DELETE', `http://x/api/devices/${DEVICE_ID}?confirmed=true`],
+      ['POST', `HTTP://x/API/devices/${DEVICE_ID}/workbench-launch`],
+      ['OPTIONS', '*'],
+    ] as const
+    for (const [method, target] of targets) {
+      const reply = await raw(`${method} ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
+      expect(reply, `${method} ${target}`).toMatch(/^HTTP\/1\.1 400/)
+      expect(reply, `${method} ${target}`).toContain('bad-request-target')
+      expect(reply, `${method} ${target}`).not.toMatch(/access-control-allow/i)
+      expect(reply, `${method} ${target}`).not.toMatch(/Device One|set-cookie/i)
+      expect(reply, `${method} ${target}`).toMatch(/content-security-policy: frame-ancestors 'self'/i)
+    }
+    expect(await registry()).toBe(before)
   })
 
   it('rejects a Host carrying userinfo or a path even if it names the loopback host', async () => {
-    for (const host of ['evil@127.0.0.1', `127.0.0.1:${port}/x`, '127.0.0.1.evil.example']) {
+    for (const host of ['evil@127.0.0.1', `127.0.0.1:${port}/x`, '127.0.0.1.evil.example', '127.0.0.1:99999', 'localhost.', '[::1]']) {
       const reply = await send('GET', '/api/bootstrap', { host })
       expect(reply.status, host).toBe(403)
     }
@@ -215,8 +264,8 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
 
   it('matches a mixed-case listed bridge path as the listed route', async () => {
     const reply = await send('POST', '/API/Bridge/Hello', { origin: deviceOrigin, 'content-type': 'application/json', [CAPABILITY_HEADER]: 'forged' }, JSON.stringify({ version: '0.5.1' }))
-    expect(code(reply)).not.toBe('cross-origin-rejected')
-    expect(reply.status).toBe(400)
+    // Exempt like the listed route: reaches the controller's own origin check.
+    expect([reply.status, code(reply)]).toEqual([400, 'bad-request'])
     const preflight = await send('OPTIONS', '/API/Bridge/Hello', { origin: deviceOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': CAPABILITY_HEADER })
     expect(preflight.headers['access-control-allow-origin']).toBe(deviceOrigin)
   })
@@ -224,8 +273,9 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
   // Requirement: 驾驶舱页面只允许被驾驶舱自身嵌入
 
   it("sends frame-ancestors 'self' on GET /", async () => {
-    // No web dist is mounted here, so `/` may 404; the header is what matters.
     const reply = await send('GET', '/', { 'sec-fetch-mode': 'navigate' })
+    expect(reply.status).toBe(200)
+    expect(reply.body).toContain('<title>cockpit</title>')
     expect(String(reply.headers['content-security-policy'])).toContain("frame-ancestors 'self'")
   })
 

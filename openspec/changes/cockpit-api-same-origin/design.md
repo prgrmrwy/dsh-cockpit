@@ -48,12 +48,17 @@
 
 ## Decisions
 
-### D1. 守卫放在 `TokenMiddleware` 最前面，分两层
+### D1. 守卫分三层：请求目标与 Host 在工厂最前面，来源在 `TokenMiddleware` 最前面
 
-在 `TokenMiddleware.use()` 中、`requiresToken` 判断之前：
+**修订（实现审查 C1/M1）**：初版把全部守卫放进 `TokenMiddleware`。实现审查发现两处漏洞：
+- absolute-form 请求目标（`GET http://x/api/devices`）的 `originalUrl` 不以 `/api/` 开头，被判为非 API 而放行，但 Express router 用 `parseurl` 取出 pathname，仍分派到 `/api/devices`：无 cookie 即可读取、删除设备。
+- CORS 在 `TokenMiddleware` 之前自行结束预检，Host 不合法的 bridge 预检仍得到 204 与 ACAO/ACAC。
 
-1. **Host 层（无条件）**：路径以 `/api/` 开头时，`Host` 必须存在且主机名为 `127.0.0.1` 或 `localhost`，否则 403 `cross-origin-rejected`。对 bootstrap 与 bridge 回调同样生效，因此被拒绝时不会走到 :41 的 `Set-Cookie`，也不会走到 bootstrap controller。
-2. **来源层（按豁免）**：对 bootstrap 与“带能力串请求头的 bridge 回调”跳过；其余 `/api/` 请求：
+因此请求目标与 Host 两层改为工厂内 `createCockpitApp()` 最早注册的 Express 中间件（在 frame-ancestors 之后、`enableCors` 之前）：
+
+0. **请求目标层（无条件，所有路径）**：`originalUrl` 不以 `/` 开头即 400 `bad-request-target`。这使“中间件看到的路径”与“路由器分派的路径”在构造上一致，而不是靠两套解析器行为相同来保证。
+1. **Host 层（无条件）**：原先放在 `TokenMiddleware.use()` 中、`requiresToken` 判断之前，现为工厂前置中间件：路径以 `/api/` 开头时，路径以 `/api/` 开头时，`Host` 必须存在且主机名为 `127.0.0.1` 或 `localhost`，否则 403 `cross-origin-rejected`。对 bootstrap 与 bridge 回调同样生效，因此被拒绝时不会走到 :41 的 `Set-Cookie`，也不会走到 bootstrap controller。
+2. **来源层（按豁免，仍在 `TokenMiddleware.use()` 最前面）**：对 bootstrap 与“带能力串请求头的 bridge 回调”跳过；其余 `/api/` 请求：
    - `Origin` 存在时必须等于 `'http://' + Host`；
    - `Sec-Fetch-Site` 存在时必须为 `same-origin` 或 `none`；
    - 否则 403 `cross-origin-rejected`。
@@ -63,7 +68,9 @@
 
 bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 为唯一权威来源；`isBridgeCallback` 是它的实现，测试逐条对照。后续增删 bridge 路由的 change 须以 MODIFIED 更新该 requirement（例如 `device-forward-registry` 会移除 `publishable-port`/`publish-port`、加入 `forwards/acquire`/`forwards/release`）。不带能力串的 bridge 回调不豁免，因此 legacy cookie 路径来自设备 origin 时会被 403（见 Risks）。
 
-- 备选：做成独立的 Nest middleware / guard。否决：Nest guard 在中间件之后执行，401 的 `Set-Cookie` 已经发生；再加一层中间件则要保证挂载顺序，还多一份路径解析。放在同一个中间件里，“Host 先于一切豁免”由代码顺序直接保证。
+- 备选：全部放在 `TokenMiddleware`（初版方案）。已被推翻：Nest 的模块中间件注册在 `enableCors` 之后，无法先于 CORS 预检执行；而且它只能看到原始请求目标，看不到路由器解析后的路径。挂载顺序改由工厂函数固定并有 e2e 覆盖；路径解析仍只有 `classifyApiPath` 一份。
+- 备选：Nest guard。否决：guard 在中间件之后执行，401 的 `Set-Cookie` 已经发生。
+- 备选：用 `parseurl` 解析 absolute-form 的 pathname 再判定。否决：需要保证与 router 的解析逐字节一致；直接拒绝非 origin-form 更简单，且浏览器从不发出。
 - 备选：只在有 `Origin` 时校验 Host。否决：rebinding 页面的同源 GET 不带 `Origin`，会漏过（前一轮 review M-A）。
 
 ### D2. “驾驶舱自身 origin”取自请求 `Host`，而不是配置端口
@@ -99,7 +106,7 @@ bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 
 
 为了让 e2e 覆盖 CORS 与 D5 的响应头，把应用创建从 `main.ts#bootstrap()` 抽成共享工厂 `createCockpitApp()`：内含 `NestFactory.create(AppModule)` 与全部 HTTP 安全配置，`main.ts` 只负责调用它、托管静态资源并 `listen`；`app-auth.e2e.test.ts` 改为调用同一工厂（弥补 Context 中“`main.ts` 配置无 e2e 覆盖”的缺口，也避免“测试调用了、生产没调用”）。
 
-工厂内的注册顺序固定为：`frame-ancestors` 响应头中间件 → `enableCors` → （由调用方）`listen`/`init`。`frame-ancestors` 先于 CORS 注册，使 CORS 自行结束的预检 204 响应也带该头。
+工厂内的注册顺序固定为：`frame-ancestors` 响应头中间件 → 请求目标层 → Host 层 → `enableCors` → （由调用方）`listen`/`init`。`frame-ancestors` 最先注册，使后续各层自行结束的响应（400、403、预检 204）都带该头；请求目标层与 Host 层先于 CORS，使非法请求目标与 Host 不合法的预检拿不到任何 CORS 许可头。
 
 - 备选：保留全局 CORS，仅依赖 D1 拦截。否决：D1 已经挡住请求，但“对设备 origin 放行凭据读取”仍是不必要的许可，收窄后多一层纵深防御；spec 已要求。
 - bridge 路由上的 `credentials: true` 是否还需要，见 Open Questions。
@@ -114,7 +121,7 @@ bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 
 
 ### D6. 错误形态
 
-403 响应体沿用既有 `{ code, message }` 形态，`code: 'cross-origin-rejected'`，message 不回显请求头内容（避免把攻击者可控字符串写回页面或日志）。拒绝以调试级日志记录（结构字段：path、method、归因类别 host/origin/fetch-site），不记录 cookie。
+403 响应体沿用既有 `{ code, message }` 形态，`code: 'cross-origin-rejected'`（请求目标层为 400 `bad-request-target`），message 不回显请求头内容（避免把攻击者可控字符串写回页面或日志）。拒绝以调试级日志记录（结构字段：path、method、归因类别 host/origin/fetch-site），不记录 cookie。
 
 ## Risks / Trade-offs
 

@@ -22,6 +22,14 @@
 - [x] 3.5 Implement: Host check keyed on the classified (case-folded) path to pass 3.4
 - [x] 3.6 Refactor; full suite stays green
 
+## 3a. 实现审查修订：请求目标层与 Host 层前置（design D1 修订，review C1/M1）
+
+- [x] 3a.1 Write failing test: `rejects absolute-form and other non-origin-form request targets before any routing` (raw socket; assert it fails for the right reason — 200 with device data)
+- [x] 3a.2 Implement: factory middleware after frame-ancestors, before CORS: non-origin-form `originalUrl` → 400 `bad-request-target`; to pass 3a.1
+- [x] 3a.3 Write failing test: `applies the Host check to bridge preflights and grants them no CORS` (assert it fails for the right reason — 204 with ACAO)
+- [x] 3a.4 Implement: move the Host check from `TokenMiddleware` to a factory middleware before `enableCors`; to pass 3a.3
+- [x] 3a.5 Refactor: tighten Host port to 1–65535; tighten weak assertions (self-page → 400 `device-command-failed`, bridge → exact controller code, non-bridge preflight → 403); full suite stays green
+
 ## 4. 来源层（design D1 第 2 层、D2、D3、D6）
 
 - [x] 4.1 Write failing test: `accepts the cockpit page itself (Origin == http://Host, same-origin)` (assert it fails for the right reason)
