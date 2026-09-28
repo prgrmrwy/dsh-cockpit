@@ -30,6 +30,13 @@
 - [x] 3a.4 Implement: move the Host check from `TokenMiddleware` to a factory middleware before `enableCors`; to pass 3a.3
 - [x] 3a.5 Refactor: tighten Host port to 1–65535; tighten weak assertions (self-page → 400 `device-command-failed`, bridge → exact controller code, non-bridge preflight → 403); full suite stays green
 
+## 3b. 二次审查修订：请求目标与 router 读法一致（design D1 第 0 层，review C1'）
+
+- [x] 3b.1 Write failing test: backslash + `#` targets (`/api\devices#x`, `DELETE /api\devices\<id>?confirmed=true#`) in the non-origin-form e2e (assert it fails for the right reason — 200 with device data)
+- [x] 3b.2 Implement: reject RFC 9112-invalid origin-form characters, and reject when the router's reading (`request.path`) differs from the guard's; to pass 3b.1
+- [x] 3b.3 Unit test that the reading comparison alone rejects a divergent target (mutation-checked: removing either defense turns a test red)
+- [x] 3b.4 Refactor: fix design/test-plan stale `isBridgeCallback` references and duplicated sentence; full suite stays green
+
 ## 4. 来源层（design D1 第 2 层、D2、D3、D6）
 
 - [x] 4.1 Write failing test: `accepts the cockpit page itself (Origin == http://Host, same-origin)` (assert it fails for the right reason)

@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { TokenMiddleware, parseCookie, requestPathname, requiresToken } from '../src/auth/token.middleware.js'
+import { TokenMiddleware, parseCookie, requestGuard, requestPathname, requiresToken } from '../src/auth/token.middleware.js'
 import { TokenService } from '../src/auth/token.js'
 
 /** A real Express request mounted under AuthModule's `/{*splat}` middleware
@@ -143,5 +143,25 @@ describe('token middleware', () => {
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
+  })
+})
+
+describe('requestGuard (request-target layer)', () => {
+  const run = (request: { originalUrl: string; path: string; headers?: Record<string, string> }) => {
+    const response = { status: vi.fn().mockReturnThis(), json: vi.fn() }
+    const next = vi.fn()
+    requestGuard({ method: 'GET', headers: { host: '127.0.0.1:3090' }, ...request } as never, response as never, next)
+    return { status: response.status.mock.calls[0]?.[0] as number | undefined, next: next.mock.calls.length }
+  }
+
+  it('rejects a target whose router reading differs from the guard reading, even with only safe characters', () => {
+    // Guards against a future parser quirk the character list does not know
+    // about: whatever the router makes of the target, the guard must agree.
+    expect(run({ originalUrl: '/static/x', path: '/api/devices' })).toEqual({ status: 400, next: 0 })
+  })
+
+  it('passes a plain origin-form target through to the next layer', () => {
+    expect(run({ originalUrl: '/api/devices?x=1', path: '/api/devices' })).toEqual({ status: undefined, next: 1 })
+    expect(run({ originalUrl: '/assets/app.js', path: '/assets/app.js' })).toEqual({ status: undefined, next: 1 })
   })
 })

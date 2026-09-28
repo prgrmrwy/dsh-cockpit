@@ -84,17 +84,23 @@ export class TokenMiddleware implements NestMiddleware {
  * ahead of CORS so that neither a preflight nor a request the router would
  * still dispatch can slip past them:
  *
- * 0. request target — only origin-form (`/path`). For absolute-form
- *    (`GET http://x/api/devices`) `originalUrl` does not start with `/api/`,
- *    yet the router parses the pathname out of it and dispatches to the API
- *    handler; rejecting it makes "the path the guard sees" and "the path the
- *    router routes" the same by construction. Browsers never send it.
+ * 0. request target — only a plain origin-form target the guard and the
+ *    router read identically. The router takes its path from `parseurl`,
+ *    which (a) parses absolute-form (`GET http://x/api/devices`) out to
+ *    `/api/devices`, and (b) on `#`, whitespace, U+00A0 or U+FEFF drops to
+ *    `url.parse`, which rewrites `\` to `/` (`/api\devices#x` routes to
+ *    `/api/devices`). Either way the raw target does not start with `/api/`
+ *    while the handler it reaches does. So the target must start with `/`,
+ *    contain none of those characters, and — checked, not assumed — the
+ *    router's own reading (`request.path`, which IS `parseurl(req).pathname`
+ *    while mounted at the root) must equal the guard's. Browsers never send
+ *    any of the rejected forms.
  * 1. Host — every `/api/` request, before any exemption, CORS included: a
  *    DNS-rebinding page reaches this loopback port under its own hostname
  *    and must get neither the bootstrap cookie nor any CORS grant.
  */
 export function requestGuard(request: Request, response: Response, next: NextFunction): void {
-  if (!isOriginForm(request)) {
+  if (!isOriginForm(request) || request.path !== requestPathname(request)) {
     guardLogger.debug({ event: 'bad-request-target', method: request.method })
     response.status(400).json({ code: 'bad-request-target', message: 'request target must be an absolute path' })
     return
@@ -109,8 +115,14 @@ export function requestGuard(request: Request, response: Response, next: NextFun
 const guardLogger = new Logger('CockpitApiGuard')
 
 function isOriginForm(request: Pick<Request, 'originalUrl'>): boolean {
-  return request.originalUrl.startsWith('/')
+  return request.originalUrl.startsWith('/') && !NON_ORIGIN_FORM_CHARACTER.test(request.originalUrl)
 }
+
+/** Characters that are not valid unescaped in an RFC 9112 origin-form target
+ * and that send `parseurl` off its fast path or get normalized by it:
+ * controls and space, `#`, `\`, DEL, and anything non-ASCII. */
+// eslint-disable-next-line no-control-regex
+const NON_ORIGIN_FORM_CHARACTER = /[\u0000-\u0020#\\\u007f-\uffff]/
 
 function rejectCrossOrigin(logger: Logger, request: Request, response: Response, reason: 'host' | 'origin' | 'fetch-site'): void {
   // Never echo request headers back (attacker-controlled), never log cookies.

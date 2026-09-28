@@ -17,7 +17,7 @@ Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调（含其 
 
 - 判定请求是否为 `/api/` 请求、是否为 `/api/bootstrap`、是否在 bridge 回调路由名单中，SHALL 采用与 HTTP 路由器相同的大小写不敏感语义（例如先把路径转为小写再匹配，或让路由器改为大小写敏感，使二者一致）。
 - 任何被路由器分派到 `/api/` 处理器的路径变体 MUST NOT 绕过 Host、来源或 token 校验。
-- 请求目标（request-target）SHALL 为以 `/` 开头的 origin-form。absolute-form（如 `GET http://x/api/devices`）、authority-form、asterisk-form（`OPTIONS *`）SHALL 在任何路由、CORS 处理与业务处理之前以 400 `bad-request-target` 拒绝：路由器会从 absolute-form 中解析出 `/api/...` 路径并分派到处理器，而按原始请求目标做的判定看不到它。浏览器不会发出这类请求目标，拒绝不影响任何合法调用方。
+- 请求目标（request-target）SHALL 为符合 RFC 9112 的 origin-form：以 `/` 开头，且不含未转义的控制字符、空白、`#`、`\` 或非 ASCII 字符。absolute-form（如 `GET http://x/api/devices`）、authority-form、asterisk-form（`OPTIONS *`）以及不合规的 origin-form（如 `/api\devices#x`）SHALL 在任何路由、CORS 处理与业务处理之前以 400 拒绝（由驾驶舱拒绝时错误码为 `bad-request-target`；HTTP 解析器先行拒绝亦可）：路由器会从这些目标中解析出 `/api/...` 路径并分派到处理器，而按原始请求目标做的判定看不到它。浏览器不会发出这类请求目标，拒绝不影响任何合法调用方。
 - CORS 的凭据许可判定（见下文）SHALL 使用同一个匹配函数。
 
 **“驾驶舱自身 origin”的判定**
@@ -108,7 +108,7 @@ Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调（含其 
 
 #### Scenario: 非 origin-form 请求目标被拒绝
 - **GIVEN** 驾驶舱正在运行，注册表中有一台设备
-- **WHEN** 不带 cookie 的请求以 `Host: 127.0.0.1:<驾驶舱端口>` 发出 `GET http://127.0.0.1:<驾驶舱端口>/api/devices`、`DELETE http://x/api/devices/<id>?confirmed=true` 或 `OPTIONS *`
+- **WHEN** 不带 cookie 的请求以 `Host: 127.0.0.1:<驾驶舱端口>` 发出 `GET http://127.0.0.1:<驾驶舱端口>/api/devices`、`DELETE http://x/api/devices/<id>?confirmed=true`、`OPTIONS *`、`GET /api\devices#x` 或 `DELETE /api\devices\<id>?confirmed=true#`
 - **THEN** 响应均为 400 `bad-request-target`，携带 `frame-ancestors 'self'`，响应体不含设备数据，注册表不变
 
 #### Scenario: Host 不合法的 bridge 预检不获得 CORS 许可

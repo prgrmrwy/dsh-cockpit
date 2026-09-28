@@ -56,21 +56,26 @@
 
 因此请求目标与 Host 两层改为工厂内 `createCockpitApp()` 最早注册的 Express 中间件（在 frame-ancestors 之后、`enableCors` 之前）：
 
-0. **请求目标层（无条件，所有路径）**：`originalUrl` 不以 `/` 开头即 400 `bad-request-target`。这使“中间件看到的路径”与“路由器分派的路径”在构造上一致，而不是靠两套解析器行为相同来保证。
-1. **Host 层（无条件）**：原先放在 `TokenMiddleware.use()` 中、`requiresToken` 判断之前，现为工厂前置中间件：路径以 `/api/` 开头时，路径以 `/api/` 开头时，`Host` 必须存在且主机名为 `127.0.0.1` 或 `localhost`，否则 403 `cross-origin-rejected`。对 bootstrap 与 bridge 回调同样生效，因此被拒绝时不会走到 :41 的 `Set-Cookie`，也不会走到 bootstrap controller。
+0. **请求目标层（无条件，所有路径）**：以下任一成立即 400 `bad-request-target`：
+   - `originalUrl` 不以 `/` 开头（absolute-form、asterisk-form）；
+   - 含 RFC 9112 origin-form 不允许未转义出现的字符：控制字符与空格、`#`、`\`、DEL、非 ASCII。router 所用的 `parseurl` 遇到 `#`/空白/U+00A0/U+FEFF 会改走 `url.parse`，后者把 `\` 规范为 `/`（二次审查 C1'：`/api\devices#x` 被分派到 `/api/devices`）；
+   - 路由器自己的读法（根挂载下的 `request.path`，即 `parseurl(req).pathname`）与守卫的读法（`requestPathname`）不相等。
+
+   前两条拒绝已知会让两种读法分叉的输入，第三条直接比对两种读法，兜住字符名单未覆盖的解析差异。三者都是纵深防御，各有测试单独覆盖。浏览器从不发出被拒绝的形式。
+1. **Host 层（无条件）**：原先放在 `TokenMiddleware.use()` 中、`requiresToken` 判断之前，现为工厂前置中间件：路径以 `/api/` 开头时，`Host` 必须存在且主机名为 `127.0.0.1` 或 `localhost`，否则 403 `cross-origin-rejected`。对 bootstrap 与 bridge 回调同样生效，因此被拒绝时不会走到 :41 的 `Set-Cookie`，也不会走到 bootstrap controller。
 2. **来源层（按豁免，仍在 `TokenMiddleware.use()` 最前面）**：对 bootstrap 与“带能力串请求头的 bridge 回调”跳过；其余 `/api/` 请求：
    - `Origin` 存在时必须等于 `'http://' + Host`；
    - `Sec-Fetch-Site` 存在时必须为 `same-origin` 或 `none`；
    - 否则 403 `cross-origin-rejected`。
 3. 通过后才进入既有的 token 豁免与 cookie 校验。
 
-来源层的豁免判定复用既有的 `isBridgeCallback(pathname) && 请求头存在`，与 token 豁免保持同一条件，避免两份名单漂移。所有路径判定（Host 层是否为 `/api/`、bootstrap、bridge 名单、D4 的 CORS 分流）都使用 `use()` 开头已转为小写的同一个 pathname，并抽成一个导出的 `classifyApiPath(originalUrl)` 供中间件与 CORS 共用。
+来源层的豁免判定为 `classifyApiPath(pathname).bridgeCallback && 请求头存在`，与 token 豁免保持同一条件，避免两份名单漂移。所有路径判定（Host 层是否为 `/api/`、bootstrap、bridge 名单、D4 的 CORS 分流）都使用 `use()` 开头已转为小写的同一个 pathname，并抽成一个导出的 `classifyApiPath(originalUrl)` 供中间件与 CORS 共用。
 
-bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 为唯一权威来源；`isBridgeCallback` 是它的实现，测试逐条对照。后续增删 bridge 路由的 change 须以 MODIFIED 更新该 requirement（例如 `device-forward-registry` 会移除 `publishable-port`/`publish-port`、加入 `forwards/acquire`/`forwards/release`）。不带能力串的 bridge 回调不豁免，因此 legacy cookie 路径来自设备 origin 时会被 403（见 Risks）。
+bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 为唯一权威来源；`BRIDGE_CALLBACK_ROUTES` 是它的实现（由 `classifyApiPath` 精确匹配），`tests/bridge-route-list.test.ts` 逐条对照。后续增删 bridge 路由的 change 须以 MODIFIED 更新该 requirement（例如 `device-forward-registry` 会移除 `publishable-port`/`publish-port`、加入 `forwards/acquire`/`forwards/release`）。不带能力串的 bridge 回调不豁免，因此 legacy cookie 路径来自设备 origin 时会被 403（见 Risks）。
 
 - 备选：全部放在 `TokenMiddleware`（初版方案）。已被推翻：Nest 的模块中间件注册在 `enableCors` 之后，无法先于 CORS 预检执行；而且它只能看到原始请求目标，看不到路由器解析后的路径。挂载顺序改由工厂函数固定并有 e2e 覆盖；路径解析仍只有 `classifyApiPath` 一份。
 - 备选：Nest guard。否决：guard 在中间件之后执行，401 的 `Set-Cookie` 已经发生。
-- 备选：用 `parseurl` 解析 absolute-form 的 pathname 再判定。否决：需要保证与 router 的解析逐字节一致；直接拒绝非 origin-form 更简单，且浏览器从不发出。
+- 备选：只用 `parseurl` 取路径再判定，接受任意请求目标。否决：分类结果会对齐，但要求守卫与 router 永远依赖同一版本、同一调用方式的 parseurl；拒绝非法 origin-form 并比对两种读法，不依赖这个隐含前提。初版（只检查首字符 `/`）声称的“构造上一致”被二次审查 C1' 证伪，因此改为“拒绝 + 显式比对”。
 - 备选：只在有 `Origin` 时校验 Host。否决：rebinding 页面的同源 GET 不带 `Origin`，会漏过（前一轮 review M-A）。
 
 ### D2. “驾驶舱自身 origin”取自请求 `Host`，而不是配置端口

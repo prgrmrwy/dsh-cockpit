@@ -31,4 +31,4 @@
 - **既有测试**：`app-auth.e2e.test.ts` 改为同样经 `createCockpitApp()` 启动；hotfix `b1ccc9b` 的大小写 e2e 与单测保留，作为额外回归。
 - **原始请求目标**：absolute-form / asterisk-form 只能经原始 socket 发出（`node:http` 会规范化请求路径），与“缺少 Host”共用 raw socket 帮手。
 - **`GET /` 的静态托管**：e2e 按 `main.ts` 的顺序（工厂 → `useStaticAssets` → `listen`）挂载一个临时 web 目录，因此 shell 场景断言 200 与响应头（实现审查 📌）。
-- **名单一致性**：额外单测逐条对照 spec“bridge 回调路由名单”与 `isBridgeCallback` 的实现名单。
+- **名单一致性**：额外单测逐条对照 spec“bridge 回调路由名单”与实现名单 `BRIDGE_CALLBACK_ROUTES`（`tests/bridge-route-list.test.ts`）。另有 `token.test.ts` 单测覆盖请求目标层的“两种读法比对”，它单独拦住字符名单之外的解析差异。

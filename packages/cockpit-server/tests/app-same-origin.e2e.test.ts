@@ -234,6 +234,14 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
       ['DELETE', `http://x/api/devices/${DEVICE_ID}?confirmed=true`],
       ['POST', `HTTP://x/API/devices/${DEVICE_ID}/workbench-launch`],
       ['OPTIONS', '*'],
+      // `#` (or whitespace) pushes the router's parser onto its slow path,
+      // which rewrites `\` to `/`: these route to /api/devices while the raw
+      // target does not even start with /api/.
+      ['GET', '/api\\devices#x'],
+      ['GET', '/API\\runtime\\status#'],
+      ['DELETE', `/api\\devices\\${DEVICE_ID}?confirmed=true#`],
+      ['POST', `/api\\devices\\${DEVICE_ID}\\workbench-launch#`],
+      ['GET', '/api/devices#x'],
     ] as const
     for (const [method, target] of targets) {
       const reply = await raw(`${method} ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`)
@@ -242,6 +250,13 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
       expect(reply, `${method} ${target}`).not.toMatch(/access-control-allow/i)
       expect(reply, `${method} ${target}`).not.toMatch(/Device One|set-cookie/i)
       expect(reply, `${method} ${target}`).toMatch(/content-security-policy: frame-ancestors 'self'/i)
+    }
+    // Raw non-ASCII in the target: Node's own HTTP parser already refuses it
+    // (400, before Express) — equally a rejection, just not ours to label.
+    for (const target of ['/api/devices\u00a0', '/api\\devices\ufeff']) {
+      const reply = await raw(`GET ${target} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: close\r\n\r\n`)
+      expect(reply, JSON.stringify(target)).toMatch(/^HTTP\/1\.1 400/)
+      expect(reply, JSON.stringify(target)).not.toMatch(/Device One/)
     }
     expect(await registry()).toBe(before)
   })
