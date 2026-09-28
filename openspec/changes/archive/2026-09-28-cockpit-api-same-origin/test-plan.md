@@ -22,6 +22,8 @@
 | specs/cockpit-api-auth/spec.md → 驾驶舱页面只允许被驾驶舱自身嵌入 | 被拒绝的 API 响应同样携带 frame-ancestors | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | sends frame-ancestors 'self' on a 403 rejection | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱页面只允许被驾驶舱自身嵌入 | bridge 预检响应同样携带 frame-ancestors | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | sends frame-ancestors 'self' on a bridge preflight | 🟢 green |
 | specs/cockpit-api-auth/spec.md → 驾驶舱页面只允许被驾驶舱自身嵌入 | 设备工作台 iframe 不受影响 | packages/cockpit-server/tests/app-same-origin.e2e.test.ts | sends a CSP with only the frame-ancestors directive | 🟢 green |
+| specs/cockpit-workbench/spec.md → 工作台直接承载远端原生 DSH，零协议耦合 | 非精确Cockpit Origin被拒绝 | packages/cockpit-server/tests/app-auth.e2e.test.ts | rejects every non-exact workbench launch Origin and Host before secret access | 🟢 green |
+| specs/cockpit-workbench/spec.md → 工作台直接承载远端原生 DSH，零协议耦合 | 来源被拒时Web显示固定文案 | packages/cockpit-web/tests/workbench.test.tsx | shows the fixed origin wording for both the global and the launch-gate origin rejection | 🟢 green |
 
 ## Coverage Notes
 

@@ -36,6 +36,9 @@ const AUTH_FAILURE_TEXT: Record<string, string> = {
   'workbench-unavailable': '工作台暂时不可用，请稍后重试。',
   'workbench-launch-stale': '设备连接已更新，请重试。',
   'workbench-origin-forbidden': '请求来源不被允许。',
+  // The global same-origin guard (cockpit-api-auth) refuses a mismatched
+  // Origin before the launch gate ever runs; same meaning, same wording.
+  'cross-origin-rejected': '请求来源不被允许。',
 }
 const AUTH_FAILURE_FALLBACK = '工作台认证未建立，请重试。'
 

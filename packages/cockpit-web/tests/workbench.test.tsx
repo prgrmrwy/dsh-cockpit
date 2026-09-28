@@ -550,6 +550,20 @@ describe('workbench launch authentication', () => {
     expect(retry.textContent).toBe('重试')
   })
 
+  it('shows the fixed origin wording for both the global and the launch-gate origin rejection', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    for (const code of ['cross-origin-rejected', 'workbench-origin-forbidden']) {
+      const launch = vi.fn().mockRejectedValue(new ApiRequestError(code, 'request origin is not the cockpit', 403))
+      const { container, unmount } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
+      await waitFor(() => expect(container.querySelector('[data-cockpit-auth="d1"]')).not.toBeNull())
+      const overlay = container.querySelector('[data-cockpit-auth="d1"]')!
+      expect(overlay.textContent, code).toContain('请求来源不被允许。')
+      expect(overlay.textContent, code).not.toContain('request origin is not the cockpit')
+      expect(container.querySelector('iframe')!.getAttribute('src'), code).not.toContain('token')
+      unmount()
+    }
+  })
+
   it('launches once for a higher auth generation across either load cleanup path', async () => {
     const launch = vi.fn()
       .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })

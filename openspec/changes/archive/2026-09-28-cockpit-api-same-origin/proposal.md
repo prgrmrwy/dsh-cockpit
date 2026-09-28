@@ -32,7 +32,8 @@
 - `cockpit-api-auth`：驾驶舱 cookie 认证 API 的 Host/来源校验、CORS 凭据许可范围，以及 shell 的嵌入限制。
 
 ### Modified Capabilities
-- 无。现有 specs 的 requirement 不变：`cockpit-workbench` 的“跨端口认证”场景本就要求 bridge 不依赖跨端口 cookie；`cockpit-pwa` 的同源 GET 缓存策略与 `cockpit-runtime-launch` 的 CLI 调用均不带跨源 `Origin`，不受影响。
+- `cockpit-workbench`：requirement“工作台直接承载远端原生 DSH，零协议耦合”的 Origin gate 改为与本 capability 分层表述——Origin 存在但不等于 `http://`+Host 的启动请求先由全局守卫以 `cross-origin-rejected` 拒绝，其余不满足更严格启动条件的（缺失 Origin、`localhost` Host）仍由启动接口以 `workbench-origin-forbidden` 拒绝；Web 对两者显示同一固定文案。该 requirement 由并行 change `fix-new-browser-workbench-auth` 引入，合并后两层叠加才暴露此不一致（见 design D7）。
+- 其余现有 specs 的 requirement 不变：`cockpit-workbench` 的“跨端口认证”场景本就要求 bridge 不依赖跨端口 cookie；`cockpit-pwa` 的同源 GET 缓存策略与 `cockpit-runtime-launch` 的 CLI 调用均不带跨源 `Origin`，不受影响。
 
 ## Impact
 
@@ -41,5 +42,6 @@
   - `packages/cockpit-server/src/main.ts`：CORS 改为按路由决定是否允许凭据；新增 `frame-ancestors` 响应头。
 - **测试**：`packages/cockpit-server/tests/app-auth.e2e.test.ts` 增加 origin guard / cors / frame-ancestors 用例。
 - **不受影响的调用方**（已读码核对，见 design Context）：驾驶舱 web（`credentials: 'same-origin'`）、同源 EventSource、Service Worker 同源 GET、Vite 开发代理（`changeOrigin: false`）、`bin/cockpit` CLI（Node fetch 不带 `Origin`）、带能力串的 bridge。
-- **不涉及**：web 端与 bridge 包无需改动；无数据迁移；无依赖变更。
+- **web**：`Workbench.tsx` 为 `cross-origin-rejected` 增加固定文案（与 `workbench-origin-forbidden` 相同）。
+- **不涉及**：bridge 包无需改动；无数据迁移；无依赖变更。
 - **后续**：`device-forward-registry` 新增的 bridge 端点须加入同一 bridge 回调名单，并沿用本 capability 的校验。

@@ -130,3 +130,37 @@ Fresh-context security review of the implementation, three rounds; full report k
    - Two non-blocking suggestions applied in 18b3aef: a generic 400 message, and a comment in `main.ts` stating the static/`api/` constraint.
 
 IMPLEMENTATION_VERDICT: APPROVE
+
+## Merge Amendment Review (post-merge, fresh context)
+
+Scope: uncommitted amendment on top of ef983b6 (`git diff HEAD` + new `specs/cockpit-workbench/spec.md`). Ran `openspec validate cockpit-api-same-origin --strict` (valid), `tests/app-auth.e2e.test.ts` (12/12), `tests/workbench.test.tsx` (33/33), and a raw-HTTP probe of 19 header shapes against the built server (`dist/app-factory.js`).
+
+1. 🟡 **The spec says empty Origin goes to the wrong layer.**
+   - The delta says "缺失或空Origin … SHALL由本接口以403 `workbench-origin-forbidden`拒绝" (`specs/cockpit-workbench/spec.md:9`), and the scenario THEN says "缺失/空Origin … 由本接口返回 `workbench-origin-forbidden`" (`:36`).
+   - The code does something else. The global guard only skips the check when the header is `undefined`: `origin !== undefined && origin !== \`http://${host}\`` (`token.middleware.ts:55`). So `Origin: ''` is refused there with `cross-origin-rejected`.
+   - The e2e agrees with the code, not the spec: `'empty Origin'` is in `globalRejects` (`app-auth.e2e.test.ts:230`). The probe also returned `cross-origin-rejected` for it.
+   - Fix: drop "空" from both places so the launch-gate list reads "缺失Origin、`localhost`形式Host等", or move empty Origin into the global-guard list. The proposal and D7 already say "缺失 Origin" only, so they are consistent.
+2. 🟡 **Pre-existing, not caused by this amendment: a duplicate Host passes both layers.** The amended text re-asserts "拒绝缺失/重复/非法Origin或Host" (`spec.md:9`), so it is now part of this change.
+   - Node's HTTP parser keeps only the first `Host`. If that first value is valid, both `headerValue(request.headers.host)` (`token.middleware.ts:42`) and `exactCockpitOrigin` (`devices.controller.ts:440-452`) see a single valid Host.
+   - Probe result for `Host: <cockpit>, Host: 127.0.0.1:1, Origin: <cockpit>`: **404 `unknown-device`**. The request reached `connectivity.workbenchLaunch`, and for an existing device it would reach token access. With the bogus Host first, it is correctly refused with 403.
+   - The e2e hides this: the raw `duplicate Host` case (`app-auth.e2e.test.ts:263`) accepts any status from 400 to 499 (`:273`), so 404 passes. The old test had the same hole.
+   - Browsers cannot send a duplicate Host, so this is only reachable by a local process, which is already inside the stated trust boundary. It is still a gap between spec and code.
+   - Suggested follow-up (small, can be separate): reject a repeated `Host` in `requestGuard` using `request.rawHeaders`, and tighten that raw case to 400 or 403. Or state in the spec that duplicate Host is left to the HTTP parser.
+3. 📌 **Check 1 — the delta is a faithful copy.** Diffing `openspec/specs/cockpit-workbench/spec.md:7-100` against the delta shows exactly three changes: the Origin paragraph (line 7→9), the forwarded-scenario THEN (34→36), and the added scenario "来源被拒时Web显示固定文案". No scenario was dropped. The success, no-store/referrer and forwarded-ignore clauses are kept word for word.
+4. 📌 **Check 2 — the layering claims match the code.**
+   - The probe returned `workbench-origin-forbidden` for: `localhost` Host with a matching Origin, `LOCALHOST` in upper case, `localhost` with no Origin, `127.0.0.1:80`, and a missing Origin.
+   - It returned `cross-origin-rejected` for: a mismatched port, `null`, a trailing `/`, a scheme-less Origin, a duplicate Origin (Node joins the values with `, `), an empty Host, and `Sec-Fetch-Site: same-site`.
+   - So "a `localhost` Host passes the global guard but is refused by the launch gate" holds. Apart from #2, I found no shape that gets past both layers.
+5. 📌 **Check 3 — the rewritten e2e is not weaker.**
+   - Every earlier case still asserts 403 and the same leak regex, and the code is now pinned exactly with `JSON.parse(body).code`, which is stricter than the old `toContain`.
+   - The new `localhost` case adds coverage.
+   - One minor loosening: in the raw cases a 403 now accepts either code instead of only `workbench-origin-forbidden`. It could be pinned per case, but it does not weaken any security check.
+6. 📌 **Check 4 — consistent with cockpit-api-auth and design D7.** The cockpit-api-auth scenario "设备页面带 cookie 获取启动 URL 被拒绝 → 403 `cross-origin-rejected`" matches the new layering. D7's reasons hold in the code: the global guard lets a missing Origin through (the CLI needs that), and the inner gate is the only thing that refuses launch without an Origin. The web change (`Workbench.tsx:41`) and its test are correct: the fixed wording is shown, the server message is not, and no tokenized iframe is created.
+
+AMENDMENT_VERDICT: APPROVE_WITH_CHANGES
+
+**Merge amendment — author response:**
+- 🟡1 fixed: `specs/cockpit-workbench/spec.md` now says empty Origin is caught by the global guard (`cross-origin-rejected`); only a *missing* Origin reaches the launch gate. Matches code and e2e.
+- 🟡2 fixed (not merely documented): `exactCockpitOrigin` counts `rawHeaders` and refuses a repeated Host with 403 `workbench-origin-forbidden`; e2e pins that exact result (was red at 404 `unknown-device`, now green). Spec lists "重复Host" under the launch-gate layer. Global guard unchanged.
+
+CHANGES_APPLIED (amendment): yes

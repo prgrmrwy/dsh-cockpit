@@ -128,6 +128,15 @@ bridge 回调路由名单以 spec 的“bridge 回调路由名单”requirement 
 
 403 响应体沿用既有 `{ code, message }` 形态，`code: 'cross-origin-rejected'`（请求目标层为 400 `bad-request-target`），message 不回显请求头内容（避免把攻击者可控字符串写回页面或日志）。拒绝以调试级日志记录（结构字段：path、method、归因类别 host/origin/fetch-site），不记录 cookie。
 
+### D7. 与 `workbench-launch` 自身 Origin gate 的分层（合并后修订）
+
+并行 change `fix-new-browser-workbench-auth` 在 `workbench-launch` controller 内加了更严格的精确 Origin gate（错误码 `workbench-origin-forbidden`，要求 Origin 存在且主机名为 `127.0.0.1` 字面量）。两者合并后，Origin 存在但不等于 `http://`+Host 的请求会先被本 change 的全局守卫以 `cross-origin-rejected` 拒绝，走不到内层 gate。决定：
+
+- **保留两层**：全局守卫对无 Origin 请求放行（CLI 需要），只有内层 gate 能拒绝“无 Origin 取 launch token”；内层对 `localhost` 的额外收紧也保留——设备 iframe、隧道与 bridge 全部基于 `127.0.0.1`，放开 `localhost` 会引入第二个 cookie/origin 作用域，收益为零。
+- **不改代码行为**，只让规范说清“哪一层给出哪个 code”：`cockpit-workbench` 以 MODIFIED delta 表述分层，e2e 按层断言错误码；Web 对两个 code 显示同一“请求来源不被允许”文案，避免落到误导性的兜底文案。
+- 合并复审（review.md “Merge Amendment Review”）🟡2：Node 只保留重复 `Host` 的第一个值，重复 Host 曾同时穿过两层直达 token 读取（仅非浏览器本机进程可构造，属既有信任边界）。既然 spec 写明“拒绝重复Host”，内层 gate 改为经 `rawHeaders` 计数、重复即 `workbench-origin-forbidden`；全局守卫不变。
+- 否决：让全局守卫对 `workbench-launch` 让路以保留单一错误码——会让最敏感的路由绕开统一守卫，与本 change 的目的相反。
+
 ## Risks / Trade-offs
 
 - [旧版 bridge 的无能力串回调被 403] 不带能力串、来自设备 origin 的 `hello` / `session-opened` / `pending-snapshot`（`devices.controller.ts:127-133` 的 legacy cookie 路径）将得到 403。→ 已 pin 的 bridge 0.5.1 总是带能力串，且其 fetch 不设 `credentials`、跨源本就不带 cookie，所以这条 legacy 路径在跨源场景下原本就走不通；预期无实际影响。发布说明中注明。

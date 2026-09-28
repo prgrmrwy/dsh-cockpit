@@ -437,8 +437,12 @@ function toWorkbenchHttp(cause: unknown): HttpException {
  * rewrite the expected origin. Their mere presence is not an error — a matching
  * raw `Origin`/`Host` pair still proceeds.
  */
-export function exactCockpitOrigin(request: Pick<import('express').Request, 'headers' | 'protocol'>): string {
+export function exactCockpitOrigin(request: Pick<import('express').Request, 'headers' | 'protocol'> & Partial<Pick<import('express').Request, 'rawHeaders'>>): string {
   if (request.protocol !== 'http') throw originForbidden()
+  // Node keeps only the FIRST of a repeated Host, so `headers.host` alone
+  // cannot see `Host: <cockpit>` followed by `Host: <other>`. The spec requires
+  // a duplicate Host to be refused; `rawHeaders` is the only place it shows.
+  if (countRawHeader(request.rawHeaders, 'host') > 1) throw originForbidden()
   const host = request.headers.host
   if (typeof host !== 'string' || host === '') throw originForbidden()
   let expected: URL
@@ -462,6 +466,15 @@ function requireExactCockpitOrigin(request: import('express').Request): void {
     throw originForbidden()
   }
   if (presented.origin !== exactCockpitOrigin(request)) throw originForbidden()
+}
+
+function countRawHeader(rawHeaders: readonly string[] | undefined, name: string): number {
+  if (rawHeaders === undefined) return 0
+  let count = 0
+  for (let index = 0; index < rawHeaders.length; index += 2) {
+    if (rawHeaders[index]!.toLowerCase() === name) count += 1
+  }
+  return count
 }
 
 function originForbidden(): HttpException {

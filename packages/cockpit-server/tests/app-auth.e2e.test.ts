@@ -221,8 +221,12 @@ describe('auth gate (real NestJS + Express integration)', () => {
       const cookie = await cockpitCookie()
       const cockpitOrigin = new URL(baseUrl).origin
       const cockpitHost = new URL(baseUrl).host
-      const cases: Array<[string, Record<string, string>]> = [
-        ['missing Origin', { host: cockpitHost, cookie }],
+      // Two layers answer these (cockpit-api-auth + cockpit-workbench): an
+      // Origin that is present but not `http://` + Host is refused by the global
+      // same-origin guard before routing; one the global guard lets through
+      // (absent Origin) is refused by the stricter launch gate. Both are 403
+      // before any secret access, and each is pinned to its own layer's code.
+      const globalRejects: Array<[string, Record<string, string>]> = [
         ['empty Origin', { host: cockpitHost, origin: '', cookie }],
         ['different loopback port', { host: cockpitHost, origin: 'http://127.0.0.1:1', cookie }],
         ['localhost instead of 127.0.0.1', { host: cockpitHost, origin: `http://localhost:${new URL(baseUrl).port}`, cookie }],
@@ -230,13 +234,26 @@ describe('auth gate (real NestJS + Express integration)', () => {
         ['zero port', { host: cockpitHost, origin: 'http://127.0.0.1:0', cookie }],
         ['forwarded disguise', { host: cockpitHost, origin: 'http://127.0.0.1:1', 'x-forwarded-host': cockpitHost, 'x-forwarded-proto': 'http', cookie }],
       ]
-      for (const [label, headers] of cases) {
-        const response = await launch({ headers })
-        expect(response.status, label).toBe(403)
-        const body = await response.text()
-        expect(body, label).toContain('workbench-origin-forbidden')
-        expect(body, label).not.toMatch(/token|dsh-auth|cookie/iu)
+      const launchGateRejects: Array<[string, Record<string, string>]> = [
+        ['missing Origin', { host: cockpitHost, cookie }],
+      ]
+      for (const [cases, code] of [[globalRejects, 'cross-origin-rejected'], [launchGateRejects, 'workbench-origin-forbidden']] as const) {
+        for (const [label, headers] of cases) {
+          const response = await launch({ headers })
+          expect(response.status, label).toBe(403)
+          const body = await response.text()
+          expect(JSON.parse(body).code, label).toBe(code)
+          expect(body, label).not.toMatch(/token|dsh-auth|cookie/iu)
+        }
       }
+
+      // A `localhost` Host with its own matching Origin is same-origin for the
+      // global guard, but the launch gate only accepts the 127.0.0.1 literal.
+      const localhostHost = `localhost:${new URL(baseUrl).port}`
+      const localhost = await rawLaunch([['Host', localhostHost], ['Origin', `http://${localhostHost}`], ['Cookie', cookie]])
+      expect(localhost.status).toBe(403)
+      expect(JSON.parse(localhost.body).code).toBe('workbench-origin-forbidden')
+      expect(localhost.body).not.toMatch(/token=|dsh-auth|cookie/iu)
 
       // Host cases `fetch` cannot express: it silently drops a caller-supplied
       // Host and rejects control characters before the wire.
@@ -247,14 +264,21 @@ describe('auth gate (real NestJS + Express integration)', () => {
         ['duplicate Origin', [['Host', cockpitHost], ['Origin', cockpitOrigin], ['Origin', 'http://127.0.0.1:1'], ['Cookie', cookie]]],
         ['scheme-less Origin', [['Host', cockpitHost], ['Origin', '127.0.0.1:1'], ['Cookie', cookie]]],
       ]
+      // Node keeps only the FIRST Host of a repeated header, so without an
+      // explicit check a duplicate Host would silently pass both layers and
+      // reach token access. It must be refused by the launch gate itself.
+      const duplicateHost = await rawLaunch([['Host', cockpitHost], ['Host', '127.0.0.1:1'], ['Origin', cockpitOrigin], ['Cookie', cookie]])
+      expect(duplicateHost.status).toBe(403)
+      expect(JSON.parse(duplicateHost.body).code).toBe('workbench-origin-forbidden')
+
       for (const [label, rawHeaders] of rawCases) {
         const response = await rawLaunch(rawHeaders)
         // A request with no usable Host is refused before routing (Express
-        // answers 400); every other shape reaches the gate and gets 403. Both
-        // are fail-closed, and neither may carry authentication material.
+        // answers 400); every other shape gets 403 from whichever layer sees
+        // it first. All are fail-closed and none carries authentication material.
         expect(response.status, label).toBeGreaterThanOrEqual(400)
         expect(response.status, label).toBeLessThan(500)
-        if (response.status === 403) expect(response.body, label).toContain('workbench-origin-forbidden')
+        if (response.status === 403) expect(['cross-origin-rejected', 'workbench-origin-forbidden'], label).toContain(JSON.parse(response.body).code)
         expect(response.body, label).not.toMatch(/token=|dsh-auth|cookie/iu)
       }
     })

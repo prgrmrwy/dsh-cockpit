@@ -10,7 +10,7 @@
 
 对typert设备，Cockpit SHALL把服务端连接认证与当前浏览器认证视为独立生命周期。iframe首次创建、auth generation变化或用户明确重试时，Web客户端 SHALL通过受 `cockpit_token`保护的启动请求取得当前tokenized root URL；服务端 SHALL在当前endpoint严格验证已保存launch token，或在失效且设备已显式授权ohmydsh自动恢复时取得并验证当前token。验证 MUST要求官方303、干净Location、可解析到期时间，以及cookie名称精确等于当前endpoint authority的确定性名称；仅有 `dsh-auth-`前缀不足以通过。
 
-`workbench-launch` MUST在任何token读取/discovery前要求浏览器 `Origin`精确等于服务端观察到的 `http://127.0.0.1:<当前Host端口>`，并拒绝缺失/重复/非法Origin或Host。`Forwarded`/`X-Forwarded-*`一律忽略：它们不得改变expected origin；若原始Origin与Host本来精确匹配，请求可继续，否则仍403。该gate SHALL缓解其它loopback网页的浏览器CSRF/CORS读取，但 MUST NOT声明能阻止任意本机进程；任意本机进程仍属于既有loopback信任边界。成功响应 SHALL为 `Cache-Control: no-store`且不得通过referrer泄露token。Cockpit不得接受客户端指定token/authority/endpoint；DSH cookie不得经过Cockpit响应；token只能短暂存在于启动JSON和iframe导航URL，不得进入SSE、日志、界面、持久前端状态或缓存。
+`workbench-launch` MUST在任何token读取/discovery前要求浏览器 `Origin`精确等于服务端观察到的 `http://127.0.0.1:<当前Host端口>`，并拒绝缺失/重复/非法Origin或Host。该接口同时位于 `cockpit-api-auth`全局Host/来源守卫之后：Host非法、携带与 `http://`+Host不相等的Origin、或 `Sec-Fetch-Site`不是 `same-origin`/`none`的请求 SHALL先由全局守卫以403 `cross-origin-rejected`拒绝而不进入本接口；通过全局守卫但不满足本接口更严格条件的请求（缺失Origin、重复Host、`localhost`形式的Host等）SHALL由本接口以403 `workbench-origin-forbidden`拒绝。两种拒绝都 MUST发生在任何token读取/discovery之前且不泄露认证材料，Web SHALL对两个错误码显示同一固定“来源不被允许”文案。以 `localhost`访问Cockpit时可通过全局守卫但不能启动工作台，这是有意保留的更严格边界。`Forwarded`/`X-Forwarded-*`一律忽略：它们不得改变expected origin；若原始Origin与Host本来精确匹配，请求可继续，否则仍403。该gate SHALL缓解其它loopback网页的浏览器CSRF/CORS读取，但 MUST NOT声明能阻止任意本机进程；任意本机进程仍属于既有loopback信任边界。成功响应 SHALL为 `Cache-Control: no-store`且不得通过referrer泄露token。Cockpit不得接受客户端指定token/authority/endpoint；DSH cookie不得经过Cockpit响应；token只能短暂存在于启动JSON和iframe导航URL，不得进入SSE、日志、界面、持久前端状态或缓存。
 
 父页面在跨源iframe导航后无法权威观察HTTP状态、最终cookie或认证成功。系统 SHALL只把“URL签发前验证成功”作为可判定事实；iframe load不得被解释为认证成功。tokenized URL不得写入长期React/registry状态，只可一次性赋给iframe。load发生后，系统 SHALL执行一次明确的干净endpoint导航以擦除可控DOM `src`中的token；这次导航是允许且有界的。若deadline先于load，系统 SHALL优先不中断在途导航，仅清除父页面内存引用，接受DOM `src`可能暂留token直到后续load、frame销毁或设备切换；不得宣称deadline已清理DOM，也不得基于未知结果自动刷新。失败的启动API SHALL不创建裸401 iframe，显示稳定脱敏恢复遮罩；同一tuple只自动一次，用户可明确重试。rc.2继续加载原endpoint，不执行typert token逻辑。
 
@@ -37,7 +37,12 @@
 #### Scenario: 非精确Cockpit Origin被拒绝
 - **GIVEN** 请求可能带有效cookie，但Origin/Host缺失、重复、非法或来自另一loopback端口/host
 - **WHEN** 请求调用工作台启动接口（typert或rc.2），即使附带Forwarded/X-Forwarded-*试图改变expected origin
-- **THEN** Cockpit忽略forwarded头并按原始Origin/Host在读取认证材料前返回403 `workbench-origin-forbidden`，无token、cookie或可逆派生值泄露
+- **THEN** Cockpit忽略forwarded头并按原始Origin/Host在读取认证材料前拒绝，无token、cookie或可逆派生值泄露：携带与 `http://`+Host不相等Origin（含空Origin）的请求由全局守卫返回403 `cross-origin-rejected`；缺失Origin、重复Host、`localhost`形式Host等通过全局守卫的请求由本接口返回403 `workbench-origin-forbidden`；无可用Host的请求可在路由前以400拒绝
+
+#### Scenario: 来源被拒时Web显示固定文案
+- **GIVEN** 工作台启动请求被以 `cross-origin-rejected`或 `workbench-origin-forbidden`拒绝
+- **WHEN** Web渲染启动失败遮罩
+- **THEN** 两者都显示“请求来源不被允许。”，不显示服务端message，也不创建tokenized iframe
 
 #### Scenario: 精确Origin不受forwarded头影响
 - **GIVEN** 原始Origin与Host精确匹配当前Cockpit origin，但请求附带任意Forwarded/X-Forwarded-*值
@@ -98,6 +103,7 @@
 - **GIVEN** URL签发前token验证/discovery失败，或连接代变化；或者URL签发后交换结果不可观测
 - **WHEN** Cockpit处理对应阶段
 - **THEN** 可观测的前置失败显示脱敏恢复遮罩且不导航；签发后的未知结果只做有界token清理、不自动循环、不声称成功或失败
+
 ### Requirement: 工作台懒加载、建了不销毁
 
 系统 SHALL 首次点入某台已启用设备时才创建其 iframe；创建后不因切换设备而销毁，以保留其输入内容、滚动位置与连接状态。设备被禁用或移除时，系统 SHALL 销毁该设备的 iframe 并释放其页面连接；重新启用后再次选中 SHALL 创建新的 iframe，而不是恢复禁用前页面。
