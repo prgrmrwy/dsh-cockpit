@@ -1,9 +1,9 @@
-import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Logger, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
-import { isValidOpaqueId, type AddDeviceRequest, type ApiError, type DeviceStatusFacts, type UpdateDeviceRequest } from '@dsh-cockpit/shared'
-import { ConnectivityService } from '../connectivity/connectivity.service.js'
+import { Body, Controller, Delete, Get, HttpCode, HttpException, HttpStatus, Inject, Logger, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
+import { isValidDevicePort, isValidOpaqueId, type AddDeviceRequest, type ApiError, type DeviceStatusFacts, type UpdateDeviceRequest } from '@dsh-cockpit/shared'
+import { ConnectivityService, type BridgeForwardBody } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
 import { WorkbenchLaunchError } from '../connectivity/workbench-launch.js'
-import { ForwardRejection } from '../connectivity/forward-table.js'
+import { ForwardRejection, type AcquireResult } from '../connectivity/forward-table.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
@@ -310,6 +310,71 @@ export class DevicesController {
     }
   }
 
+  /** Bridge: acquire (or reuse) a held forward for a device port (design
+   * D7). Check order, first hit wins: 401 no capability header → 400 grant
+   * invalid (from the grant alone, never via the origin's lifecycle) → 409
+   * `device-unavailable` → 409 business codes. The body is never logged. */
+  @Post('bridge/forwards/acquire')
+  @HttpCode(HttpStatus.OK)
+  async bridgeForwardsAcquire(
+    @Req() request: import('express').Request,
+    @Body() body: BridgeForwardBody | undefined,
+  ): Promise<AcquireResult> {
+    try {
+      const capability = requireCapabilityHeader(request)
+      return this.connectivity.acquireBridgeForward(headerOrigin(request), capability, body ?? {})
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Bridge: release one holder. Located by the grant's device, so it works
+   * while the workbench channel is reconnecting. Idempotent. */
+  @Post('bridge/forwards/release')
+  @HttpCode(HttpStatus.OK)
+  async bridgeForwardsRelease(
+    @Req() request: import('express').Request,
+    @Body() body: BridgeForwardBody | undefined,
+  ): Promise<{ released: true }> {
+    try {
+      const capability = requireCapabilityHeader(request)
+      await this.connectivity.releaseBridgeForward(headerOrigin(request), capability, body ?? {})
+      return { released: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Cockpit page: create a pinned entry (design D3). Cookie-gated and
+   * same-origin only; never a bridge callback. */
+  @Post('devices/:deviceId/forwards')
+  async createForward(
+    @Param('deviceId') deviceId: string,
+    @Body() body: { devicePort?: unknown; label?: unknown } | undefined,
+  ): Promise<AcquireResult> {
+    try {
+      return await this.connectivity.pinForward(decodeDeviceId(deviceId), body?.devicePort as number, body?.label as string | undefined)
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Cockpit page: delete an entry — pin, holders and child. Idempotent. */
+  @Delete('devices/:deviceId/forwards/:devicePort')
+  async deleteForward(
+    @Param('deviceId') deviceId: string,
+    @Param('devicePort') devicePort: string,
+  ): Promise<{ removed: true }> {
+    try {
+      const port = /^\d{1,5}$/.test(devicePort) ? Number(devicePort) : Number.NaN
+      if (!isValidDevicePort(port)) throw new ForwardRejection('invalid-port')
+      await this.connectivity.removeForward(decodeDeviceId(deviceId), port)
+      return { removed: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
   /** Capability is mandatory here: these routes cause a server-side action. */
   private requireBridgeCapability(request: import('express').Request, origin: string, protocolVersion: number): void {
     const token = request.headers[BRIDGE_CAPABILITY_HEADER]
@@ -371,6 +436,23 @@ function decodeDeviceId(value: string): string {
 
 function protocolVersion(value: unknown): number {
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : 1
+}
+
+/** The capability header, or 401 before any other check (design D7). */
+function requireCapabilityHeader(request: import('express').Request): string {
+  const token = request.headers[BRIDGE_CAPABILITY_HEADER]
+  const capability = Array.isArray(token) ? token[0] : token
+  if (capability === undefined || capability === '') {
+    throw new HttpException(toError('unauthorized', 'bridge capability required'), HttpStatus.UNAUTHORIZED)
+  }
+  return capability
+}
+
+/** The request Origin for grant matching. A missing one simply fails the
+ * grant's origin binding (400), keeping the documented check order. */
+function headerOrigin(request: import('express').Request): string {
+  const origin = request.headers.origin
+  return typeof origin === 'string' ? origin : ''
 }
 
 function requireOrigin(request: import('express').Request): string {

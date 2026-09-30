@@ -108,30 +108,30 @@
 
 ## 6. 服务端端点（design D7；cockpit-api-auth 名单）
 
-- [ ] 6.1 Write failing test: `rejects a cookie-only same-origin call to forwards/acquire with 401` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
-- [ ] 6.2 Implement: `POST /api/bridge/forwards/acquire|release` 复用 `requireBridgeCapability`，缺头 401 且先于其它校验 to pass 6.1
-- [ ] 6.3 Refactor; full suite stays green
-- [ ] 6.4 Write failing test: `rejects an expired, unknown or origin-mismatched capability on acquire with 400` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason)
-- [ ] 6.5 Implement: 按 grant 自身判定 400 `bridge-capability-invalid`，不经 `#lifecycleByOrigin` to pass 6.4
-- [ ] 6.6 Refactor; full suite stays green
-- [ ] 6.7 Write failing test: `returns 400, not 409, for an invalid capability from an origin with no live device` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason)
-- [ ] 6.8 Implement: 判定顺序 401 → 400 → 409 `device-unavailable`（仅 acquire）→ 业务校验 to pass 6.7
-- [ ] 6.9 Refactor; full suite stays green
-- [ ] 6.10 Write failing test: `releases a holder by the grant device while the workbench channel is reconnecting` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason)
-- [ ] 6.11 Implement: release 按 grant 的 deviceId 定位转发表 to pass 6.10
-- [ ] 6.12 Refactor; full suite stays green
-- [ ] 6.13 Write failing test: `forwards list: does not exempt an unlisted /api/bridge/ path` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
-- [ ] 6.14 Implement: `isBridgeCallback` 名单改为 hello / session-opened / pending-snapshot / forwards/acquire / forwards/release to pass 6.13
-- [ ] 6.15 Refactor; full suite stays green
-- [ ] 6.16 Write failing test: `forwards list: treats /API/Bridge/Hello and /API/Bridge/Forwards/Acquire as listed routes` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
-- [ ] 6.17 Implement: 新路由参与既有大小写折叠匹配 to pass 6.16
-- [ ] 6.18 Refactor; full suite stays green
-- [ ] 6.19 Write failing test: `creates a pinned 6379 entry from the cockpit page and records it in the registry` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
-- [ ] 6.20 Implement: cookie 路由 `POST /api/devices/:deviceId/forwards`、`DELETE .../forwards/:devicePort`、`POST .../forwards/release-instance` to pass 6.19
-- [ ] 6.21 Refactor; full suite stays green
-- [ ] 6.22 Write failing test: `rejects capability-only calls to the forward management endpoints` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
-- [ ] 6.23 Implement: 管理端点不列入 bridge 名单，只接受驾驶舱 cookie to pass 6.22
-- [ ] 6.24 Refactor; full suite stays green
+- [x] 6.1 Write failing test: `rejects a cookie-only same-origin call to forwards/acquire with 401` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
+- [x] 6.2 Implement: `POST /api/bridge/forwards/acquire|release` 复用 `requireBridgeCapability`，缺头 401 且先于其它校验 to pass 6.1
+- [x] 6.3 Refactor; full suite stays green
+- [x] 6.4 Write failing test: `rejects an expired, unknown or origin-mismatched capability on acquire with 400` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason)
+- [x] 6.5 Implement: 按 grant 自身判定 400 `bridge-capability-invalid`，不经 `#lifecycleByOrigin` to pass 6.4
+- [x] 6.6 Refactor; full suite stays green
+- [x] 6.7 Write failing test: `returns 400, not 409, for an invalid capability from an origin with no live device` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason) — 注：与 6.4 同一实现，写成时即为绿；以变异（先经 `#lifecycleByOrigin` 解析）确认测试失败
+- [x] 6.8 Implement: 判定顺序 401 → 400 → 409 `device-unavailable`（仅 acquire）→ 业务校验 to pass 6.7
+- [x] 6.9 Refactor; full suite stays green
+- [x] 6.10 Write failing test: `releases a holder by the grant device while the workbench channel is reconnecting` in `packages/cockpit-server/tests/forwards.controller.test.ts` (assert it fails for the right reason) — 注：与 6.4 同一实现，写成时即为绿；以变异（release 先按 origin 解析 lifecycle）确认测试失败
+- [x] 6.11 Implement: release 按 grant 的 deviceId 定位转发表 to pass 6.10
+- [x] 6.12 Refactor; full suite stays green
+- [x] 6.13 Write failing test: `forwards list: does not exempt an unlisted /api/bridge/ path` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
+- [x] 6.14 Implement: `isBridgeCallback` 名单改为 hello / session-opened / pending-snapshot / forwards/acquire / forwards/release to pass 6.13；`bridge-route-list.test.ts` 的权威来源改为本 change 的 delta（归档后回落到 current spec）
+- [x] 6.15 Refactor; full suite stays green
+- [x] 6.16 Write failing test: `forwards list: treats /API/Bridge/Hello and /API/Bridge/Forwards/Acquire as listed routes` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
+- [x] 6.17 Implement: 新路由参与既有大小写折叠匹配 to pass 6.16
+- [x] 6.18 Refactor; full suite stays green
+- [x] 6.19 Write failing test: `creates a pinned 6379 entry from the cockpit page and records it in the registry` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason)
+- [x] 6.20 Implement: cookie 路由 `POST /api/devices/:deviceId/forwards`、`DELETE .../forwards/:devicePort`、`POST .../forwards/release-instance` to pass 6.19
+- [x] 6.21 Refactor; full suite stays green
+- [x] 6.22 Write failing test: `rejects capability-only calls to the forward management endpoints` in `packages/cockpit-server/tests/app-forwards.e2e.test.ts` (assert it fails for the right reason) — 注：既有同源校验与 token 门禁已拒绝，写成时即为绿；以变异（把管理路由加入 bridge 名单）确认测试失败
+- [x] 6.23 Implement: 管理端点不列入 bridge 名单，只接受驾驶舱 cookie to pass 6.22
+- [x] 6.24 Refactor; full suite stays green
 
 ## 7. bridge 接缝 `cockpitBridge.forwards`（design D4(a)、D7）
 

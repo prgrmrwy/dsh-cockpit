@@ -259,6 +259,7 @@ export class ConnectivityService implements OnApplicationShutdown {
    * (design D3): the mark is written through `mutateDevice`, and only after
    * that succeeds does memory change and a child start. */
   async pinForward(deviceId: string, devicePort: number, label?: string): Promise<AcquireResult> {
+    if (!this.#lifecycles.has(deviceId)) throw new Error(`unknown device ${deviceId}`)
     const table = this.#forwardTable(deviceId)
     table.checkPin(devicePort, label)
     const committed = await this.#registry.mutateDevice(deviceId, current => {
@@ -279,6 +280,7 @@ export class ConnectivityService implements OnApplicationShutdown {
    * the request fails and memory, holders and the child are untouched.
    * Idempotent for unknown devices and ports. */
   async removeForward(deviceId: string, devicePort: number): Promise<void> {
+    if (!this.#lifecycles.has(deviceId)) throw new Error(`unknown device ${deviceId}`)
     const table = this.#forwards.get(deviceId)
     const persisted = (await this.#registry.load()).find(record => record.deviceId === deviceId)?.forwards ?? []
     if (persisted.some(entry => entry.devicePort === devicePort)) {

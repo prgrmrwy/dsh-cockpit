@@ -116,7 +116,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.useRealTimers()
   await service.onApplicationShutdown()
-  await rm(directory, { recursive: true, force: true })
+  await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
 })
 
 describe('page and instance reclaim', () => {

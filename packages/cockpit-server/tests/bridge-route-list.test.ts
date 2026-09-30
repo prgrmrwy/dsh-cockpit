@@ -8,14 +8,17 @@ import { BRIDGE_CALLBACK_ROUTES, classifyApiPath } from '../src/auth/token.middl
  * The spec requirement "bridge 回调路由名单" (cockpit-api-auth) is the single
  * authoritative list; `BRIDGE_CALLBACK_ROUTES` is its implementation. This
  * pins the two together so a route cannot be added to one and not the other.
- * The current spec is preferred; while the change that introduces the
- * requirement is still active, its delta is the source.
+ * While a change that modifies the requirement is active, its delta is the
+ * source; otherwise the current spec is.
  */
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..')
 const REQUIREMENT = '### Requirement: bridge 回调路由名单'
 const SOURCES = [
+  // An active change that MODIFIES the list is ahead of the current spec
+  // until it is archived; after archive the file is gone and the current
+  // spec takes over.
+  'openspec/changes/device-forward-registry/specs/cockpit-api-auth/spec.md',
   'openspec/specs/cockpit-api-auth/spec.md',
-  'openspec/changes/cockpit-api-same-origin/specs/cockpit-api-auth/spec.md',
 ]
 
 async function specRoutes(): Promise<string[]> {

@@ -203,8 +203,8 @@ export const BRIDGE_CALLBACK_ROUTES: readonly string[] = [
   '/api/bridge/hello',
   '/api/bridge/session-opened',
   '/api/bridge/pending-snapshot',
-  '/api/bridge/publishable-port',
-  '/api/bridge/publish-port',
+  '/api/bridge/forwards/acquire',
+  '/api/bridge/forwards/release',
 ]
 
 export function parseCookie(header: string | undefined): Record<string, string> {
