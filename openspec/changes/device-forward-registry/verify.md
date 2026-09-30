@@ -54,7 +54,7 @@
   - it starts the page grace timer, so an ended-instance set cannot stay resident forever.
 
 ### Change Delivery
-- Commit range on branch `ws/dsh-cockpit-openspec-change-device-forward-regis`: `42e2f31..fc88e40`, 16 commits on top of base `80589ad`.
+- Commit range on branch `ws/dsh-cockpit-openspec-change-device-forward-regis`: `42e2f31..fc88e40`, 14 implementation commits on top of base `80589ad`, plus this verify commit.
 - The branch has not been merged or archived. That needs the owner's approval, together with the outcome of 12.4 and 12.5.
 - Dependency change (made after `ws promote`): `dsh-cockpit-bridge` gains a `react` peer (`^18.2.0`) and a dev dependency (`~18.3.1`), plus `@types/react`. The lockfile diff is only the two importer lines, because the versions were already locked by `cockpit-web`.
 
