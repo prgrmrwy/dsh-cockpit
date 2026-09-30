@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from '../api/client.js'
+import { ForwardList } from './ForwardList.jsx'
 
 export type PanelName = 'devices' | 'overview' | 'settings'
 
@@ -96,11 +97,13 @@ function confirmDeleteDefault(device: DeviceStatusFacts): boolean {
   return window.confirm(`确认删除设备「${device.displayName}」？该操作不可撤销。`)
 }
 
-export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confirmDeleteDefault }: {
+export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confirmDeleteDefault, confirmDeleteForward }: {
   readonly devices: readonly DeviceStatusFacts[]
   readonly onClose: () => void
   readonly onChanged: () => void
   readonly confirmDelete?: (device: DeviceStatusFacts) => boolean
+  /** Asked before deleting a forward that still has holders. */
+  readonly confirmDeleteForward?: (message: string) => boolean
 }) {
   const [mode, setMode] = useState<{ readonly kind: 'add' } | { readonly kind: 'edit'; readonly deviceId: string }>({ kind: 'add' })
   const [form, setForm] = useState<DeviceForm>(EMPTY_DEVICE_FORM)
@@ -264,6 +267,7 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
                           {actionErrors[device.deviceId] !== undefined && (
                             <p className="panel-error" role="alert">{actionErrors[device.deviceId]}</p>
                           )}
+                          <ForwardList device={device} {...(confirmDeleteForward === undefined ? {} : { confirm: confirmDeleteForward })} />
                         </div>
                       </div>
 

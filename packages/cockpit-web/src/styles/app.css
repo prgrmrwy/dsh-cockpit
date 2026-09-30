@@ -335,6 +335,29 @@ body {
 .form-actions .primary-action { flex: 1; }
 .danger:hover { background: var(--danger-soft); }
 
+/* ---- device panel: forwards list (device-forward-registry) ---- */
+.forward-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); min-width: 0; }
+.forward-list-header { display: flex; justify-content: space-between; align-items: center; color: var(--fg-dim); font-size: 12px; font-weight: 600; }
+.forward-usage { color: var(--fg); font-variant-numeric: tabular-nums; }
+.forward-rows { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.forward-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); min-width: 0; }
+.forward-row-main, .forward-row-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; font-size: 12px; }
+.forward-row-meta { grid-column: 1; color: var(--fg-dim); }
+.forward-address, .forward-pid { font-variant-numeric: tabular-nums; color: var(--fg-dim); overflow-wrap: anywhere; }
+.forward-state { color: var(--fg); }
+.forward-state[data-forward-state="ready"] { color: var(--ok); }
+.forward-state[data-forward-state="retrying"] { color: var(--warn); }
+.forward-state[data-forward-state="paused"] { color: var(--fg-dim); }
+.forward-kind { padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--fg); }
+.forward-label, .forward-holder-labels { overflow-wrap: anywhere; }
+.forward-diagnostic { flex-basis: 100%; margin: 2px 0 0; color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
+.forward-delete { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-height: 28px; }
+.forward-empty { margin: 0; color: var(--fg-dim); font-size: 12px; }
+.forward-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; min-width: 0; }
+.forward-form label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--fg-dim); }
+.forward-form input { width: 9em; max-width: 100%; }
+.forward-form .panel-error { flex-basis: 100%; margin: 0; }
+
 @media (max-width: 860px) {
   .device-panel-shell { padding: 20px 14px 36px; }
   .device-panel-heading { gap: 14px; }
@@ -353,4 +376,7 @@ body {
   .device-card-actions > button { width: 100%; }
   .device-order-actions { grid-column: 1 / -1; }
   .device-order-actions button { flex: 1; }
+  .forward-row { grid-template-columns: minmax(0, 1fr); }
+  .forward-delete { grid-column: 1; grid-row: auto; justify-self: start; }
+  .forward-form label, .forward-form input { width: 100%; }
 }

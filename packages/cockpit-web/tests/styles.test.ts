@@ -75,4 +75,13 @@ describe('cockpit visual contracts', () => {
       expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
     }
   })
+
+  it('styles the forwards list with theme tokens only and a narrow single-column fallback', () => {
+    for (const rule of css.match(/\.forward-[^{]*\{[^}]*\}/gs) ?? []) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+    }
+    expect(css).toMatch(/\.forward-row\s*\{[^}]*min-width:\s*0/s)
+    expect(css).toMatch(/\.forward-diagnostic\s*\{[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/@media\s*\(max-width:\s*520px\)[\s\S]*?\.forward-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+  })
 })

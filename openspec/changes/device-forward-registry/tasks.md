@@ -183,21 +183,21 @@
 
 ## 10. web 设备面板转发清单（`panels/Panels.tsx`）
 
-- [ ] 10.1 Write failing test: `lists system, pinned and held rows and updates to retrying with a diagnostic` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
-- [ ] 10.2 Implement: 清单展示 system / 常驻 / 随持有者行、状态、诊断，随状态流更新 to pass 10.1
-- [ ] 10.3 Refactor; full suite stays green
-- [ ] 10.4 Write failing test: `creates a pinned 6379 redis entry and shows 3 / 8` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
-- [ ] 10.5 Implement: 创建表单调用 `POST /api/devices/:deviceId/forwards` to pass 10.4
-- [ ] 10.6 Refactor; full suite stays green
-- [ ] 10.7 Write failing test: `keeps 6379 in the input and shows the limit message on forward-limit` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
-- [ ] 10.8 Implement: 409 `code` 映射为表单说明且保留输入 to pass 10.7
-- [ ] 10.9 Refactor; full suite stays green
-- [ ] 10.10 Write failing test: `does not send delete when the holder confirmation is cancelled` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
-- [ ] 10.11 Implement: 有持有者时删除前确认，取消不发请求 to pass 10.10
-- [ ] 10.12 Refactor; full suite stays green
-- [ ] 10.13 Write failing test: `shows no-forward text and no controls for a local device` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
-- [ ] 10.14 Implement: `local` 设备显示“本机设备无需转发” to pass 10.13
-- [ ] 10.15 Refactor; full suite stays green
+- [x] 10.1 Write failing test: `lists system, pinned and held rows and updates to retrying with a diagnostic` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
+- [x] 10.2 Implement: 清单展示 system / 常驻 / 随持有者行、状态、诊断，随状态流更新 to pass 10.1 — 注：`src/panels/ForwardList.tsx` 挂在每张设备卡片内；10.4–10.13 的测试同批写出并确认为红（清单区域不存在），实现后以变异确认（失败清空输入、跳过确认、诊断按 HTML 渲染、system 行出现删除）；样式只用既有令牌，`styles.test.ts` 追加令牌与窄屏断言
+- [x] 10.3 Refactor; full suite stays green
+- [x] 10.4 Write failing test: `creates a pinned 6379 redis entry and shows 3 / 8` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
+- [x] 10.5 Implement: 创建表单调用 `POST /api/devices/:deviceId/forwards` to pass 10.4
+- [x] 10.6 Refactor; full suite stays green
+- [x] 10.7 Write failing test: `keeps 6379 in the input and shows the limit message on forward-limit` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
+- [x] 10.8 Implement: 409 `code` 映射为表单说明且保留输入 to pass 10.7
+- [x] 10.9 Refactor; full suite stays green
+- [x] 10.10 Write failing test: `does not send delete when the holder confirmation is cancelled` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
+- [x] 10.11 Implement: 有持有者时删除前确认，取消不发请求 to pass 10.10
+- [x] 10.12 Refactor; full suite stays green
+- [x] 10.13 Write failing test: `shows no-forward text and no controls for a local device` in `packages/cockpit-web/tests/forward-panel.test.tsx` (assert it fails for the right reason)
+- [x] 10.14 Implement: `local` 设备显示“本机设备无需转发” to pass 10.13
+- [x] 10.15 Refactor; full suite stays green
 
 ## 11. 迁移（design D8、Migration 2、4、5）
 

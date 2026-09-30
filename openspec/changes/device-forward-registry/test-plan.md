@@ -56,11 +56,11 @@
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 同源页面只带 cookie 调用申请端点被拒绝 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | rejects a cookie-only same-origin call to forwards/acquire with 401 | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 业务拒绝不触发能力串换发 | packages/dsh-cockpit-bridge/tests/forwards.test.ts | surfaces forward-limit from a 409 without renewing or retrying | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 驾驶舱不进入数据路径 | packages/cockpit-server/tests/forward-table.test.ts | spawns ssh -L to device loopback and never opens the forwarded port itself | 🟢 green |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板列出设备转发并实时更新 | packages/cockpit-web/tests/forward-panel.test.tsx | lists system, pinned and held rows and updates to retrying with a diagnostic | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板手动创建常驻转发 | packages/cockpit-web/tests/forward-panel.test.tsx | creates a pinned 6379 redis entry and shows 3 / 8 | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板创建失败时保留输入 | packages/cockpit-web/tests/forward-panel.test.tsx | keeps 6379 in the input and shows the limit message on forward-limit | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 删除仍有持有者的条目需确认 | packages/cockpit-web/tests/forward-panel.test.tsx | does not send delete when the holder confirmation is cancelled | 🔴 red |
-| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 本机设备不提供转发操作 | packages/cockpit-web/tests/forward-panel.test.tsx | shows no-forward text and no controls for a local device | 🔴 red |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板列出设备转发并实时更新 | packages/cockpit-web/tests/forward-panel.test.tsx | lists system, pinned and held rows and updates to retrying with a diagnostic | 🟢 green |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板手动创建常驻转发 | packages/cockpit-web/tests/forward-panel.test.tsx | creates a pinned 6379 redis entry and shows 3 / 8 | 🟢 green |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 面板创建失败时保留输入 | packages/cockpit-web/tests/forward-panel.test.tsx | keeps 6379 in the input and shows the limit message on forward-limit | 🟢 green |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 删除仍有持有者的条目需确认 | packages/cockpit-web/tests/forward-panel.test.tsx | does not send delete when the holder confirmation is cancelled | 🟢 green |
+| specs/cockpit-device-shell/spec.md → 设备管理面板呈现并管理每台设备的转发清单 | 本机设备不提供转发操作 | packages/cockpit-web/tests/forward-panel.test.tsx | shows no-forward text and no controls for a local device | 🟢 green |
 
 ### 验收项（人类决策：30 秒宽限期以真实浏览器实测为准）
 
