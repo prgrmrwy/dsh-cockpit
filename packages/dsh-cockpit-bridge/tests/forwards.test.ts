@@ -45,6 +45,8 @@ function fakeCtx() {
   const ctx = {
     sessions: { list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} } },
     provide: (name: string, value: unknown) => { services.set(name, value); return () => { services.delete(name) } },
+    // No `slots` service here: the optional settings section never mounts.
+    inject: () => {},
     effect: (fn: () => () => void) => {
       effectFn ??= fn
       cleanups.push(fn())

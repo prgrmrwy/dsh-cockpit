@@ -1,8 +1,12 @@
 import { defineConfig } from 'tsdown'
 
+// The DSH web profile provides react; the settings section must use that
+// single instance, so the browser bundle never inlines it.
 const external = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-runtime',
+  'react',
+  'react/jsx-runtime',
 ]
 
 /**

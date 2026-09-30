@@ -52,6 +52,8 @@ function fakeCtx(initial = { current: undefined }, initialPending?: ReadonlyMap<
       subscribe: (fn: () => void) => { pendingListeners.add(fn); return () => { pendingListeners.delete(fn) } },
     } } }),
     provide: (name: string, value: unknown) => { services.set(name, value); return () => { services.delete(name) } },
+    // No `slots` service here: the optional settings section never mounts.
+    inject: () => {},
     effect: (fn: () => () => void) => { cleanup = fn() },
   }
   return {

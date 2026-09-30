@@ -90,6 +90,8 @@ export interface ForwardsBinding {
   stopInstance(): void
   /** Returns true when the message was a forwards snapshot (valid or not). */
   handleMessage(event: MessageEvent): boolean
+  /** Latest accepted snapshot, without the handshake check of `list()`. */
+  snapshot(): ForwardsSnapshot | undefined
 }
 
 export function createForwards(deps: ForwardsDeps): ForwardsBinding {
@@ -270,6 +272,9 @@ export function createForwards(deps: ForwardsDeps): ForwardsBinding {
       this.endInstance()
       dropAll()
       instanceId = undefined
+    },
+    snapshot(): ForwardsSnapshot | undefined {
+      return snapshot
     },
     handleMessage(event: MessageEvent): boolean {
       const data = event.data as { type?: unknown; snapshot?: unknown } | null

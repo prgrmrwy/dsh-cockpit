@@ -119,7 +119,12 @@ export interface ForwardsSnapshot {
   readonly rows: readonly ForwardSnapshotRow[]
   readonly additionalCount: number
   readonly limit: number
+  /** A local device has no forward table: nothing to forward, no rows. */
+  readonly local?: true
 }
+
+/** The snapshot pushed for a local device. */
+export const LOCAL_FORWARDS_SNAPSHOT: ForwardsSnapshot = { rows: [], additionalCount: 0, limit: FORWARD_LIMIT, local: true }
 
 export interface ForwardsSnapshotMessage {
   readonly type: typeof FORWARDS_SNAPSHOT_MESSAGE

@@ -38,6 +38,19 @@ import {
   type PortForwardHandle,
 } from '@dsh-cockpit/shared'
 import { createForwards } from './forwards.js'
+import { createSettingsStore, ForwardsSettingsSection, SECTION_LABEL, type SettingsInjected } from './settings.js'
+
+/** The slice of the `slots` service (dsh-client-ui-renderer) used here. */
+interface SlotsLike {
+  inject(name: 'settings.section', callback: () => unknown): unknown
+  register(options: {
+    name: 'settings.section'
+    id: string
+    order: number
+    label: () => string
+    inject: () => SettingsInjected
+  }, component: (props: Partial<SettingsInjected>) => unknown): unknown
+}
 
 export const inject = ['sessions', 'uiSession']
 
@@ -220,6 +233,22 @@ export function apply(ctx: BridgeContext): void {
   })
   ctx.provide(COCKPIT_FORWARDS_SERVICE, forwards.service)
 
+  // Read-only settings section (design D9). `slots` is deliberately NOT in
+  // the plugin's `inject`: an unresolved inject makes a client plugin
+  // silently not load, and the rest of the bridge must work without the
+  // settings package. A child fiber waits for it instead.
+  const settings = createSettingsStore({ connected: () => config !== undefined, snapshot: () => forwards.snapshot() })
+  ctx.inject(['slots'], child => {
+    const slots = (child as Context & { readonly slots: SlotsLike }).slots
+    slots.inject('settings.section', () => slots.register({
+      name: 'settings.section',
+      id: 'dsh-cockpit-forwards',
+      order: 300,
+      label: () => SECTION_LABEL,
+      inject: (): SettingsInjected => ({ view: settings.view, subscribe: settings.subscribe }),
+    }, ForwardsSettingsSection))
+  })
+
   ctx.effect(() => {
     // A fresh one-shot page instance id per effect run (design D4(a)).
     forwards.startInstance()
@@ -227,7 +256,9 @@ export function apply(ctx: BridgeContext): void {
     const onPageShow = (event: Event): void => {
       if ((event as PageTransitionEvent).persisted === true) forwards.restoreInstance()
     }
-    const onSnapshot = (event: MessageEvent): void => { forwards.handleMessage(event) }
+    const onSnapshot = (event: MessageEvent): void => {
+      if (forwards.handleMessage(event)) settings.changed()
+    }
     window.addEventListener('pagehide', onPageHide)
     window.addEventListener('pageshow', onPageShow)
     window.addEventListener('message', onSnapshot)
@@ -513,7 +544,10 @@ export function apply(ctx: BridgeContext): void {
     const onMessage = (event: MessageEvent): void => {
       const nextConfig = parseConfig(event)
       if (nextConfig !== undefined && (config === undefined || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
+        const firstHandshake = config === undefined
         config = nextConfig
+        // The settings section turns from "not connected" to "reading".
+        if (firstHandshake) settings.changed()
         // A pure capability renewal must NOT re-assert the current selection:
         // that would acknowledge a completion the user has not actually seen
         // (the parent renews periodically while the user is elsewhere).

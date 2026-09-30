@@ -159,12 +159,12 @@
 
 ## 8. bridge 只读设置区块（design D9）
 
-- [ ] 8.1 Write failing test: `lists the system and 3939 rows with 1 / 8 and no mutation controls` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason)
-- [ ] 8.2 Implement: `ctx.slots.inject('settings.section', …)` 注入只读区块：行、状态、持有者标签、常驻标识、`N / 8` to pass 8.1
-- [ ] 8.3 Refactor; full suite stays green
-- [ ] 8.4 Write failing test: `shows not-connected text and no rows outside the cockpit` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason)
-- [ ] 8.5 Implement: 未握手时显示“未连接驾驶舱” to pass 8.4
-- [ ] 8.6 Refactor; full suite stays green
+- [x] 8.1 Write failing test: `lists the system and 3939 rows with 1 / 8 and no mutation controls` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason)
+- [x] 8.2 Implement: `ctx.slots.inject('settings.section', …)` 注入只读区块：行、状态、持有者标签、常驻标识、`N / 8` to pass 8.1 — 注：`src/client/settings.ts`；`slots` 经 `ctx.inject(['slots'], …)` 子 fiber 等待，不列入插件 `inject`（缺席时其它能力不受影响）；bridge 新增 `react` peer（^18.2.0）与 dev 依赖（~18.3.1，经 ws promote；lockfile 仅新增 importer 两行），打包时 external，由 DSH profile 提供；快照增加 `local` 标记供“本机设备无需转发”
+- [x] 8.3 Refactor; full suite stays green
+- [x] 8.4 Write failing test: `shows not-connected text and no rows outside the cockpit` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason)
+- [x] 8.5 Implement: 未握手时显示“未连接驾驶舱” to pass 8.4
+- [x] 8.6 Refactor; full suite stays green
 
 ## 9. web 父页面（design D4(a)、D7 快照；`Workbench.tsx`、`api/stream.ts`）
 
