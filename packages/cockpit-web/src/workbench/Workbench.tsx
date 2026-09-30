@@ -423,6 +423,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       if (parsed.origin !== origin) return
       const frame = registryRef.current.get(device.deviceId)
       if (frame === undefined) return
+      // Recovery may commit and return a newer generation than the request
+      // started with. Record that accepted tuple too, otherwise a later SSE
+      // update or device switch can issue the same launch and reload this frame.
+      launchAttemptsRef.current.add(`${device.deviceId}\u0000${origin}\u0000${authGeneration}`)
       // The tokenized URL is handed to the iframe through a ref, never state.
       tokenUrlRef.current.set(device.deviceId, url)
       publishFrame(device.deviceId, { launchPhase: 'tokenized', launchFailure: undefined })

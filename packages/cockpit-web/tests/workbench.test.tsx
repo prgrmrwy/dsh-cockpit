@@ -69,6 +69,48 @@ describe('workbench', () => {
     expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2)
   })
 
+  it('does not relaunch a recovered auth generation after switching away and back', async () => {
+    const calls = new Map<string, number>()
+    const requestWorkbenchLaunch = vi.fn(async (deviceId: string) => {
+      const call = (calls.get(deviceId) ?? 0) + 1
+      calls.set(deviceId, call)
+      const port = deviceId === 'd1' ? 51000 : 52000
+      return {
+        url: `http://127.0.0.1:${port}/?token=${deviceId}-${call}`,
+        // Device A's first launch recovers auth and commits a new generation.
+        authGeneration: deviceId === 'd1' ? 2 : 1,
+      }
+    })
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/', dshAuthGeneration: 1 })
+    const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/', dshAuthGeneration: 1 })
+    const view = (active: DeviceStatusFacts) => (
+      <Workbench
+        device={active}
+        enabledDeviceIds={['d1', 'd2']}
+        requestWorkbenchLaunch={requestWorkbenchLaunch}
+      />
+    )
+    const { container, rerender } = render(view(a))
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+
+    await waitFor(() => expect(calls.get('d1')).toBe(1))
+    await waitFor(() => expect(frameA.getAttribute('src')).toBe('http://127.0.0.1:51000/'))
+
+    rerender(view(b))
+    await waitFor(() => expect(calls.get('d2')).toBe(1))
+
+    // The shell learns A's committed generation while B is active, then A is
+    // selected again. Its already accepted recovery URL must not be reissued.
+    rerender(view(device({
+      deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/', dshAuthGeneration: 2,
+    })))
+
+    expect(calls.get('d1')).toBe(1)
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(frameA)
+    expect(frameA.getAttribute('src')).toBe('http://127.0.0.1:51000/')
+    expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2)
+  })
+
   it('does not loop after a launch failure until a higher generation arrives', async () => {
     const requestWorkbenchLaunch = vi.fn()
       .mockRejectedValueOnce(new Error('launch unavailable'))
