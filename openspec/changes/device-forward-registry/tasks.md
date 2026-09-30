@@ -103,7 +103,7 @@
 ## 5. 投影与数据卫生（design D7 快照、spec 数据卫生）
 
 - [x] 5.1 Write failing test: `omits instance and page ids from the projection, the snapshot payload and logs` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason)
-- [x] 5.2 Implement: 投影与快照载荷只含标签与持有者数，日志不输出 instanceId / pageId；快照不含 pid to pass 5.1 — 快照由共享纯函数 `toForwardsSnapshot`（`@dsh-cockpit/shared`）按字段白名单生成，web 端推送时复用；`device-contracts.test.ts` 追加类型断言：快照不含 `pid`/`instanceId`/`pageId`（改入 `pid` 时编译失败，已变异确认）
+- [x] 5.2 Implement: 投影与快照载荷只含标签与持有者数，日志不输出 instanceId / pageId；快照不含 pid to pass 5.1 — 快照由共享纯函数 `toForwardsSnapshot`（`@dsh-cockpit/shared`）按字段白名单生成（含 system 行、去掉 pid，供 D9 设置区块显示主通道），web 端推送时复用；`device-contracts.test.ts` 追加类型断言：快照不含 `pid`/`instanceId`/`pageId`（改入 `pid` 时编译失败，已变异确认）
 - [x] 5.3 Refactor; full suite stays green
 
 ## 6. 服务端端点（design D7；cockpit-api-auth 名单）

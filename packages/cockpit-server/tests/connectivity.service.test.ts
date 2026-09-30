@@ -898,7 +898,10 @@ describe('per-device forward table', () => {
       }
       expect(additional(service, 3939)).toEqual(expect.objectContaining({ holders: ['memex-browse:default'], holderCount: 1 }))
       // The snapshot carries the entry, its label and count, never a host pid.
-      expect(snapshot.rows).toContainEqual(expect.objectContaining({ devicePort: 3939, holders: ['memex-browse:default'], holderCount: 1, state: 'ready' }))
+      expect(snapshot.rows).toEqual([
+        expect.objectContaining({ kind: 'system', devicePort: 3080, state: 'ready' }),
+        expect.objectContaining({ kind: 'additional', devicePort: 3939, holders: ['memex-browse:default'], holderCount: 1, state: 'ready' }),
+      ])
       expect(JSON.stringify(snapshot)).not.toMatch(/"pid"/)
       expect(lines.join('\n')).not.toContain('SECRET')
       await service.onApplicationShutdown()

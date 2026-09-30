@@ -90,10 +90,19 @@ export const FORWARDS_SNAPSHOT_MESSAGE = 'dsh-cockpit:forwards-snapshot' as cons
 /** Device iframe → parent page: a bridge page instance ended (design D4(a)). */
 export const BRIDGE_INSTANCE_ENDED_MESSAGE = 'dsh-cockpit:bridge-instance-ended' as const
 
+/** The workbench channel as the device page sees it: no host ssh pid. */
+export interface SystemForwardSnapshotRow {
+  readonly kind: 'system'
+  readonly devicePort: number
+  readonly state: ForwardEntryState
+  readonly localPort?: number
+}
+
 /** One additional entry as the device page sees it: no host ssh pid, and
  * (like the projection) no page or instance ids. `localPort` only while
  * `ready`. */
-export interface ForwardSnapshotRow {
+export interface AdditionalForwardSnapshotRow {
+  readonly kind: 'additional'
   readonly devicePort: number
   readonly state: ForwardEntryState
   readonly pinned: boolean
@@ -103,6 +112,8 @@ export interface ForwardSnapshotRow {
   readonly diagnostic?: string
   readonly localPort?: number
 }
+
+export type ForwardSnapshotRow = SystemForwardSnapshotRow | AdditionalForwardSnapshotRow
 
 export interface ForwardsSnapshot {
   readonly rows: readonly ForwardSnapshotRow[]
@@ -121,13 +132,14 @@ export interface BridgeInstanceEndedMessage {
 }
 
 /** Reduce the status-stream projection to what the device page may see:
- * additional entries only, field by field (an allow-list, so a field added
+ * the system row and every additional entry, field by field (an allow-list, so a field added
  * to the projection later never leaks by default). */
 export function toForwardsSnapshot(projection: DeviceForwardsProjection): ForwardsSnapshot {
-  const rows: ForwardSnapshotRow[] = []
-  for (const row of projection.rows) {
-    if (row.kind !== 'additional') continue
-    rows.push({
+  const rows = projection.rows.map((row): ForwardSnapshotRow => {
+    const address = row.state === 'ready' && row.localPort !== undefined ? { localPort: row.localPort } : {}
+    if (row.kind === 'system') return { kind: 'system', devicePort: row.devicePort, state: row.state, ...address }
+    return {
+      kind: 'additional',
       devicePort: row.devicePort,
       state: row.state,
       pinned: row.pinned,
@@ -135,8 +147,8 @@ export function toForwardsSnapshot(projection: DeviceForwardsProjection): Forwar
       holders: [...row.holders],
       holderCount: row.holderCount,
       ...(row.diagnostic === undefined ? {} : { diagnostic: row.diagnostic }),
-      ...(row.state === 'ready' && row.localPort !== undefined ? { localPort: row.localPort } : {}),
-    })
-  }
+      ...address,
+    }
+  })
   return { rows, additionalCount: projection.additionalCount, limit: projection.limit }
 }

@@ -110,4 +110,5 @@ if (bridge.createRemoteEditorUri('vm-a', '/work/%2e%2e/secret') !==
 // The iframe snapshot never carries a host ssh pid, a page id or an instance
 // id (device-forward-registry D7, data hygiene).
 type _SnapshotRowHasNoPid = Expect<Equal<Extract<keyof ForwardSnapshotRow, 'pid' | 'instanceId' | 'pageId'>, never>>
+type _SystemSnapshotRowHasNoPid = Expect<Equal<Extract<keyof Extract<ForwardSnapshotRow, { kind: 'system' }>, 'pid'>, never>>
 type _SnapshotHasNoIds = Expect<Equal<Extract<keyof ForwardsSnapshot, 'pid' | 'instanceId' | 'pageId'>, never>>
