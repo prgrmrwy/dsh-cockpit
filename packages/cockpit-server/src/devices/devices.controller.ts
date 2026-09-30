@@ -265,51 +265,6 @@ export class DevicesController {
     }
   }
 
-  /** Register a device-side loopback port as publishable, and publish it.
-   *
-   * Unlike the reporting callbacks above, these two DO make the cockpit act
-   * (the publish spawns an ssh forward), so they require a capability rather
-   * than accepting the header-less legacy path: `authorizeBridge` returns
-   * early when no header is present, which is right for a report and wrong
-   * for an action. The device is resolved from `Origin`, so a caller can
-   * never register or publish for a device other than its own. */
-  @Post('bridge/publishable-port')
-  async bridgeRegisterPublishablePort(
-    @Req() request: import('express').Request,
-    @Body() body: { channelId?: unknown; devicePort?: unknown; protocolVersion?: unknown },
-  ): Promise<{ registered: boolean }> {
-    const origin = requireOrigin(request)
-    try {
-      const bridgeProtocol = protocolVersion(body?.protocolVersion)
-      this.requireBridgeCapability(request, origin, bridgeProtocol)
-      if (typeof body?.channelId !== 'string' || typeof body?.devicePort !== 'number') {
-        throw new HttpException(toError('bad-request', 'channelId and devicePort are required'), HttpStatus.BAD_REQUEST)
-      }
-      this.connectivity.registerPublishablePort(origin, body.channelId, body.devicePort)
-      return { registered: true }
-    } catch (cause) {
-      throw toHttp(cause)
-    }
-  }
-
-  @Post('bridge/publish-port')
-  async bridgePublishPort(
-    @Req() request: import('express').Request,
-    @Body() body: { channelId?: unknown; protocolVersion?: unknown },
-  ): Promise<{ url: string; localPort: number }> {
-    const origin = requireOrigin(request)
-    try {
-      const bridgeProtocol = protocolVersion(body?.protocolVersion)
-      this.requireBridgeCapability(request, origin, bridgeProtocol)
-      if (typeof body?.channelId !== 'string') {
-        throw new HttpException(toError('bad-request', 'channelId is required'), HttpStatus.BAD_REQUEST)
-      }
-      return await this.connectivity.publishPort(origin, body.channelId)
-    } catch (cause) {
-      throw toHttp(cause)
-    }
-  }
-
   /** Bridge: acquire (or reuse) a held forward for a device port (design
    * D7). Check order, first hit wins: 401 no capability header → 400 grant
    * invalid (from the grant alone, never via the origin's lifecycle) → 409

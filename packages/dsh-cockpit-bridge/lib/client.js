@@ -8,15 +8,6 @@ window.__ModuleLoader__.load({
 		const CAPABILITY_EXPIRED_MESSAGE = "dsh-cockpit:capability-expired";
 		/** Stable cross-package service name. Changing it is a breaking change. */
 		const COCKPIT_EDITOR_OPEN_SERVICE = "cockpitBridge.editorOpen";
-		/** Stable cross-package service name for publishing a device-side loopback
-		* port to the cockpit host. Changing it is a breaking change. */
-		const COCKPIT_PORT_FORWARD_SERVICE = "cockpitBridge.portForward";
-		/** Channel ids name one publishable service of a device. Mirrors the server's
-		* accepted shape; `workbench` is reserved for the device's own DSH tunnel. */
-		const PORT_FORWARD_CHANNEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-		function isValidPortForwardChannelId(value) {
-			return typeof value === "string" && value !== "workbench" && PORT_FORWARD_CHANNEL_PATTERN.test(value);
-		}
 		function isValidDevicePort(value) {
 			return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
 		}
@@ -384,7 +375,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.5.1";
+		const PLUGIN_VERSION = "0.6.0";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
@@ -426,34 +417,6 @@ window.__ModuleLoader__.load({
 				const uri = createRemoteEditorUri(sshAlias, path);
 				window.open(uri, "_blank");
 			} });
-			/** Second seam, same contract shape as editorOpen: provided immediately,
-			* consumer-agnostic, and unavailable-by-throwing so a consumer can fall back
-			* to its own loopback address. Unlike editorOpen this one reaches the
-			* cockpit server (it creates an ssh forward), so the capability header is
-			* mandatory and a rejection is surfaced rather than swallowed. */
-			/** One capability-bearing POST; no retry, no renewal. */
-			const seamFetch = async (path, body, active) => {
-				const controller = new AbortController();
-				const timeout = setTimeout(() => {
-					controller.abort();
-				}, REQUEST_TIMEOUT_MS);
-				try {
-					return await fetch(`${active.cockpitOrigin}${path}`, {
-						method: "POST",
-						headers: {
-							"content-type": "application/json",
-							[CAPABILITY_HEADER]: active.capability
-						},
-						body: JSON.stringify({
-							...body,
-							protocolVersion: PROTOCOL_VERSION
-						}),
-						signal: controller.signal
-					});
-				} finally {
-					clearTimeout(timeout);
-				}
-			};
 			/**
 			* Wait for the parent to hand down a capability different from the stale one.
 			*
@@ -474,36 +437,6 @@ window.__ModuleLoader__.load({
 					if (next !== void 0 && next.capability !== stale.capability) return next;
 				}
 			};
-			const seamRequest = async (path, body) => {
-				const active = config;
-				if (active === void 0) throw new Error("cockpit port forward is unavailable");
-				let response = await seamFetch(path, body, active);
-				if (response.status === 401 || response.status === 400) {
-					const renewed = await renewConfig(active);
-					if (renewed !== void 0) response = await seamFetch(path, body, renewed);
-				}
-				if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`);
-				return await response.json();
-			};
-			ctx.provide(COCKPIT_PORT_FORWARD_SERVICE, {
-				async register(channelId, devicePort) {
-					if (!isValidPortForwardChannelId(channelId)) throw new Error("invalid channel id");
-					if (!isValidDevicePort(devicePort)) throw new Error("invalid device port");
-					await seamRequest("/api/bridge/publishable-port", {
-						channelId,
-						devicePort
-					});
-				},
-				async publish(channelId) {
-					if (!isValidPortForwardChannelId(channelId)) throw new Error("invalid channel id");
-					const result = await seamRequest("/api/bridge/publish-port", { channelId });
-					if (typeof result?.url !== "string" || result.url === "") throw new Error("cockpit returned no forward url");
-					return {
-						channelId,
-						url: result.url
-					};
-				}
-			});
 			/** `cockpitBridge.forwards`: same contract shape as the seams above —
 			* provided immediately, unavailable-by-throwing until the handshake. */
 			const forwards = createForwards({
@@ -534,9 +467,8 @@ window.__ModuleLoader__.load({
 				connected: () => config !== void 0,
 				snapshot: () => forwards.snapshot()
 			});
-			const slotted = ctx;
-			if (slotted.slots !== void 0) {
-				const slots = slotted.slots;
+			ctx.inject(["slots"], (child) => {
+				const slots = child.slots;
 				slots.inject("settings.section", () => slots.register({
 					name: "settings.section",
 					id: "dsh-cockpit-forwards",
@@ -547,7 +479,7 @@ window.__ModuleLoader__.load({
 						subscribe: settings.subscribe
 					})
 				}, ForwardsSettingsSection));
-			}
+			});
 			ctx.effect(() => {
 				forwards.startInstance();
 				const onPageHide = () => {

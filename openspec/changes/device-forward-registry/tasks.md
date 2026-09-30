@@ -201,12 +201,12 @@
 
 ## 11. 迁移（design D8、Migration 2、4、5）
 
-- [ ] 11.1 Write failing test (extra): `publishable-port` / `publish-port` 路由返回 404，且 `COCKPIT_PORT_FORWARD_SERVICE` 不再由 bridge 提供（assert it fails for the right reason）
-- [ ] 11.2 Implement: 删除旧端点、`#publishablePorts`、`#publishedChannels`、bridge `portForward` 与 shared 旧类型，to pass 11.1
-- [ ] 11.3 Refactor; full suite stays green (旧 `publishable port registration and publishing` 测试组随之删除)
-- [ ] 11.4 Bump `packages/dsh-cockpit-bridge` 到 0.6.0（`package.json` 与 `PLUGIN_VERSION`）；run `pnpm --filter dsh-cockpit-bridge build`，confirm the bundle builds
-- [ ] 11.5 改写 README 端口发布段落与 BACKLOG 相关条目（design D10）；run `grep -rn "publish-port\|publishable-port\|已登记端口" README.md BACKLOG.md packages/*/src`，confirm no stale hit
-- [ ] 11.6 发布说明写明：驾驶舱与 bridge 必须同时回滚；回滚后常驻条目在旧版本下次写盘时丢失
+- [x] 11.1 Write failing test (extra): `publishable-port` / `publish-port` 路由返回 404，且 `COCKPIT_PORT_FORWARD_SERVICE` 不再由 bridge 提供（assert it fails for the right reason） — 测试：`app-forwards.e2e.test.ts` › `removes the publishable-port and publish-port endpoints`（旧路由 401→404）与 `forwards.test.ts` › `replaces the old cockpitBridge.portForward seam (0.6.0)`，写成后先确认为红
+- [x] 11.2 Implement: 删除旧端点、`#publishablePorts`、`#publishedChannels`、bridge `portForward` 与 shared 旧类型，to pass 11.1
+- [x] 11.3 Refactor; full suite stays green (旧 `publishable port registration and publishing` 测试组随之删除)；group 1 的三条「附加转发跨主通道替换存活」测试改用 `acquireForward` 继续保留；`app-auth.e2e` 的 bridge 名单回归测试改为 forwards 两条路由；bridge 删除 5 条 portForward 测试，并在 forwards 上补一条「400/401 换发一次后重试」
+- [x] 11.4 Bump `packages/dsh-cockpit-bridge` 到 0.6.0（`package.json` 与 `PLUGIN_VERSION`）；run `pnpm --filter dsh-cockpit-bridge build`，confirm the bundle builds — 已执行，`lib/client.js` 构建成功，react 保持 external
+- [x] 11.5 改写 README 端口发布段落与 BACKLOG 相关条目（design D10）；run `grep -rn "publish-port\|publishable-port\|已登记端口" README.md BACKLOG.md packages/*/src`，confirm no stale hit — 已执行，无命中（exit 1）；同时改写 bridge README 的接缝段落
+- [x] 11.6 发布说明写明：驾驶舱与 bridge 必须同时回滚；回滚后常驻条目在旧版本下次写盘时丢失 — 写入 `packages/dsh-cockpit-bridge/README.md`「0.6.0 发布说明（升级与回滚）」
 
 ## 12. 收尾验证
 

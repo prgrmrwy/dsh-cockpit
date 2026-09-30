@@ -184,4 +184,14 @@ describe('forwards endpoints (real NestJS + Express, via createCockpitApp)', () 
     expect(await registry()).toBe(before)
     expect(rows().filter(row => row.kind === 'additional')).toEqual([])
   })
+
+  // Migration (design D8): the old publish seam is gone in the same release.
+
+  it('removes the publishable-port and publish-port endpoints', async () => {
+    for (const route of ['/api/bridge/publishable-port', '/api/bridge/publish-port']) {
+      // As a cockpit-page call, past every guard: no handler answers any more.
+      const reply = await send('POST', route, { ...json, cookie, origin: self, 'sec-fetch-site': 'same-origin' }, JSON.stringify({ channelId: 'cards', devicePort: 3939 }))
+      expect([route, reply.status]).toEqual([route, 404])
+    }
+  })
 })

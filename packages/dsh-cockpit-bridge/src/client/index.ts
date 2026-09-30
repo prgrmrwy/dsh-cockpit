@@ -26,16 +26,11 @@ import {
   CAPABILITY_EXPIRED_MESSAGE,
   COCKPIT_EDITOR_OPEN_SERVICE,
   COCKPIT_FORWARDS_SERVICE,
-  COCKPIT_PORT_FORWARD_SERVICE,
   DEVICE_ACTIVATED_MESSAGE,
   createRemoteEditorUri,
-  isValidDevicePort,
-  isValidPortForwardChannelId,
   isValidSshAlias,
   type BridgeConfigMessage,
   type CockpitEditorOpenService,
-  type CockpitPortForwardService,
-  type PortForwardHandle,
 } from '@dsh-cockpit/shared'
 import { createForwards } from './forwards.js'
 import { createSettingsStore, ForwardsSettingsSection, SECTION_LABEL, type SettingsInjected } from './settings.js'
@@ -55,7 +50,7 @@ interface SlotsLike {
 export const inject = ['sessions', 'uiSession']
 
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.5.1'
+const PLUGIN_VERSION = '0.6.0'
 const PROTOCOL_VERSION = 2
 const PENDING_PROTOCOL_VERSION = 3
 const PENDING_SEAM_VERSION = 1
@@ -138,27 +133,6 @@ export function apply(ctx: BridgeContext): void {
   }
   ctx.provide(COCKPIT_EDITOR_OPEN_SERVICE, editorOpen)
 
-  /** Second seam, same contract shape as editorOpen: provided immediately,
-   * consumer-agnostic, and unavailable-by-throwing so a consumer can fall back
-   * to its own loopback address. Unlike editorOpen this one reaches the
-   * cockpit server (it creates an ssh forward), so the capability header is
-   * mandatory and a rejection is surfaced rather than swallowed. */
-  /** One capability-bearing POST; no retry, no renewal. */
-  const seamFetch = async (path: string, body: object, active: BridgeConfig): Promise<Response> => {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
-    try {
-      return await fetch(`${active.cockpitOrigin}${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', [CAPABILITY_HEADER]: active.capability },
-        body: JSON.stringify({ ...body, protocolVersion: PROTOCOL_VERSION }),
-        signal: controller.signal,
-      })
-    } finally {
-      clearTimeout(timeout)
-    }
-  }
-
   /**
    * Wait for the parent to hand down a capability different from the stale one.
    *
@@ -181,35 +155,6 @@ export function apply(ctx: BridgeContext): void {
     return undefined
   }
 
-  const seamRequest = async (path: string, body: object): Promise<unknown> => {
-    const active = config
-    if (active === undefined) throw new Error('cockpit port forward is unavailable')
-    let response = await seamFetch(path, body, active)
-    if (response.status === 401 || response.status === 400) {
-      // The renewal path below is the one the reporting callbacks already use;
-      // this seam needs it too, because a click can arrive after the page has
-      // been sitting idle for minutes.
-      const renewed = await renewConfig(active)
-      if (renewed !== undefined) response = await seamFetch(path, body, renewed)
-    }
-    if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`)
-    return await response.json()
-  }
-
-  const portForward: CockpitPortForwardService = {
-    async register(channelId: string, devicePort: number): Promise<void> {
-      if (!isValidPortForwardChannelId(channelId)) throw new Error('invalid channel id')
-      if (!isValidDevicePort(devicePort)) throw new Error('invalid device port')
-      await seamRequest('/api/bridge/publishable-port', { channelId, devicePort })
-    },
-    async publish(channelId: string): Promise<PortForwardHandle> {
-      if (!isValidPortForwardChannelId(channelId)) throw new Error('invalid channel id')
-      const result = await seamRequest('/api/bridge/publish-port', { channelId }) as { url?: unknown }
-      if (typeof result?.url !== 'string' || result.url === '') throw new Error('cockpit returned no forward url')
-      return { channelId, url: result.url }
-    },
-  }
-  ctx.provide(COCKPIT_PORT_FORWARD_SERVICE, portForward)
 
   /** `cockpitBridge.forwards`: same contract shape as the seams above —
    * provided immediately, unavailable-by-throwing until the handshake. */

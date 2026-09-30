@@ -6,7 +6,7 @@
 
 从 0.4.0 起，插件还是设备 DSH 页面与驾驶舱之间的**唯一通信切面**：它以稳定
 Cordis 服务名 `cockpitBridge.editorOpen` 向任意同页面插件提供远程编辑器打开能力，
-0.5.0 起再以 `cockpitBridge.portForward` 提供设备回环端口的发布能力。
+0.6.0 起以 `cockpitBridge.forwards` 提供设备回环端口的转发申请能力（取代 0.5.x 的 `cockpitBridge.portForward`）。
 消费方只传绝对路径；bridge 使用父页面握手下发的 SSH config alias，在原始用户点击
 链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。
 
@@ -71,16 +71,20 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 - **安全边界**：服务只接受路径，不接收任意 method/命令；不新增 iframe→父页面动作消息，不经 SSH 执行命令。所有跨边界通信仍只经 bridge。
 - **前置条件**：宿主机安装 VS Code Remote-SSH，且 `sshAlias` 可由宿主机 SSH config 解析。未安装扩展时 URI 可能被静默丢弃；路径名含点时 VS Code URI handler 可能将目录判断为文件。
 
-### `cockpitBridge.portForward`（0.5.0 新增）
+### `cockpitBridge.forwards`（0.6.0，取代 `cockpitBridge.portForward`）
 
-把设备上**只监听回环**的服务发布到宿主机，使宿主机浏览器可以访问它（首个消费方：设备上的 memex 卡片浏览 UI）。
+把设备上**只监听回环**的服务转发到宿主机，使宿主机浏览器可以访问它（首个消费方：设备上的 memex 卡片浏览 UI）。
 
-- **稳定服务名**：`cockpitBridge.portForward`（跨仓契约；改名属于 breaking change）。
-- **调用**：`register(channelId, devicePort): Promise<void>` 声明某端口可发布，`publish(channelId): Promise<{ channelId, url }>` 取得宿主机可访问地址。两者都是**异步**的（各一次跨源请求），因此消费方不能在点击链路里 await —— 会丢掉 user activation 导致弹窗被拦。
-- **不是通用隧道**：设备由请求 `Origin` 解析，调用方无法指定；只能发布**已登记**的 channel；句柄绑定单个端口；每设备通道数有上限。安全边界由这三条结构性约束 + 「只在宿主机回环监听」承担，不依赖「登记方不可伪造」。
-- **与 `editorOpen` 的关键差异**：这两个调用**会让驾驶舱执行服务端动作**（spawn 一个 `ssh -L`），因此 capability 请求头是**必需**的，不接受无头部的兼容路径。
-- **降级**：握手未完成、本机设备、端口未登记、转发失败，均以稳定原因拒绝，消费方据此回落自身本机地址。
-- **边界**：驾驶舱不进入被转发流量的数据路径，不解析、不重写、不记录其内容。
+- **稳定服务名**：`cockpitBridge.forwards`（跨仓契约；改名属于 breaking change）。0.6.0 直接替换 `cockpitBridge.portForward`，旧服务与驾驶舱旧端点同版本移除，不保留适配层。
+- **调用**：
+  - `acquire(devicePort, holder): Promise<ForwardHandle>`：立即返回条目当前状态；就绪时带 `address`（`{ host: '127.0.0.1', port, url }`）。建立在后台进行，地址经父页面推送的快照交付。
+  - `handle.onChange(listener)`：状态或本地端口变化时通知（`retrying` → `ready` 带新地址）；条目从快照消失时通知 `removed`，bridge **不会**自动重新申请。
+  - `release(handle)`、`list()`（最近一次快照）、`subscribe(listener)`。
+  - 握手未完成或不在驾驶舱 iframe 中时，`acquire` / `list` **同步**抛出 `code: 'unavailable'`，消费方据此回落本机地址。
+- **错误**：业务拒绝以 `code` 抛出（`forward-limit`、`reserved-port`、`invalid-port`、`invalid-holder`、`invalid-label`、`local-device`、`device-unavailable`），不换发能力串、不重试；能力串失效（400/401）换发一次后重试。
+- **页面实例**：每次 effect 启动与 bfcache 恢复（`pageshow` 且 `persisted`）生成新的一次性实例标识；`pagehide` 与 dispose 时经父页面发送 `dsh-cockpit:bridge-instance-ended`，驾驶舱据此释放该实例的全部持有。
+- **边界**：只转发设备回环地址、只在宿主机回环监听、每条绑定单个端口、每设备至多 8 条、只作用于调用页面自己的设备；不能建立常驻条目或删除任何条目。驾驶舱不进入被转发流量的数据路径。
+- **设置页区块**：`settings.section` 可用时，注入只读的「驾驶舱转发」区块（条目、状态、持有者标签、`N / 8`）；settings 缺席时其它能力不受影响。
 
 ## 安装
 
@@ -96,6 +100,12 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 **已经安装旧版本插件的设备**：升级到本版本同样需要重新 `dsh build` 并重启该
 设备的 DSH web 才能获得协议 v2 的可靠确认；重启前旧版本仍按尽力而为方式工作，
 不影响原生 DSH 工作台。
+
+## 0.6.0 发布说明（升级与回滚）
+
+- **必须与驾驶舱同时发布**：0.6.0 删除了 `cockpitBridge.portForward`，驾驶舱同一版本删除了 `/api/bridge/publishable-port` 与 `/api/bridge/publish-port`。bridge 0.5.x 配新驾驶舱，或 bridge 0.6.0 配旧驾驶舱，端口转发都不可用（消费方回落本机地址，原生 DSH 工作台不受影响）。
+- **消费方需迁移**：仍调用 `cockpitBridge.portForward` 的同页面插件（例如 ohmydsh 的 memex 浏览 shim）会发现服务缺席并回落本机地址，直到它改用 `cockpitBridge.forwards.acquire`。发布顺序：驾驶舱 + bridge 0.6.0 同时发布 → 更新消费方的 bridge pin 与调用。
+- **回滚**：驾驶舱与 bridge **必须一起回滚**，因为旧 bridge 依赖的端点已被删除。回滚后，设备记录中的常驻转发标记（`forwards` 字段）会被旧版本忽略，并在旧版本**下次写入注册表时丢失**；重新升级后需在设备面板重新创建常驻条目。
 
 ## 配置
 

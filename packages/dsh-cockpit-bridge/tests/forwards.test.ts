@@ -54,6 +54,7 @@ function fakeCtx() {
   }
   return {
     ctx,
+    services,
     service: () => services.get(SERVICE) as CockpitForwardsService | undefined,
     dispose: () => { for (const cleanup of cleanups.splice(0)) cleanup() },
   }
@@ -114,6 +115,13 @@ afterEach(() => {
 })
 
 describe('cockpitBridge.forwards', () => {
+  it('replaces the old cockpitBridge.portForward seam (0.6.0)', async () => {
+    const fixture = await loaded()
+    expect(fixture.services.has('cockpitBridge.portForward')).toBe(false)
+    expect(fixture.services.has(SERVICE)).toBe(true)
+    fixture.dispose()
+  })
+
   it('throws unavailable synchronously without fetching when not configured', async () => {
     const fixture = await loaded()
     const service = fixture.service()!
@@ -224,6 +232,32 @@ describe('cockpitBridge.forwards', () => {
     expect(forwardsCalls('acquire')).toHaveLength(2)
     // No capability renewal was requested for a business rejection.
     expect(fakeWindow().parentPostMessage.mock.calls.filter(([message]) => (message as { type?: string }).type === 'dsh-cockpit:capability-expired')).toEqual([])
+    fixture.dispose()
+  })
+
+  it('renews an expired capability once on 400/401 and retries with the fresh one', async () => {
+    const fixture = await loaded()
+    configure()
+    let first = true
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).endsWith('/api/bridge/forwards/acquire') && first) {
+        first = false
+        return json(400, { code: 'bridge-capability-invalid' })
+      }
+      return json(200, { devicePort: 3939, state: 'starting' })
+    })
+    const pending = fixture.service()!.acquire(3939, 'memex-browse:default')
+    await vi.advanceTimersByTimeAsync(0)
+    // The parent is asked for a fresh capability at the handshaken origin...
+    expect(fakeWindow().parentPostMessage).toHaveBeenCalledWith({ type: 'dsh-cockpit:capability-expired' }, COCKPIT_ORIGIN)
+    fakeWindow().emitMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin: COCKPIT_ORIGIN, capability: 'fresh' })
+    await vi.advanceTimersByTimeAsync(200)
+    await expect(pending).resolves.toMatchObject({ state: 'starting' })
+    // ...and the retry carries it.
+    const headers = fetchMock.mock.calls
+      .filter(([url]) => String(url).endsWith('/api/bridge/forwards/acquire'))
+      .map(([, init]) => ((init as RequestInit).headers as Record<string, string>)['x-dsh-cockpit-bridge-capability'])
+    expect(headers).toEqual([CAPABILITY, 'fresh'])
     fixture.dispose()
   })
 
