@@ -929,11 +929,11 @@ describe('bridge capability and protocol', () => {
     for (let attempt = 0; attempt < 100 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 5))
     }
-    const grant = service.issueBridgeCapability('local')
+    const grant = service.issueBridgeCapability('local', 'page-aaaaaaaaaaaaaaaa')
     expect(grant.capability).toBeTruthy()
     expect(grant.protocolVersion).toBe(2)
 
-    expect(() => service.issueBridgeCapability('missing-device')).toThrow('unknown device')
+    expect(() => service.issueBridgeCapability('missing-device', 'page-aaaaaaaaaaaaaaaa')).toThrow('unknown device')
     await service.onApplicationShutdown()
   })
 
@@ -947,7 +947,7 @@ describe('bridge capability and protocol', () => {
     // Issuance happens through the cockpit's OWN same-origin page — a
     // completely different origin from the device's DSH endpoint.
     const deviceOrigin = new URL(service.statuses()[0]!.endpoint!).origin
-    const grant = service.issueBridgeCapability('local')
+    const grant = service.issueBridgeCapability('local', 'page-aaaaaaaaaaaaaaaa')
 
     // Validated as if presented FROM the device origin: succeeds.
     expect(() => service.validateBridgeCapability(deviceOrigin, grant.capability)).not.toThrow()
@@ -978,7 +978,7 @@ describe('bridge capability and protocol', () => {
       await new Promise(resolve => setTimeout(resolve, 5))
     }
     const origin = new URL(service.statuses()[0]!.endpoint!).origin
-    const grant = service.issueBridgeCapability('local')
+    const grant = service.issueBridgeCapability('local', 'page-aaaaaaaaaaaaaaaa')
 
     await service.updateDevice('local', { enabled: false })
 

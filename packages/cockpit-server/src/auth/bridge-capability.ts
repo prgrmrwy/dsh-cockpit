@@ -9,6 +9,9 @@ export interface BridgeCapabilityGrant {
   readonly deviceId: string
   readonly origin: string
   readonly purpose: BridgeCapabilityPurpose
+  /** Cockpit page that requested the capability (design D4(b)); forward
+   * holders created with this capability belong to this page. */
+  readonly pageId?: string
   readonly issuedAt: number
   readonly expiresAt: number
 }
@@ -48,6 +51,7 @@ export class BridgeCapabilityService {
     readonly deviceId: string
     readonly origin: string
     readonly purpose?: BridgeCapabilityPurpose
+    readonly pageId?: string
   }): IssuedBridgeCapability {
     const now = this.#now()
     this.#prune(now)
@@ -65,6 +69,7 @@ export class BridgeCapabilityService {
       deviceId: input.deviceId,
       origin,
       purpose,
+      ...(input.pageId === undefined ? {} : { pageId: input.pageId }),
       issuedAt: now,
       expiresAt: now + this.#ttlMs,
     }

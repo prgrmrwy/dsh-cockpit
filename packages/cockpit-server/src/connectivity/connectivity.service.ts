@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger, Optional, OnApplicationShutdown } from '@nestjs/common'
-import { FORWARD_LIMIT, type DeviceConnectionStatus, type DeviceForwardsProjection, type DeviceRecord, type DeviceStatusFacts } from '@dsh-cockpit/shared'
+import { FORWARD_LIMIT, isValidOpaqueId, type DeviceConnectionStatus, type DeviceForwardsProjection, type DeviceRecord, type DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle, type DeviceLifecycleOptions } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
@@ -12,8 +12,15 @@ import { discoverLocalDshLaunchToken, discoverRemoteDshLaunchToken } from './dsh
 import { WorkbenchLaunchError, type WorkbenchLaunchSnapshot } from './workbench-launch.js'
 import { WorkbenchLaunchCoordinator } from './workbench-launch-coordinator.js'
 import { resolveSshExecutable } from '../runtime/config.js'
-import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE } from '../auth/bridge-capability.js'
+import { BridgeCapabilityService, BRIDGE_CAPABILITY_PURPOSE, type BridgeCapabilityGrant } from '../auth/bridge-capability.js'
 import { BridgeRejectionLog, type BridgeRejectionDecision } from './bridge-rejection-log.js'
+
+/** Body of a bridge forwards request; every field is validated downstream. */
+export interface BridgeForwardBody {
+  readonly devicePort?: unknown
+  readonly holder?: unknown
+  readonly instanceId?: unknown
+}
 
 /** Per-device cap on additional forwards. */
 const MAX_PUBLISHABLE_CHANNELS = 8
@@ -48,6 +55,8 @@ export class ConnectivityService implements OnApplicationShutdown {
   /** Per-device forward tables (design D1). Owned by the device, not by any
    * one lifecycle instance: replacing the workbench connection keeps them. */
   readonly #forwards = new Map<string, DeviceForwards>()
+  /** Per cockpit page: bridge instance ids that already ended (D4(e)). */
+  readonly #endedInstances = new Map<string, Set<string>>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
   readonly #bridgeSeenAt = new Map<string, number>()
   /** Per-device bridge rejection grading (see bridge-rejection-log.ts). */
@@ -77,6 +86,7 @@ export class ConnectivityService implements OnApplicationShutdown {
   ) {
     this.#registry = registry
     this.#capabilities = seams.capabilities ?? new BridgeCapabilityService()
+    events.onPageExpired(pageId => { void this.#reclaimPage(pageId) })
     this.#sshExecutable = resolveSshExecutable()
     this.#fetchImpl = seams.fetch
     this.#createProtocol = seams.createProtocol
@@ -174,6 +184,67 @@ export class ConnectivityService implements OnApplicationShutdown {
     const table = this.#forwards.get(deviceId)
     if (table === undefined) throw new ForwardRejection('device-unavailable')
     return table
+  }
+
+  /** Bridge acquire as the endpoint runs it (design D7 check order): the
+   * capability is checked from its grant ALONE — never via the origin's
+   * lifecycle — so a garbage token cannot probe which origins are online.
+   * The holder's page comes from the grant, never from the body (D4(b)). */
+  acquireBridgeForward(origin: string, token: string | undefined, body: BridgeForwardBody): AcquireResult {
+    const grant = this.#forwardGrant(origin, token)
+    const lifecycle = this.#lifecycles.get(grant.deviceId)
+    if (lifecycle?.current().endpoint === undefined) throw new ForwardRejection('device-unavailable')
+    const holder = { pageId: grant.pageId, instanceId: body.instanceId as string, holder: body.holder as string }
+    if (this.#endedInstances.get(holder.pageId)?.has(holder.instanceId) === true) throw new ForwardRejection('invalid-holder')
+    const result = this.acquireForward(grant.deviceId, body.devicePort as number, holder)
+    // A page with no live stream connection is reclaimed like a closed one.
+    this.events.armPageGrace(holder.pageId)
+    return result
+  }
+
+  /** Bridge release: located by the grant's device, not the origin, so a
+   * holder can still let go while the workbench channel is down. */
+  async releaseBridgeForward(origin: string, token: string | undefined, body: BridgeForwardBody): Promise<void> {
+    const grant = this.#forwardGrant(origin, token)
+    if (typeof body.devicePort !== 'number' || typeof body.holder !== 'string' || typeof body.instanceId !== 'string') return
+    await this.releaseForward(grant.deviceId, body.devicePort, { pageId: grant.pageId, instanceId: body.instanceId, holder: body.holder })
+  }
+
+  /** A grant for the forwards endpoints: it must exist, be unexpired, match
+   * the request origin, and name a page. */
+  #forwardGrant(origin: string, token: string | undefined): BridgeCapabilityGrant & { readonly pageId: string } {
+    let grant: BridgeCapabilityGrant | undefined
+    try {
+      grant = this.#capabilities.validate(token, { origin, purpose: BRIDGE_CAPABILITY_PURPOSE })
+    } catch {
+      grant = undefined
+    }
+    if (grant?.pageId === undefined || !isValidOpaqueId(grant.pageId)) throw new Error('invalid or expired bridge capability')
+    return grant as BridgeCapabilityGrant & { readonly pageId: string }
+  }
+
+  /** Cockpit parent page: a bridge instance on this device ended (design
+   * D4(a)). Its holders go, and the instance is recorded as ended for the
+   * page so an acquire of the same instance still in flight is refused
+   * (D4(e)). The set never expires by time; page grace expiry clears it. */
+  async releaseForwardInstance(deviceId: string, pageId: string, instanceId: string): Promise<void> {
+    if (!isValidOpaqueId(pageId) || !isValidOpaqueId(instanceId)) throw new ForwardRejection('invalid-holder')
+    let ended = this.#endedInstances.get(pageId)
+    if (ended === undefined) {
+      ended = new Set()
+      this.#endedInstances.set(pageId, ended)
+    }
+    ended.add(instanceId)
+    // A page that never connected must still be cleaned up eventually.
+    this.events.armPageGrace(pageId)
+    await this.#forwards.get(deviceId)?.releaseInstance(pageId, instanceId)
+  }
+
+  /** Grace expiry for a cockpit page (design D4(b)): every holder that page
+   * owns, on every device, goes, and so does its ended-instance set. */
+  async #reclaimPage(pageId: string): Promise<void> {
+    this.#endedInstances.delete(pageId)
+    await Promise.all([...this.#forwards.values()].map(table => table.releasePage(pageId)))
   }
 
   /** Bridge acquire (design D3): create or reuse a held entry. */
@@ -641,13 +712,14 @@ export class ConnectivityService implements OnApplicationShutdown {
    * is deliberately unused for binding: the cookie/TokenMiddleware gate on
    * this route is what authenticates the caller, exactly like every other
    * device-scoped POST endpoint. */
-  issueBridgeCapability(deviceId: string): { capability: string; expiresAt: number; protocolVersion: number } {
+  issueBridgeCapability(deviceId: string, pageId: string): { capability: string; expiresAt: number; protocolVersion: number } {
+    if (!isValidOpaqueId(pageId)) throw new Error('invalid page id')
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     const facts = lifecycle.current()
     if (!facts.enabled || facts.endpoint === undefined) throw new Error(`device ${deviceId} is not connected`)
     const deviceOrigin = new URL(facts.endpoint).origin
-    const grant = this.#capabilities.issue({ deviceId, origin: deviceOrigin, purpose: BRIDGE_CAPABILITY_PURPOSE })
+    const grant = this.#capabilities.issue({ deviceId, origin: deviceOrigin, purpose: BRIDGE_CAPABILITY_PURPOSE, pageId })
     return { capability: grant.token, expiresAt: grant.expiresAt, protocolVersion: 2 }
   }
 

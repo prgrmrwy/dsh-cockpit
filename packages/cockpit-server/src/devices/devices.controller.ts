@@ -1,8 +1,9 @@
 import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Logger, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
-import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
+import { isValidOpaqueId, type AddDeviceRequest, type ApiError, type DeviceStatusFacts, type UpdateDeviceRequest } from '@dsh-cockpit/shared'
 import { ConnectivityService } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
 import { WorkbenchLaunchError } from '../connectivity/workbench-launch.js'
+import { ForwardRejection } from '../connectivity/forward-table.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
@@ -18,6 +19,11 @@ export class DevicesController {
    * one EventSource open; every lifecycle change is pushed immediately. */
   @Get('devices/stream')
   stream(@Req() request: import('express').Request, @Res() response: import('express').Response): void {
+    // `?page=` counts this connection for the page's forward holders (design
+    // D4(b)). Missing or malformed: served normally, counted for no page. The
+    // page id is never logged.
+    const page = request.query?.page
+    const pageId = typeof page === 'string' && isValidOpaqueId(page) ? page : undefined
     response.setHeader('content-type', 'text/event-stream')
     response.setHeader('cache-control', 'no-cache')
     response.setHeader('connection', 'keep-alive')
@@ -26,7 +32,7 @@ export class DevicesController {
       void response.write(`data: ${JSON.stringify({ device: facts })}\n\n`)
     }
     send(this.connectivity.statuses())
-    const unsubscribe = this.events.subscribe(send)
+    const unsubscribe = this.events.subscribe(send, pageId)
     request.on('close', () => { unsubscribe() })
   }
 
@@ -131,6 +137,27 @@ export class DevicesController {
     }
   }
 
+  /** Cockpit parent page: release every holder of one ended bridge instance
+   * of this device (design D4(a)). Cookie-gated like every /api/devices
+   * route. */
+  @Post('devices/:deviceId/forwards/release-instance')
+  async releaseForwardInstance(
+    @Param('deviceId') deviceId: string,
+    @Body() body: { instanceId?: unknown; pageId?: unknown } | undefined,
+  ): Promise<{ released: true }> {
+    try {
+      const { instanceId, pageId } = body ?? {}
+      if (typeof pageId !== 'string' || !isValidOpaqueId(pageId)) {
+        throw new HttpException(toError('invalid-page', 'a valid page id is required'), HttpStatus.BAD_REQUEST)
+      }
+      if (typeof instanceId !== 'string' || !isValidOpaqueId(instanceId)) throw new ForwardRejection('invalid-holder')
+      await this.connectivity.releaseForwardInstance(decodeDeviceId(deviceId), pageId, instanceId)
+      return { released: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
   /** Issues a short-lived bridge capability. This route is same-origin,
    * cookie-gated by TokenMiddleware exactly like every other `/api/devices`
    * endpoint — it is the cockpit's OWN page (not the device iframe) that
@@ -139,9 +166,18 @@ export class DevicesController {
    * DSH origin (see ConnectivityService#issueBridgeCapability), which has
    * nothing to do with this caller's origin. */
   @Post('devices/:deviceId/bridge/capability')
-  async bridgeCapability(@Param('deviceId') deviceId: string): Promise<{ capability: string; expiresAt: number; protocolVersion: number }> {
+  async bridgeCapability(
+    @Param('deviceId') deviceId: string,
+    @Body() body: { pageId?: unknown } | undefined,
+  ): Promise<{ capability: string; expiresAt: number; protocolVersion: number }> {
+    // The requesting page's id is bound into the grant (design D4(b)); a
+    // capability without one could create holders no page would reclaim.
+    const pageId = body?.pageId
+    if (typeof pageId !== 'string' || !isValidOpaqueId(pageId)) {
+      throw new HttpException(toError('invalid-page', 'a valid page id is required'), HttpStatus.BAD_REQUEST)
+    }
     try {
-      return this.connectivity.issueBridgeCapability(decodeDeviceId(deviceId))
+      return this.connectivity.issueBridgeCapability(decodeDeviceId(deviceId), pageId)
     } catch (cause) {
       throw toHttp(cause)
     }
@@ -494,6 +530,9 @@ function toHttp(cause: unknown): HttpException {
   // a missing bridge capability); re-wrapping it would silently downgrade
   // that to the generic 400 below.
   if (cause instanceof HttpException) return cause
+  // Forward business rejections are 409 with a stable code (design D7), so
+  // the bridge never mistakes them for a stale capability and re-issues.
+  if (cause instanceof ForwardRejection) return new HttpException(toError(cause.code, cause.message), HttpStatus.CONFLICT)
   const message = cause instanceof Error ? cause.message : String(cause)
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)

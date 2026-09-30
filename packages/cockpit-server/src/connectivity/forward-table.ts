@@ -204,6 +204,32 @@ export class DeviceForwards {
     this.#changed()
   }
 
+  /** Drop every holder of one bridge page instance (instance-ended, D4(a)). */
+  async releaseInstance(pageId: string, instanceId: string): Promise<void> {
+    await this.#releaseWhere(holder => holder.pageId === pageId && holder.instanceId === instanceId)
+  }
+
+  /** Drop every holder owned by one cockpit page (grace expiry, D4(b)).
+   * Entries left with neither a pin nor a holder are reclaimed. */
+  async releasePage(pageId: string): Promise<void> {
+    await this.#releaseWhere(holder => holder.pageId === pageId)
+  }
+
+  async #releaseWhere(matches: (holder: ForwardHolder) => boolean): Promise<void> {
+    let changed = false
+    const reclaimed: Promise<void>[] = []
+    for (const entry of [...this.#entries.values()]) {
+      for (const [key, holder] of entry.holders) {
+        if (!matches(holder)) continue
+        entry.holders.delete(key)
+        changed = true
+      }
+      if (!entry.pinned && entry.holders.size === 0) reclaimed.push(this.#reclaim(entry))
+    }
+    if (changed && reclaimed.length === 0) this.#changed()
+    await Promise.all(reclaimed)
+  }
+
   /** Delete an entry outright: pin mark, every holder, and the child. */
   async remove(devicePort: number): Promise<void> {
     const entry = this.#entries.get(devicePort)

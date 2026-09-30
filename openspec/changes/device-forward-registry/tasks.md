@@ -84,21 +84,21 @@
 
 ## 4. 页面与实例回收（design D4）
 
-- [ ] 4.1 Write failing test: `rejects capability issue without a page id and serves but does not count a page-less stream` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
-- [ ] 4.2 Implement: 能力串签发要求 `pageId`（`[A-Za-z0-9_-]{16,64}`，否则 400 `invalid-page`），写入 grant；SSE `?page=` 按 pageId 计数，缺失或非法照常推送不计数 to pass 4.1
-- [ ] 4.3 Refactor; full suite stays green
-- [ ] 4.4 Write failing test: `reclaims a page's holders 30s after its last stream connection closes` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
-- [ ] 4.5 Implement: pageId 连接数归零起 30s 宽限，期满移除该 pageId 全部持有者并清空已结束实例集合；无连接的 acquire 同样起宽限 to pass 4.4
-- [ ] 4.6 Refactor; full suite stays green
-- [ ] 4.7 Write failing test: `keeps holders when the page reconnects within the grace period` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
-- [ ] 4.8 Implement: 宽限期内同 pageId 重连取消回收 to pass 4.7
-- [ ] 4.9 Refactor; full suite stays green
-- [ ] 4.10 Write failing test: `takes the holder page id from the capability grant, not the request body` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
-- [ ] 4.11 Implement: 持有者 pageId 只取自 grant；grant 缺 pageId 视为无效 to pass 4.10
-- [ ] 4.12 Refactor; full suite stays green
-- [ ] 4.13 Write failing test: `rejects an acquire whose instance was already ended for that page` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
-- [ ] 4.14 Implement: `release-instance {instanceId,pageId}` 记入已结束实例集合，同 pageId + instanceId 的 acquire 以 `invalid-holder` 拒绝 to pass 4.13
-- [ ] 4.15 Refactor; full suite stays green
+- [x] 4.1 Write failing test: `rejects capability issue without a page id and serves but does not count a page-less stream` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
+- [x] 4.2 Implement: 能力串签发要求 `pageId`（`[A-Za-z0-9_-]{16,64}`，否则 400 `invalid-page`），写入 grant；SSE `?page=` 按 pageId 计数，缺失或非法照常推送不计数 to pass 4.1
+- [x] 4.3 Refactor; full suite stays green
+- [x] 4.4 Write failing test: `reclaims a page's holders 30s after its last stream connection closes` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason) — 注：随 4.2/4.5 一并实现，写成时即为绿；以变异确认测试失败（去掉宽限期满回收的订阅）
+- [x] 4.5 Implement: pageId 连接数归零起 30s 宽限，期满移除该 pageId 全部持有者并清空已结束实例集合；无连接的 acquire 同样起宽限 to pass 4.4
+- [x] 4.6 Refactor; full suite stays green
+- [x] 4.7 Write failing test: `keeps holders when the page reconnects within the grace period` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason) — 注：随 4.2/4.5 一并实现，写成时即为绿；以变异确认测试失败（重连不取消宽限计时）
+- [x] 4.8 Implement: 宽限期内同 pageId 重连取消回收 to pass 4.7
+- [x] 4.9 Refactor; full suite stays green
+- [x] 4.10 Write failing test: `takes the holder page id from the capability grant, not the request body` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason) — 注：随 4.2/4.5 一并实现，写成时即为绿；以变异确认测试失败（持有者 pageId 改取请求体）
+- [x] 4.11 Implement: 持有者 pageId 只取自 grant；grant 缺 pageId 视为无效 to pass 4.10
+- [x] 4.12 Refactor; full suite stays green
+- [x] 4.13 Write failing test: `rejects an acquire whose instance was already ended for that page` in `packages/cockpit-server/tests/forward-page-reclaim.test.ts` (assert it fails for the right reason)
+- [x] 4.14 Implement: `release-instance {instanceId,pageId}` 记入已结束实例集合，同 pageId + instanceId 的 acquire 以 `invalid-holder` 拒绝 to pass 4.13
+- [x] 4.15 Refactor; full suite stays green
 
 ## 5. 投影与数据卫生（design D7 快照、spec 数据卫生）
 

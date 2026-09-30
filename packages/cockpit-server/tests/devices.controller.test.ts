@@ -42,18 +42,18 @@ describe('bridge capability endpoint', () => {
     const issueBridgeCapability = vi.fn().mockReturnValue({ capability: 'tok', expiresAt: 1, protocolVersion: 2 })
     const controller = new DevicesController({ issueBridgeCapability } as never, {} as never)
 
-    const result = await controller.bridgeCapability('device-1')
+    const result = await controller.bridgeCapability('device-1', { pageId: 'page-aaaaaaaaaaaaaaaa' })
     expect(result).toEqual({ capability: 'tok', expiresAt: 1, protocolVersion: 2 })
     // The capability is bound to the DEVICE's own origin inside the service
     // (from its live endpoint), not to this caller's origin — so the
     // controller must not forward an Origin header as a binding origin here.
-    expect(issueBridgeCapability).toHaveBeenCalledWith('device-1')
+    expect(issueBridgeCapability).toHaveBeenCalledWith('device-1', 'page-aaaaaaaaaaaaaaaa')
   })
 
   it('surfaces an unconnected device as a 400, not a leaked internal error', async () => {
     const issueBridgeCapability = vi.fn(() => { throw new Error('device device-1 is not connected') })
     const controller = new DevicesController({ issueBridgeCapability } as never, {} as never)
-    await expect(controller.bridgeCapability('device-1')).rejects.toMatchObject({ status: 400 })
+    await expect(controller.bridgeCapability('device-1', { pageId: 'page-aaaaaaaaaaaaaaaa' })).rejects.toMatchObject({ status: 400 })
   })
 })
 
