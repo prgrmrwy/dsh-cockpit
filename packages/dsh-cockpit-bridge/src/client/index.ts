@@ -25,6 +25,7 @@ import {
   BRIDGE_CONFIG_MESSAGE,
   CAPABILITY_EXPIRED_MESSAGE,
   COCKPIT_EDITOR_OPEN_SERVICE,
+  COCKPIT_FORWARDS_SERVICE,
   COCKPIT_PORT_FORWARD_SERVICE,
   DEVICE_ACTIVATED_MESSAGE,
   createRemoteEditorUri,
@@ -36,6 +37,7 @@ import {
   type CockpitPortForwardService,
   type PortForwardHandle,
 } from '@dsh-cockpit/shared'
+import { createForwards } from './forwards.js'
 
 export const inject = ['sessions', 'uiSession']
 
@@ -195,6 +197,47 @@ export function apply(ctx: BridgeContext): void {
     },
   }
   ctx.provide(COCKPIT_PORT_FORWARD_SERVICE, portForward)
+
+  /** `cockpitBridge.forwards`: same contract shape as the seams above —
+   * provided immediately, unavailable-by-throwing until the handshake. */
+  const forwards = createForwards({
+    config: () => config,
+    renew: renewConfig,
+    send: async (path, body, active) => {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => { controller.abort() }, REQUEST_TIMEOUT_MS)
+      try {
+        return await fetch(`${active.cockpitOrigin}${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', [CAPABILITY_HEADER]: active.capability },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
+      }
+    },
+  })
+  ctx.provide(COCKPIT_FORWARDS_SERVICE, forwards.service)
+
+  ctx.effect(() => {
+    // A fresh one-shot page instance id per effect run (design D4(a)).
+    forwards.startInstance()
+    const onPageHide = (): void => { forwards.endInstance() }
+    const onPageShow = (event: Event): void => {
+      if ((event as PageTransitionEvent).persisted === true) forwards.restoreInstance()
+    }
+    const onSnapshot = (event: MessageEvent): void => { forwards.handleMessage(event) }
+    window.addEventListener('pagehide', onPageHide)
+    window.addEventListener('pageshow', onPageShow)
+    window.addEventListener('message', onSnapshot)
+    return () => {
+      window.removeEventListener('pagehide', onPageHide)
+      window.removeEventListener('pageshow', onPageShow)
+      window.removeEventListener('message', onSnapshot)
+      forwards.stopInstance()
+    }
+  }, 'cockpit-bridge: forwards page instance')
 
   ctx.effect(() => {
     let helloReady = false

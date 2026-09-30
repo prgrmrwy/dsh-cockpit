@@ -135,27 +135,27 @@
 
 ## 7. bridge 接缝 `cockpitBridge.forwards`（design D4(a)、D7）
 
-- [ ] 7.1 Write failing test: `throws unavailable synchronously without fetching when not configured` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.2 Implement: 提供 `forwards` 服务；未握手或不在 iframe 中同步抛出不可用 to pass 7.1
-- [ ] 7.3 Refactor; full suite stays green
-- [ ] 7.4 Write failing test: `returns starting immediately and notifies ready with loopback address and URL` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.5 Implement: acquire 携带 `{devicePort, holder, instanceId}`，立即返回 `starting`，据快照通知 ready 地址与 URL to pass 7.4
-- [ ] 7.6 Refactor; full suite stays green
-- [ ] 7.7 Write failing test: `notifies retrying then ready with the new port when the address changes` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.8 Implement: 按条目比对快照的状态与本地端口，依次通知 retrying、ready to pass 7.7
-- [ ] 7.9 Refactor; full suite stays green
-- [ ] 7.10 Write failing test: `ignores a forwards snapshot from a non-cockpit origin` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.11 Implement: 快照消息校验 `event.origin` 等于已握手驾驶舱 origin to pass 7.10
-- [ ] 7.12 Refactor; full suite stays green
-- [ ] 7.13 Write failing test: `notifies removed when a snapshot drops the entry and does not re-acquire within 60s` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.14 Implement: 条目从快照消失时通知 `removed`，不自动重新申请 to pass 7.13
-- [ ] 7.15 Refactor; full suite stays green
-- [ ] 7.16 Write failing test: `surfaces forward-limit from a 409 without renewing or retrying` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.17 Implement: `seamRequest` 对 409 不换发、不重试，透传 `code`（含 `device-unavailable`） to pass 7.16
-- [ ] 7.18 Refactor; full suite stays green
-- [ ] 7.19 Write failing test: `switches to a fresh instance id on persisted pageshow and acquires with it` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
-- [ ] 7.20 Implement: 每次 effect 启动与 `pageshow`（persisted）生成新 instanceId；`pagehide` / dispose 发送 `bridge-instance-ended`；旧标识不再使用，本地持有记录丢弃并通知 `removed` to pass 7.19
-- [ ] 7.21 Refactor; full suite stays green
+- [x] 7.1 Write failing test: `throws unavailable synchronously without fetching when not configured` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.2 Implement: 提供 `forwards` 服务；未握手或不在 iframe 中同步抛出不可用 to pass 7.1 — 注：接缝实现于 `src/client/forwards.ts`，契约类型在 `@dsh-cockpit/shared`；7.4–7.20 的测试同批写出并一次性确认为红（服务缺席），实现后以变异逐项确认（origin 校验、409 换发、消失不 removed、pageshow 不换标识、不做差异通知）；另加一条 release 测试（不占场景行）
+- [x] 7.3 Refactor; full suite stays green
+- [x] 7.4 Write failing test: `returns starting immediately and notifies ready with loopback address and URL` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.5 Implement: acquire 携带 `{devicePort, holder, instanceId}`，立即返回 `starting`，据快照通知 ready 地址与 URL to pass 7.4
+- [x] 7.6 Refactor; full suite stays green
+- [x] 7.7 Write failing test: `notifies retrying then ready with the new port when the address changes` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.8 Implement: 按条目比对快照的状态与本地端口，依次通知 retrying、ready to pass 7.7
+- [x] 7.9 Refactor; full suite stays green
+- [x] 7.10 Write failing test: `ignores a forwards snapshot from a non-cockpit origin` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.11 Implement: 快照消息校验 `event.origin` 等于已握手驾驶舱 origin to pass 7.10
+- [x] 7.12 Refactor; full suite stays green
+- [x] 7.13 Write failing test: `notifies removed when a snapshot drops the entry and does not re-acquire within 60s` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.14 Implement: 条目从快照消失时通知 `removed`，不自动重新申请 to pass 7.13
+- [x] 7.15 Refactor; full suite stays green
+- [x] 7.16 Write failing test: `surfaces forward-limit from a 409 without renewing or retrying` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.17 Implement: `seamRequest` 对 409 不换发、不重试，透传 `code`（含 `device-unavailable`） to pass 7.16
+- [x] 7.18 Refactor; full suite stays green
+- [x] 7.19 Write failing test: `switches to a fresh instance id on persisted pageshow and acquires with it` in `packages/dsh-cockpit-bridge/tests/forwards.test.ts` (assert it fails for the right reason)
+- [x] 7.20 Implement: 每次 effect 启动与 `pageshow`（persisted）生成新 instanceId；`pagehide` / dispose 发送 `bridge-instance-ended`；旧标识不再使用，本地持有记录丢弃并通知 `removed` to pass 7.19
+- [x] 7.21 Refactor; full suite stays green
 
 ## 8. bridge 只读设置区块（design D9）
 

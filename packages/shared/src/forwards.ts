@@ -152,3 +152,57 @@ export function toForwardsSnapshot(projection: DeviceForwardsProjection): Forwar
   })
   return { rows, additionalCount: projection.additionalCount, limit: projection.limit }
 }
+
+/** Full service name of the bridge seam. Cross-repo contract: renaming it is
+ * a breaking change. */
+export const COCKPIT_FORWARDS_SERVICE = 'cockpitBridge.forwards' as const
+
+/** Thrown synchronously when the page is not in a cockpit iframe or the
+ * handshake has not completed; consumers fall back to local behavior. */
+export const FORWARDS_UNAVAILABLE = 'unavailable' as const
+
+/** A delivered address: host loopback plus local port, and its URL form. */
+export interface ForwardAddress {
+  readonly host: '127.0.0.1'
+  readonly port: number
+  readonly url: string
+}
+
+/** What a holder is told when its entry changes. `removed` means the entry
+ * (or this holder) is gone; the bridge will not re-acquire on its own. */
+export interface ForwardNotice {
+  readonly devicePort: number
+  readonly state: ForwardEntryState | 'removed'
+  readonly address?: ForwardAddress
+  readonly diagnostic?: string
+}
+
+export interface ForwardHandle {
+  readonly devicePort: number
+  readonly holder: string
+  /** State as of the last delivery. */
+  readonly state: ForwardEntryState | 'removed'
+  /** Present only while `ready`. */
+  readonly address?: ForwardAddress
+  /** Subscribe to this holder's notices; returns an unsubscribe. */
+  onChange(listener: (notice: ForwardNotice) => void): () => void
+}
+
+/** Error surfaced by the seam: `code` is a ForwardErrorCode, `unavailable`,
+ * or `request-failed` for anything else. */
+export interface ForwardsError extends Error {
+  readonly code: ForwardErrorCode | typeof FORWARDS_UNAVAILABLE | 'request-failed'
+}
+
+/** `cockpitBridge.forwards`: acquire and release held forwards for the
+ * calling page's own device. No pinning, deleting or touching other holders. */
+export interface CockpitForwardsService {
+  /** Returns the entry's state before establishment completes; with an
+   * address when already `ready`. Throws `unavailable` synchronously. */
+  acquire(devicePort: number, holder: string): Promise<ForwardHandle>
+  release(handle: ForwardHandle): Promise<void>
+  /** Last snapshot received from the parent. Throws `unavailable`
+   * synchronously before the handshake. */
+  list(): ForwardsSnapshot | undefined
+  subscribe(listener: (snapshot: ForwardsSnapshot) => void): () => void
+}
