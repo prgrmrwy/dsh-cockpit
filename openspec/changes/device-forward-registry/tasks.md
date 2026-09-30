@@ -168,18 +168,18 @@
 
 ## 9. web 父页面（design D4(a)、D7 快照；`Workbench.tsx`、`api/stream.ts`）
 
-- [ ] 9.1 Write failing test: `pushes a snapshot right after config and on each change, only to that device origin` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
-- [ ] 9.2 Implement: 每页加载生成 pageId，用于 SSE 与签发；配置消息后立即推送快照，投影变化时再推，targetOrigin 精确为设备 origin to pass 9.1
-- [ ] 9.3 Refactor; full suite stays green
-- [ ] 9.4 Write failing test: `forwards instance-ended from a device iframe to release-instance with the page id` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
-- [ ] 9.5 Implement: 接收 `bridge-instance-ended` 并以 cookie 调用 `release-instance {instanceId, pageId}` to pass 9.4
-- [ ] 9.6 Refactor; full suite stays green
-- [ ] 9.7 Write failing test: `accepts instance-ended from a previously loaded origin after the iframe drifts` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
-- [ ] 9.8 Implement: 按设备维护已下发配置的 origin 集合，iframe 卸载或设备移除时清空；按 `event.source` 归属 to pass 9.7
-- [ ] 9.9 Refactor; full suite stays green
-- [ ] 9.10 Write failing test: `ignores instance-ended from a foreign source or an origin never loaded by that iframe` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
-- [ ] 9.11 Implement: source 非该设备 iframe 或 origin 不在集合中时不发请求 to pass 9.10
-- [ ] 9.12 Refactor; full suite stays green
+- [x] 9.1 Write failing test: `pushes a snapshot right after config and on each change, only to that device origin` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
+- [x] 9.2 Implement: 每页加载生成 pageId，用于 SSE 与签发；配置消息后立即推送快照，投影变化时再推，targetOrigin 精确为设备 origin to pass 9.1
+- [x] 9.3 Refactor; full suite stays green
+- [x] 9.4 Write failing test: `forwards instance-ended from a device iframe to release-instance with the page id` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
+- [x] 9.5 Implement: 接收 `bridge-instance-ended` 并以 cookie 调用 `release-instance {instanceId, pageId}` to pass 9.4
+- [x] 9.6 Refactor; full suite stays green
+- [x] 9.7 Write failing test: `accepts instance-ended from a previously loaded origin after the iframe drifts` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
+- [x] 9.8 Implement: 按设备维护已下发配置的 origin 集合，iframe 卸载或设备移除时清空；按 `event.source` 归属 to pass 9.7
+- [x] 9.9 Refactor; full suite stays green
+- [x] 9.10 Write failing test: `ignores instance-ended from a foreign source or an origin never loaded by that iframe` in `packages/cockpit-web/tests/workbench-forwards.test.tsx` (assert it fails for the right reason)
+- [x] 9.11 Implement: source 非该设备 iframe 或 origin 不在集合中时不发请求 to pass 9.10
+- [x] 9.12 Refactor; full suite stays green
 
 ## 10. web 设备面板转发清单（`panels/Panels.tsx`）
 

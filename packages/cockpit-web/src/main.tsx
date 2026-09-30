@@ -110,8 +110,10 @@ export function App() {
         <Workbench
           device={current}
           enabledDeviceIds={enabledDevices.map(device => device.deviceId)}
+          devices={enabledDevices}
           requestBridgeCapability={api.bridgeCapability}
           requestWorkbenchLaunch={api.workbenchLaunch}
+          releaseForwardInstance={api.releaseForwardInstance}
           onReconnect={reconnectCurrent}
           onManageDevices={() => setPanel('devices')}
         />

@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { BRIDGE_CONFIG_MESSAGE, CAPABILITY_EXPIRED_MESSAGE, DEVICE_ACTIVATED_MESSAGE, isValidSshAlias, type DeviceStatusFacts } from '@dsh-cockpit/shared'
+import {
+  BRIDGE_CONFIG_MESSAGE,
+  BRIDGE_INSTANCE_ENDED_MESSAGE,
+  CAPABILITY_EXPIRED_MESSAGE,
+  DEVICE_ACTIVATED_MESSAGE,
+  FORWARDS_SNAPSHOT_MESSAGE,
+  LOCAL_FORWARDS_SNAPSHOT,
+  isValidOpaqueId,
+  isValidSshAlias,
+  toForwardsSnapshot,
+  type DeviceStatusFacts,
+  type ForwardsSnapshot,
+} from '@dsh-cockpit/shared'
 import { ApiRequestError } from '../api/client.js'
 
 interface BridgeCapabilityPayload {
@@ -23,6 +35,17 @@ export interface WorkbenchProps {
   readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string; authGeneration: number }>
   /** Navigation deadline for the tokenized URL; test seam only. */
   readonly navigationDeadlineMs?: number
+  /** Every device's latest facts, so a mounted-but-hidden iframe still gets
+   * its own forwards snapshot when its table changes. */
+  readonly devices?: readonly DeviceStatusFacts[]
+  /** Releases every holder of one ended bridge page instance (design D4(a)). */
+  readonly releaseForwardInstance?: (deviceId: string, instanceId: string) => Promise<unknown>
+}
+
+/** The snapshot a device page may see: no host pid, no holder identities. */
+function snapshotFor(facts: DeviceStatusFacts): ForwardsSnapshot | undefined {
+  if (facts.kind === 'local') return LOCAL_FORWARDS_SNAPSHOT
+  return facts.forwards === undefined ? undefined : toForwardsSnapshot(facts.forwards)
 }
 
 const DEVICE_ACTIVATED_PAYLOAD = { type: DEVICE_ACTIVATED_MESSAGE } as const
@@ -93,7 +116,7 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs }: WorkbenchProps) {
+export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs, releaseForwardInstance }: WorkbenchProps) {
   const deadlineMs = navigationDeadlineMs ?? DEFAULT_NAVIGATION_DEADLINE_MS
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
@@ -115,6 +138,17 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
    * clearing it here is what "the parent no longer holds the token" means. */
   const tokenUrlRef = useRef<Map<string, string>>(new Map())
   const deadlineTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  /** Per device: the origins this iframe has been handed a bridge config at
+   * (design D4(a)). An instance-ended message is accepted from any of them,
+   * because after a port drift the OLD document still speaks from the old
+   * origin. Cleared when the iframe unmounts or the device goes away. */
+  const configuredOriginsRef = useRef<Map<string, Set<string>>>(new Map())
+  /** Per device: the last snapshot pushed and to which origin, so an
+   * unrelated status push sends nothing. */
+  const pushedSnapshotRef = useRef<Map<string, string>>(new Map())
+  const latestFactsRef = useRef<Map<string, DeviceStatusFacts>>(new Map())
+  const releaseRef = useRef(releaseForwardInstance)
+  releaseRef.current = releaseForwardInstance
   /** Explicit user retries, which are the ONLY way a failed or unobservable
    * tuple may be attempted again. */
   const [retryNonce, setRetryNonce] = useState(0)
@@ -166,6 +200,33 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     setRetryNonce(nonce => nonce + 1)
   }
 
+  /** Push this device's forwards snapshot to its iframe, at the exact origin
+   * the config went to. `force` re-sends after a config message even when
+   * unchanged (a reloaded document has no state). */
+  const pushSnapshot = (deviceId: string, force: boolean): void => {
+    const iframe = iframeRefs.current.get(deviceId)
+    const frame = registryRef.current.get(deviceId)
+    const facts = latestFactsRef.current.get(deviceId)
+    if (iframe === undefined || iframe.contentWindow === null || frame === undefined || facts === undefined) return
+    if (!configuredOriginsRef.current.has(deviceId)) return
+    const snapshot = snapshotFor(facts)
+    if (snapshot === undefined) return
+    let targetOrigin: string
+    try {
+      targetOrigin = new URL(frame.url).origin
+    } catch {
+      return
+    }
+    const fingerprint = `${targetOrigin}\u0000${JSON.stringify(snapshot)}`
+    if (!force && pushedSnapshotRef.current.get(deviceId) === fingerprint) return
+    try {
+      iframe.contentWindow.postMessage({ type: FORWARDS_SNAPSHOT_MESSAGE, snapshot }, targetOrigin)
+      pushedSnapshotRef.current.set(deviceId, fingerprint)
+    } catch {
+      // Unreachable frame: the next config or change pushes again.
+    }
+  }
+
   const notifyActivated = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
     const iframe = iframeRefs.current.get(deviceId)
@@ -185,6 +246,15 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
           capability: capability.capability,
           ...(isValidSshAlias(frame.sshAlias) ? { sshAlias: frame.sshAlias } : {}),
         }, targetOrigin)
+        let origins = configuredOriginsRef.current.get(deviceId)
+        if (origins === undefined) {
+          origins = new Set()
+          configuredOriginsRef.current.set(deviceId, origins)
+        }
+        origins.add(targetOrigin)
+        // Right behind the config: postMessage is ordered, so the bridge
+        // already knows the cockpit origin when the snapshot arrives.
+        pushSnapshot(deviceId, true)
       }
       iframe.contentWindow.postMessage(DEVICE_ACTIVATED_PAYLOAD, targetOrigin)
     } catch {
@@ -305,6 +375,38 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     return () => window.removeEventListener('message', onMessage)
   }, [requestBridgeCapability])
 
+  // Forwards snapshots follow the status stream: every device whose iframe
+  // is mounted gets its own table when it changes, and nobody else's.
+  useEffect(() => {
+    const all = devices ?? (device === undefined ? [] : [device])
+    for (const facts of all) latestFactsRef.current.set(facts.deviceId, facts)
+    for (const facts of all) pushSnapshot(facts.deviceId, false)
+  }, [devices, device])
+
+  // Instance-ended (design D4(a)): attributed by `event.source` to exactly one
+  // device iframe, and accepted from any origin that iframe was configured at.
+  useEffect(() => {
+    const onMessage = (event: MessageEvent): void => {
+      if (typeof event.data !== 'object' || event.data === null) return
+      const data = event.data as { type?: unknown; instanceId?: unknown }
+      if (data.type !== BRIDGE_INSTANCE_ENDED_MESSAGE || !isValidOpaqueId(data.instanceId)) return
+      let deviceId: string | undefined
+      for (const [id, iframe] of iframeRefs.current) {
+        if (iframe.contentWindow !== null && iframe.contentWindow === event.source) {
+          deviceId = id
+          break
+        }
+      }
+      if (deviceId === undefined) return
+      if (configuredOriginsRef.current.get(deviceId)?.has(event.origin) !== true) return
+      void releaseRef.current?.(deviceId, data.instanceId)?.catch(() => {
+        // The page-grace reclaim is the backstop for a lost release.
+      })
+    }
+    window.addEventListener('message', onMessage)
+    return () => window.removeEventListener('message', onMessage)
+  }, [])
+
   useEffect(() => {
     if (enabledDeviceIds === undefined) return
     const enabled = new Set(enabledDeviceIds)
@@ -313,6 +415,9 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       if (enabled.has(deviceId)) continue
       registryRef.current.delete(deviceId)
       iframeRefs.current.delete(deviceId)
+      configuredOriginsRef.current.delete(deviceId)
+      pushedSnapshotRef.current.delete(deviceId)
+      latestFactsRef.current.delete(deviceId)
       launchTargetRef.current.delete(deviceId)
       latestLaunchGenerationRef.current.delete(deviceId)
       tokenUrlRef.current.delete(deviceId)
@@ -523,6 +628,9 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
           >
             <iframe
               ref={element => {
+                // An inline ref is re-invoked (null, then the element) on every
+                // render, so per-iframe state is NOT cleared here; it goes with
+                // the frame when the device leaves the registry (above).
                 if (element === null) iframeRefs.current.delete(frame.deviceId)
                 else iframeRefs.current.set(frame.deviceId, element)
               }}

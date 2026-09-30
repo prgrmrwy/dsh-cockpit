@@ -8,6 +8,18 @@ import type {
 
 const BASE = '/api'
 
+/** This page load's opaque id (design D4(b)): ≥128 random bits, base64url.
+ * It rides the status stream (`?page=`), capability issue and instance
+ * release, so forward holders created through this page are reclaimed once
+ * the page is gone. A reload is a new page. */
+export const PAGE_ID: string = (() => {
+  const bytes = new Uint8Array(16)
+  globalThis.crypto.getRandomValues(bytes)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '')
+})()
+
 /** A failed API call carrying the server's STABLE code.
  *
  * Callers that must react differently per outcome (workbench launch: paste a
@@ -62,5 +74,9 @@ export const api = {
   /** Marks every currently known completion generation for this device read. */
   ackCompleted: (deviceId: string) => request<{ acked: boolean }>(`/devices/${encodeURIComponent(deviceId)}/completed/ack`, { method: 'POST' }),
   /** Requests the short-lived capability used by the iframe bridge handshake. */
-  bridgeCapability: (deviceId: string) => request<BridgeCapabilityPayload>(`/devices/${encodeURIComponent(deviceId)}/bridge/capability`, { method: 'POST' }),
+  bridgeCapability: (deviceId: string) => request<BridgeCapabilityPayload>(`/devices/${encodeURIComponent(deviceId)}/bridge/capability`, { method: 'POST', body: JSON.stringify({ pageId: PAGE_ID }) }),
+  /** A bridge page instance in this device's iframe ended (design D4(a)). */
+  releaseForwardInstance: (deviceId: string, instanceId: string) => request<{ released: boolean }>(`/devices/${encodeURIComponent(deviceId)}/forwards/release-instance`, { method: 'POST', body: JSON.stringify({ instanceId, pageId: PAGE_ID }) }),
+  createForward: (deviceId: string, devicePort: number, label?: string) => request<{ devicePort: number; state: string }>(`/devices/${encodeURIComponent(deviceId)}/forwards`, { method: 'POST', body: JSON.stringify(label === undefined ? { devicePort } : { devicePort, label }) }),
+  deleteForward: (deviceId: string, devicePort: number) => request<{ removed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/forwards/${devicePort}`, { method: 'DELETE' }),
 }

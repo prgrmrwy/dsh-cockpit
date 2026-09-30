@@ -1,5 +1,5 @@
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
-import type { DevicesPayload } from './client.js'
+import { PAGE_ID, type DevicesPayload } from './client.js'
 
 /** Subscribe to the server's live device-status stream (SSE).
  *
@@ -13,7 +13,9 @@ import type { DevicesPayload } from './client.js'
  * until they parse, and a later push resumes the live flow.
  */
 export function subscribeDevices(next: (devices: readonly DeviceStatusFacts[]) => void): () => void {
-  const source = new EventSource('/api/devices/stream')
+  // `?page=` counts this connection for the page's forward holders; the
+  // server reclaims them 30s after the page's last connection closes.
+  const source = new EventSource(`/api/devices/stream?page=${encodeURIComponent(PAGE_ID)}`)
   source.onmessage = (event: MessageEvent<string>) => {
     try {
       const payload = JSON.parse(event.data) as DevicesPayload
