@@ -84,3 +84,59 @@ export interface PinnedForwardRecord {
   readonly devicePort: number
   readonly label?: string
 }
+
+/** Parent page → device iframe: this device's forward table (design D7). */
+export const FORWARDS_SNAPSHOT_MESSAGE = 'dsh-cockpit:forwards-snapshot' as const
+/** Device iframe → parent page: a bridge page instance ended (design D4(a)). */
+export const BRIDGE_INSTANCE_ENDED_MESSAGE = 'dsh-cockpit:bridge-instance-ended' as const
+
+/** One additional entry as the device page sees it: no host ssh pid, and
+ * (like the projection) no page or instance ids. `localPort` only while
+ * `ready`. */
+export interface ForwardSnapshotRow {
+  readonly devicePort: number
+  readonly state: ForwardEntryState
+  readonly pinned: boolean
+  readonly label?: string
+  readonly holders: readonly string[]
+  readonly holderCount: number
+  readonly diagnostic?: string
+  readonly localPort?: number
+}
+
+export interface ForwardsSnapshot {
+  readonly rows: readonly ForwardSnapshotRow[]
+  readonly additionalCount: number
+  readonly limit: number
+}
+
+export interface ForwardsSnapshotMessage {
+  readonly type: typeof FORWARDS_SNAPSHOT_MESSAGE
+  readonly snapshot: ForwardsSnapshot
+}
+
+export interface BridgeInstanceEndedMessage {
+  readonly type: typeof BRIDGE_INSTANCE_ENDED_MESSAGE
+  readonly instanceId: string
+}
+
+/** Reduce the status-stream projection to what the device page may see:
+ * additional entries only, field by field (an allow-list, so a field added
+ * to the projection later never leaks by default). */
+export function toForwardsSnapshot(projection: DeviceForwardsProjection): ForwardsSnapshot {
+  const rows: ForwardSnapshotRow[] = []
+  for (const row of projection.rows) {
+    if (row.kind !== 'additional') continue
+    rows.push({
+      devicePort: row.devicePort,
+      state: row.state,
+      pinned: row.pinned,
+      ...(row.label === undefined ? {} : { label: row.label }),
+      holders: [...row.holders],
+      holderCount: row.holderCount,
+      ...(row.diagnostic === undefined ? {} : { diagnostic: row.diagnostic }),
+      ...(row.state === 'ready' && row.localPort !== undefined ? { localPort: row.localPort } : {}),
+    })
+  }
+  return { rows, additionalCount: projection.additionalCount, limit: projection.limit }
+}

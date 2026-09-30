@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Logger } from '@nestjs/common'
-import type { DeviceRecord } from '@dsh-cockpit/shared'
+import { toForwardsSnapshot, type DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceEventsService } from '../src/connectivity/device-events.service.js'
 import { dshCookieName, exchangeDshLaunchToken } from '../src/connectivity/dsh-auth.js'
 
@@ -871,6 +871,40 @@ describe('per-device forward table', () => {
     expect(live('workbench').map(child => child.sshAlias)).toEqual(['vm-b'])
     expect(additional(service, 3939)).toEqual(expect.objectContaining({ holderCount: 1, pid: rebuilt!.pid }))
     await service.onApplicationShutdown()
+  })
+
+  it('omits instance and page ids from the projection, the snapshot payload and logs', async () => {
+    const lines: string[] = []
+    const capture = (...args: unknown[]) => { lines.push(args.map(String).join(' ')) }
+    const spies = (['log', 'warn', 'error', 'debug', 'verbose'] as const).map(level => vi.spyOn(Logger.prototype, level).mockImplementation(capture))
+    const I1 = 'inst-SECRETinstance01'
+    const P1 = 'page-SECRETpage00001'
+    try {
+      const { service } = await readyRemote()
+      service.acquireForward('a', 3939, { pageId: P1, instanceId: I1, holder: 'memex-browse:default' })
+      await waitFor(() => additional(service, 3939)?.state === 'ready')
+      // Exercise the logged paths too: a failing restart, a release, an
+      // instance end, and an ended-instance rejection.
+      await service.releaseForwardInstance('a', P1, I1)
+      expect(() => service.acquireForward('a', 3939, { pageId: P1, instanceId: 'x', holder: 'bad\nlabel' })).toThrow()
+      service.acquireForward('a', 3939, { pageId: P1, instanceId: 'inst-SECRETinstance02', holder: 'memex-browse:default' })
+      await waitFor(() => additional(service, 3939)?.state === 'ready')
+
+      const projection = service.statuses()[0]!.forwards!
+      const snapshot = toForwardsSnapshot(projection)
+      for (const payload of [JSON.stringify(projection), JSON.stringify(snapshot)]) {
+        expect(payload).toContain('memex-browse:default')
+        expect(payload).not.toContain('SECRET')
+      }
+      expect(additional(service, 3939)).toEqual(expect.objectContaining({ holders: ['memex-browse:default'], holderCount: 1 }))
+      // The snapshot carries the entry, its label and count, never a host pid.
+      expect(snapshot.rows).toContainEqual(expect.objectContaining({ devicePort: 3939, holders: ['memex-browse:default'], holderCount: 1, state: 'ready' }))
+      expect(JSON.stringify(snapshot)).not.toMatch(/"pid"/)
+      expect(lines.join('\n')).not.toContain('SECRET')
+      await service.onApplicationShutdown()
+    } finally {
+      for (const spy of spies) spy.mockRestore()
+    }
   })
 
   it('fails a pinned delete whose disk write fails and leaves the table, holders and child unchanged', async () => {

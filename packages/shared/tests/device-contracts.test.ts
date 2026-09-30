@@ -1,4 +1,4 @@
-import type { DeviceState, DeviceStatusFacts, UpdateDeviceRequest } from '../src/index.js'
+import type { DeviceState, DeviceStatusFacts, ForwardSnapshotRow, ForwardsSnapshot, UpdateDeviceRequest } from '../src/index.js'
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -106,3 +106,8 @@ if (bridge.createRemoteEditorUri('vm-a', '/work/%2e%2e/secret') !==
   'vscode://vscode-remote/ssh-remote+vm-a/work/%252e%252e/secret?windowId=_blank') {
   throw new Error('encoded traversal text must remain literal path data')
 }
+
+// The iframe snapshot never carries a host ssh pid, a page id or an instance
+// id (device-forward-registry D7, data hygiene).
+type _SnapshotRowHasNoPid = Expect<Equal<Extract<keyof ForwardSnapshotRow, 'pid' | 'instanceId' | 'pageId'>, never>>
+type _SnapshotHasNoIds = Expect<Equal<Extract<keyof ForwardsSnapshot, 'pid' | 'instanceId' | 'pageId'>, never>>
