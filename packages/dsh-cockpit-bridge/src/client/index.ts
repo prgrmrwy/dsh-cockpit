@@ -33,6 +33,8 @@ import {
   isValidSshAlias,
   type BridgeConfigMessage,
   type CockpitEditorOpenService,
+  PortForwardRejectedError,
+  PortForwardUnavailableError,
   type CockpitPortForwardService,
   type PortForwardHandle,
 } from '@dsh-cockpit/shared'
@@ -40,7 +42,7 @@ import {
 export const inject = ['sessions', 'uiSession']
 
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.5.1'
+const PLUGIN_VERSION = '0.5.2'
 const PROTOCOL_VERSION = 2
 const PENDING_PROTOCOL_VERSION = 3
 const PENDING_SEAM_VERSION = 1
@@ -68,6 +70,26 @@ interface OutboxEntry {
   sessionId?: string
   current: string | null
   updatedAt: number
+}
+
+/** Read the cockpit's structured error body, when present. */
+async function readErrorBody(response: Response): Promise<{ code?: string; message?: string }> {
+  try {
+    const body = await response.json() as { code?: unknown; message?: unknown }
+    return {
+      ...(typeof body.code === 'string' ? { code: body.code } : {}),
+      ...(typeof body.message === 'string' ? { message: body.message } : {}),
+    }
+  } catch {
+    return {}
+  }
+}
+
+/** The one failure that a fresh capability can cure. Anything else — a
+ * refusal (409), a bad request, a server error — is final for this attempt,
+ * and asking the parent for a new capability would only stall the caller. */
+function isCapabilityFailure(status: number | undefined, code: string | undefined): boolean {
+  return status === 401 || (status === 400 && code === 'bridge-capability-invalid')
 }
 
 function parseConfig(event: MessageEvent): BridgeConfig | undefined {
@@ -123,11 +145,15 @@ export function apply(ctx: BridgeContext): void {
   }
   ctx.provide(COCKPIT_EDITOR_OPEN_SERVICE, editorOpen)
 
-  /** Second seam, same contract shape as editorOpen: provided immediately,
-   * consumer-agnostic, and unavailable-by-throwing so a consumer can fall back
-   * to its own loopback address. Unlike editorOpen this one reaches the
-   * cockpit server (it creates an ssh forward), so the capability header is
-   * mandatory and a rejection is surfaced rather than swallowed. */
+  /** Second seam, same contract shape as editorOpen: provided immediately and
+   * consumer-agnostic. Unlike editorOpen this one reaches the cockpit server
+   * (it creates an ssh forward), so the capability header is mandatory.
+   *
+   * Two failure shapes, and the difference is load-bearing for the consumer:
+   * `PortForwardUnavailableError` means "no forward to have" (no cockpit, or
+   * the device is the cockpit host itself) and the consumer may use its own
+   * loopback address; `PortForwardRejectedError` means a cockpit answered and
+   * refused, and a loopback address would point at the wrong machine. */
   /** One capability-bearing POST; no retry, no renewal. */
   const seamFetch = async (path: string, body: object, active: BridgeConfig): Promise<Response> => {
     const controller = new AbortController()
@@ -166,19 +192,45 @@ export function apply(ctx: BridgeContext): void {
     return undefined
   }
 
-  const seamRequest = async (path: string, body: object): Promise<unknown> => {
+  /** The seam's precondition, decided locally and synchronously: the parent
+   * hands `sshAlias` down only for a remote device (the same fact editorOpen
+   * keys on), so its absence under a live config means this page IS the
+   * cockpit host. Deciding here, rather than letting the cockpit refuse,
+   * avoids a round trip plus a renewal stall on every click on the host. */
+  const requireRemoteConfig = (): BridgeConfig => {
     const active = config
-    if (active === undefined) throw new Error('cockpit port forward is unavailable')
+    if (active === undefined) {
+      throw new PortForwardUnavailableError('no-cockpit', 'cockpit port forward is unavailable: not inside a cockpit')
+    }
+    if (active.sshAlias === undefined) {
+      throw new PortForwardUnavailableError('local-device', 'cockpit port forward is unavailable: this device is the cockpit host')
+    }
+    return active
+  }
+
+  const seamRequest = async (path: string, body: object): Promise<unknown> => {
+    const active = requireRemoteConfig()
     let response = await seamFetch(path, body, active)
-    if (response.status === 401 || response.status === 400) {
+    if (response.ok) return await response.json()
+    let error = await readErrorBody(response)
+    if (isCapabilityFailure(response.status, error.code)) {
       // The renewal path below is the one the reporting callbacks already use;
       // this seam needs it too, because a click can arrive after the page has
-      // been sitting idle for minutes.
+      // been sitting idle for minutes. Only a capability failure is worth it:
+      // renewing on any 4xx made every refusal wait out the full renewal window.
       const renewed = await renewConfig(active)
-      if (renewed !== undefined) response = await seamFetch(path, body, renewed)
+      if (renewed !== undefined) {
+        response = await seamFetch(path, body, renewed)
+        if (response.ok) return await response.json()
+        error = await readErrorBody(response)
+      }
     }
-    if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`)
-    return await response.json()
+    const detail = error.message ?? error.code
+    throw new PortForwardRejectedError(
+      response.status,
+      error.code,
+      `cockpit port forward rejected (${response.status})${detail === undefined ? '' : `: ${detail}`}`,
+    )
   }
 
   const portForward: CockpitPortForwardService = {
@@ -292,19 +344,6 @@ export function apply(ctx: BridgeContext): void {
       }, delay)
     }
 
-    /** Read the structured error code the cockpit returns, when present. */
-    const readErrorCode = async (response: Response): Promise<string | undefined> => {
-      try {
-        const body = await response.json() as { code?: unknown }
-        return typeof body.code === 'string' ? body.code : undefined
-      } catch {
-        return undefined
-      }
-    }
-
-    const isCapabilityFailure = (status: number | undefined, code: string | undefined): boolean =>
-      status === 401 || (status === 400 && code === 'bridge-capability-invalid')
-
     const fail = (status: number | undefined, code: string | undefined, activeConfig: BridgeConfig | undefined): void => {
       if (activeConfig !== undefined && isCapabilityFailure(status, code)) {
         // Invalid/expired capability: the parent must issue a fresh one.
@@ -348,7 +387,7 @@ export function apply(ctx: BridgeContext): void {
           }
           if (!response.ok) {
             failed = true
-            fail(response.status, await readErrorCode(response), activeConfig)
+            fail(response.status, (await readErrorBody(response)).code, activeConfig)
             return
           }
           if (config !== activeConfig) {
@@ -381,7 +420,7 @@ export function apply(ctx: BridgeContext): void {
           }
           if (!response.ok) {
             failed = true
-            fail(response.status, await readErrorCode(response), activeConfig)
+            fail(response.status, (await readErrorBody(response)).code, activeConfig)
             return
           }
           pendingFingerprint = fingerprint
@@ -406,7 +445,7 @@ export function apply(ctx: BridgeContext): void {
           }
           if (!response.ok) {
             failed = true
-            fail(response.status, await readErrorCode(response), activeConfig)
+            fail(response.status, (await readErrorBody(response)).code, activeConfig)
             return
           }
           // A selection may have been re-enqueued while this request was in

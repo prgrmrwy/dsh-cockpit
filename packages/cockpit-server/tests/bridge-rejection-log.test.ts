@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Logger } from '@nestjs/common'
 import { DevicesController } from '../src/devices/devices.controller.js'
+import { PortForwardError } from '../src/connectivity/connectivity.service.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../src/auth/bridge-capability.js'
 import {
   BRIDGE_REJECTION_WARN_THRESHOLD,
@@ -201,6 +202,54 @@ describe('controller bridge rejection logging', () => {
     await expect(controller.bridgeSessionOpened(
       request({ origin: 'http://127.0.0.1:4317', [BRIDGE_CAPABILITY_HEADER]: 'stale' }),
       { sessionId: 's1' },
+    )).rejects.toMatchObject({ status: 400, response: { code: 'bridge-capability-invalid' } })
+  })
+})
+
+/** The port-forward seam's refusals are contract, not incidents: the device
+ * page falls back to its own loopback address on `local-device` and on
+ * nothing else, so the code must survive the HTTP mapping intact. */
+describe('controller port-forward refusal mapping', () => {
+  const request = (headers: Record<string, string | string[] | undefined> = {}) => ({ headers }) as never
+
+  function controllerRefusing(error: Error) {
+    return new DevicesController({
+      validateBridgeCapability: vi.fn(),
+      registerPublishablePort: vi.fn(() => { throw error }),
+      publishPort: vi.fn(async () => { throw error }),
+    } as never, {} as never)
+  }
+
+  it('maps a local-device refusal to 409 with its stable code', async () => {
+    const controller = controllerRefusing(new PortForwardError('local-device', 'local device needs no port forward'))
+    await expect(controller.bridgePublishPort(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'cap' }),
+      { channelId: 'cards', protocolVersion: 2 },
+    )).rejects.toMatchObject({ status: 409, response: { code: 'local-device', message: 'local device needs no port forward' } })
+  })
+
+  it('maps an unregistered port and the channel cap to their own codes', async () => {
+    await expect(controllerRefusing(new PortForwardError('port-not-registered', 'port for channel cards is not registered')).bridgePublishPort(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'cap' }),
+      { channelId: 'cards', protocolVersion: 2 },
+    )).rejects.toMatchObject({ status: 409, response: { code: 'port-not-registered' } })
+
+    await expect(controllerRefusing(new PortForwardError('forward-limit', 'too many publishable channels (max 8)')).bridgeRegisterPublishablePort(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'cap' }),
+      { channelId: 'cards', devicePort: 3939, protocolVersion: 2 },
+    )).rejects.toMatchObject({ status: 409, response: { code: 'forward-limit' } })
+  })
+
+  it('keeps a capability rejection distinguishable from a port-forward refusal', async () => {
+    // The bridge renews its capability only on this code; a 409 refusal must
+    // never be mistaken for an expired capability (that was the 5s stall).
+    const controller = new DevicesController({
+      validateBridgeCapability: vi.fn(() => { throw new Error('invalid or expired bridge capability') }),
+      publishPort: vi.fn(),
+    } as never, {} as never)
+    await expect(controller.bridgePublishPort(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'stale' }),
+      { channelId: 'cards', protocolVersion: 2 },
     )).rejects.toMatchObject({ status: 400, response: { code: 'bridge-capability-invalid' } })
   })
 })

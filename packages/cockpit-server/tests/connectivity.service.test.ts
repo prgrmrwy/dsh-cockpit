@@ -783,7 +783,7 @@ describe('publishable port registration and publishing', () => {
   it('refuses to publish a port that was never registered', async () => {
     const { service, origin } = await connectedRemote()
     const before = tunnelConnects.length
-    await expect(service.publishPort(origin, 'cards')).rejects.toThrow(/not registered/)
+    await expect(service.publishPort(origin, 'cards')).rejects.toMatchObject({ code: 'port-not-registered', message: /not registered/ })
     // The refusal must happen before any ssh child is created.
     expect(tunnelConnects.length).toBe(before)
     await service.onApplicationShutdown()
@@ -807,7 +807,7 @@ describe('publishable port registration and publishing', () => {
   it('caps the number of publishable channels per device', async () => {
     const { service, origin } = await connectedRemote()
     for (let i = 0; i < 8; i += 1) service.registerPublishablePort(origin, `c${i}`, 4000 + i)
-    expect(() => service.registerPublishablePort(origin, 'c8', 4100)).toThrow(/too many publishable channels/)
+    expect(() => service.registerPublishablePort(origin, 'c8', 4100)).toThrow(expect.objectContaining({ code: 'forward-limit' }))
     // Re-registering an existing channel stays allowed at the cap.
     expect(() => service.registerPublishablePort(origin, 'c0', 4999)).not.toThrow()
     await service.onApplicationShutdown()
@@ -822,7 +822,10 @@ describe('publishable port registration and publishing', () => {
     }
     const origin = new URL(service.statuses()[0]!.endpoint!).origin
     service.registerPublishablePort(origin, 'cards', 3939)
-    await expect(service.publishPort(origin, 'cards')).rejects.toThrow(/local device needs no port forward/)
+    // The consumer keys its loopback fallback on this exact code: a local
+    // device is the one case where "no forward" means "use your own address".
+    await expect(service.publishPort(origin, 'cards')).rejects.toMatchObject({ code: 'local-device', message: /local device needs no port forward/ })
+    expect(tunnelConnects.some(c => c.channelId === 'cards')).toBe(false)
     await service.onApplicationShutdown()
   })
 })

@@ -139,7 +139,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.5.1',
+      version: '0.5.2',
       protocolVersion: 2,
       current: 'already-open',
     })
@@ -561,7 +561,7 @@ describe('cockpit bridge client', () => {
     apply(fixture.ctx as unknown)
     type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
     const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
-    configure(window as unknown as FakeWindow)
+    configure(window as unknown as FakeWindow, 'vm-a')
     await vi.advanceTimersByTimeAsync(0)
 
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
@@ -588,7 +588,7 @@ describe('cockpit bridge client', () => {
     type PortForward = { publish(c: string): Promise<{ url: string }> }
     const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
     const fakeWindow = window as unknown as FakeWindow
-    configure(fakeWindow)
+    configure(fakeWindow, 'vm-a')
     await vi.advanceTimersByTimeAsync(0)
 
     let calls = 0
@@ -610,6 +610,7 @@ describe('cockpit bridge client', () => {
       type: 'dsh-cockpit:bridge-config',
       cockpitOrigin: COCKPIT_ORIGIN,
       capability: 'fresh-capability',
+      sshAlias: 'vm-a',
     })
     await vi.advanceTimersByTimeAsync(200)
 
@@ -626,7 +627,7 @@ describe('cockpit bridge client', () => {
     apply(fixture.ctx as unknown)
     type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
     const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
-    configure(window as unknown as FakeWindow)
+    configure(window as unknown as FakeWindow, 'vm-a')
     await vi.advanceTimersByTimeAsync(0)
 
     // A 401 now triggers one renewal attempt; with no parent reply the wait
@@ -643,6 +644,76 @@ describe('cockpit bridge client', () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({}) })
     await expect(service.publish('cards')).rejects.toThrow('no forward url')
 
+    fixture.cleanup()
+  })
+
+  it('is unavailable with a local-device reason on the cockpit host, without a round trip', async () => {
+    // The host device runs inside the cockpit too, but has no ssh alias:
+    // there is no forward to have, and the consumer may use its own loopback
+    // address. Real-device regression: the click hit the cockpit, got a
+    // refusal, waited out the whole renewal window, and surfaced
+    // "rejected (400)" with the reason lost.
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { register(c: string, p: number): Promise<void>; publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    configure(window as unknown as FakeWindow)
+    await vi.advanceTimersByTimeAsync(0)
+    fetchMock.mockClear()
+
+    await expect(service.register('cards', 3939)).rejects.toMatchObject({ name: 'PortForwardUnavailableError', reason: 'local-device' })
+    await expect(service.publish('cards')).rejects.toMatchObject({ name: 'PortForwardUnavailableError', reason: 'local-device' })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect((window as unknown as FakeWindow).parentPostMessage).not.toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:capability-expired' },
+      expect.anything(),
+    )
+    fixture.cleanup()
+  })
+
+  it('distinguishes no-cockpit from local-device before the handshake', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    await expect(service.publish('cards')).rejects.toMatchObject({ name: 'PortForwardUnavailableError', reason: 'no-cockpit' })
+    fixture.cleanup()
+  })
+
+  it('surfaces a cockpit refusal with its code and message, and does not renew for it', async () => {
+    const fixture = fakeCtx()
+    const apply = await loadApply()
+    apply(fixture.ctx as unknown)
+    type PortForward = { publish(c: string): Promise<{ url: string }> }
+    const service = fixture.getService<PortForward>('cockpitBridge.portForward')!
+    const fakeWindow = window as unknown as FakeWindow
+    configure(fakeWindow, 'vm-a')
+    await vi.advanceTimersByTimeAsync(0)
+    fakeWindow.parentPostMessage.mockClear()
+    fetchMock.mockClear()
+
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ code: 'port-not-registered', message: 'port for channel cards is not registered' }),
+    })
+    // A refusal is final for this attempt: no capability-expired signal, no
+    // renewal wait, and the consumer gets the cockpit's own reason.
+    const rejected = expect(service.publish('cards')).rejects.toMatchObject({
+      name: 'PortForwardRejectedError',
+      status: 409,
+      code: 'port-not-registered',
+      message: 'cockpit port forward rejected (409): port for channel cards is not registered',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    await rejected
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fakeWindow.parentPostMessage).not.toHaveBeenCalledWith(
+      { type: 'dsh-cockpit:capability-expired' },
+      expect.anything(),
+    )
     fixture.cleanup()
   })
 

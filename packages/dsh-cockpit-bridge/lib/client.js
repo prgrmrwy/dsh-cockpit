@@ -29,6 +29,29 @@ window.__ModuleLoader__.load({
 			if (!value.startsWith("/") && !/^[A-Za-z]:[/\\]/.test(value)) return false;
 			return !value.replaceAll("\\", "/").split("/").includes("..");
 		}
+		const PORT_FORWARD_UNAVAILABLE_ERROR = "PortForwardUnavailableError";
+		const PORT_FORWARD_REJECTED_ERROR = "PortForwardRejectedError";
+		/** "No forward to have" — consumer falls back to its own loopback address. */
+		var PortForwardUnavailableError = class extends Error {
+			name = PORT_FORWARD_UNAVAILABLE_ERROR;
+			reason;
+			constructor(reason, message) {
+				super(message);
+				this.reason = reason;
+			}
+		};
+		/** The cockpit answered and said no (or could not). `code` is the cockpit's
+		* stable error code when the response carried one. */
+		var PortForwardRejectedError = class extends Error {
+			name = PORT_FORWARD_REJECTED_ERROR;
+			status;
+			code;
+			constructor(status, code, message) {
+				super(message);
+				this.status = status;
+				this.code = code;
+			}
+		};
 		/** Encode a validated path without allowing query/fragment delimiters through. */
 		function createRemoteEditorUri(sshAlias, path) {
 			if (!isValidSshAlias(sshAlias)) throw new Error("invalid SSH alias");
@@ -43,7 +66,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.5.1";
+		const PLUGIN_VERSION = "0.5.2";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
@@ -57,6 +80,24 @@ window.__ModuleLoader__.load({
 		const CAPABILITY_RENEWAL_WAIT_MS = 5e3;
 		const CAPABILITY_RENEWAL_POLL_MS = 100;
 		const CLEARED_KEY = "\0selection-cleared";
+		/** Read the cockpit's structured error body, when present. */
+		async function readErrorBody(response) {
+			try {
+				const body = await response.json();
+				return {
+					...typeof body.code === "string" ? { code: body.code } : {},
+					...typeof body.message === "string" ? { message: body.message } : {}
+				};
+			} catch {
+				return {};
+			}
+		}
+		/** The one failure that a fresh capability can cure. Anything else — a
+		* refusal (409), a bad request, a server error — is final for this attempt,
+		* and asking the parent for a new capability would only stall the caller. */
+		function isCapabilityFailure(status, code) {
+			return status === 401 || status === 400 && code === "bridge-capability-invalid";
+		}
 		function parseConfig(event) {
 			if (event.source !== window.parent || typeof event.data !== "object" || event.data === null) return;
 			const data = event.data;
@@ -85,11 +126,15 @@ window.__ModuleLoader__.load({
 				const uri = createRemoteEditorUri(sshAlias, path);
 				window.open(uri, "_blank");
 			} });
-			/** Second seam, same contract shape as editorOpen: provided immediately,
-			* consumer-agnostic, and unavailable-by-throwing so a consumer can fall back
-			* to its own loopback address. Unlike editorOpen this one reaches the
-			* cockpit server (it creates an ssh forward), so the capability header is
-			* mandatory and a rejection is surfaced rather than swallowed. */
+			/** Second seam, same contract shape as editorOpen: provided immediately and
+			* consumer-agnostic. Unlike editorOpen this one reaches the cockpit server
+			* (it creates an ssh forward), so the capability header is mandatory.
+			*
+			* Two failure shapes, and the difference is load-bearing for the consumer:
+			* `PortForwardUnavailableError` means "no forward to have" (no cockpit, or
+			* the device is the cockpit host itself) and the consumer may use its own
+			* loopback address; `PortForwardRejectedError` means a cockpit answered and
+			* refused, and a loopback address would point at the wrong machine. */
 			/** One capability-bearing POST; no retry, no renewal. */
 			const seamFetch = async (path, body, active) => {
 				const controller = new AbortController();
@@ -133,16 +178,32 @@ window.__ModuleLoader__.load({
 					if (next !== void 0 && next.capability !== stale.capability) return next;
 				}
 			};
-			const seamRequest = async (path, body) => {
+			/** The seam's precondition, decided locally and synchronously: the parent
+			* hands `sshAlias` down only for a remote device (the same fact editorOpen
+			* keys on), so its absence under a live config means this page IS the
+			* cockpit host. Deciding here, rather than letting the cockpit refuse,
+			* avoids a round trip plus a renewal stall on every click on the host. */
+			const requireRemoteConfig = () => {
 				const active = config;
-				if (active === void 0) throw new Error("cockpit port forward is unavailable");
+				if (active === void 0) throw new PortForwardUnavailableError("no-cockpit", "cockpit port forward is unavailable: not inside a cockpit");
+				if (active.sshAlias === void 0) throw new PortForwardUnavailableError("local-device", "cockpit port forward is unavailable: this device is the cockpit host");
+				return active;
+			};
+			const seamRequest = async (path, body) => {
+				const active = requireRemoteConfig();
 				let response = await seamFetch(path, body, active);
-				if (response.status === 401 || response.status === 400) {
+				if (response.ok) return await response.json();
+				let error = await readErrorBody(response);
+				if (isCapabilityFailure(response.status, error.code)) {
 					const renewed = await renewConfig(active);
-					if (renewed !== void 0) response = await seamFetch(path, body, renewed);
+					if (renewed !== void 0) {
+						response = await seamFetch(path, body, renewed);
+						if (response.ok) return await response.json();
+						error = await readErrorBody(response);
+					}
 				}
-				if (!response.ok) throw new Error(`cockpit port forward rejected (${response.status})`);
-				return await response.json();
+				const detail = error.message ?? error.code;
+				throw new PortForwardRejectedError(response.status, error.code, `cockpit port forward rejected (${response.status})${detail === void 0 ? "" : `: ${detail}`}`);
 			};
 			ctx.provide(COCKPIT_PORT_FORWARD_SERVICE, {
 				async register(channelId, devicePort) {
@@ -246,16 +307,6 @@ window.__ModuleLoader__.load({
 						run();
 					}, delay);
 				};
-				/** Read the structured error code the cockpit returns, when present. */
-				const readErrorCode = async (response) => {
-					try {
-						const body = await response.json();
-						return typeof body.code === "string" ? body.code : void 0;
-					} catch {
-						return;
-					}
-				};
-				const isCapabilityFailure = (status, code) => status === 401 || status === 400 && code === "bridge-capability-invalid";
 				const fail = (status, code, activeConfig) => {
 					if (activeConfig !== void 0 && isCapabilityFailure(status, code)) {
 						helloReady = false;
@@ -291,7 +342,7 @@ window.__ModuleLoader__.load({
 							}
 							if (!response.ok) {
 								failed = true;
-								fail(response.status, await readErrorCode(response), activeConfig);
+								fail(response.status, (await readErrorBody(response)).code, activeConfig);
 								return;
 							}
 							if (config !== activeConfig) {
@@ -321,7 +372,7 @@ window.__ModuleLoader__.load({
 							}
 							if (!response.ok) {
 								failed = true;
-								fail(response.status, await readErrorCode(response), activeConfig);
+								fail(response.status, (await readErrorBody(response)).code, activeConfig);
 								return;
 							}
 							pendingFingerprint = fingerprint;
@@ -345,7 +396,7 @@ window.__ModuleLoader__.load({
 							}
 							if (!response.ok) {
 								failed = true;
-								fail(response.status, await readErrorCode(response), activeConfig);
+								fail(response.status, (await readErrorBody(response)).code, activeConfig);
 								return;
 							}
 							if (outbox.get(entry.key) === entry) outbox.delete(entry.key);

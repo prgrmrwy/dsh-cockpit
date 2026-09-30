@@ -60,16 +60,64 @@ export interface PortForwardHandle {
  * reach it.
  *
  * Deliberately NOT a general tunnel: a caller declares a channel and its port,
- * and receives a handle bound to that single port. The consuming plugin must
- * treat an absent service, or any rejection, as "no forward available" and
- * fall back to its own loopback address — that is the normal state whenever
- * the page is not running inside a cockpit.
+ * and receives a handle bound to that single port.
+ *
+ * Failures come in two kinds, and a consumer MUST tell them apart:
+ *
+ * - **Unavailable** (`PortForwardUnavailableError`): there is no forward to
+ *   have — the page is not inside a cockpit, or the device IS the cockpit
+ *   host. The browser and the device port are on the same machine, so the
+ *   consumer falls back to its own loopback address. Same outcome as when the
+ *   service is absent altogether.
+ * - **Rejected** (`PortForwardRejectedError`): a cockpit exists and refused or
+ *   failed. The consumer MUST NOT fall back to a loopback address here — the
+ *   browser is (usually) on another machine, and `localhost:<port>` would
+ *   resolve there, not on the device.
+ *
+ * The shapes are detected structurally (by `name`/fields), never by class
+ * identity: consumers live in other bundles that cannot share this module.
  */
 export interface CockpitPortForwardService {
   /** Declare a device-side port publishable. Throws when unavailable. */
   register(channelId: string, devicePort: number): Promise<void>
   /** Publish a registered channel and resolve its host-reachable handle. */
   publish(channelId: string): Promise<PortForwardHandle>
+}
+
+export const PORT_FORWARD_UNAVAILABLE_ERROR = 'PortForwardUnavailableError'
+export const PORT_FORWARD_REJECTED_ERROR = 'PortForwardRejectedError'
+
+/** Why no forward can exist for this page. Stable; consumers may switch on it. */
+export type PortForwardUnavailableReason = 'no-cockpit' | 'local-device'
+
+/** "No forward to have" — consumer falls back to its own loopback address. */
+export class PortForwardUnavailableError extends Error {
+  override readonly name = PORT_FORWARD_UNAVAILABLE_ERROR
+  readonly reason: PortForwardUnavailableReason
+  constructor(reason: PortForwardUnavailableReason, message: string) {
+    super(message)
+    this.reason = reason
+  }
+}
+
+/** The cockpit answered and said no (or could not). `code` is the cockpit's
+ * stable error code when the response carried one. */
+export class PortForwardRejectedError extends Error {
+  override readonly name = PORT_FORWARD_REJECTED_ERROR
+  readonly status: number
+  readonly code: string | undefined
+  constructor(status: number, code: string | undefined, message: string) {
+    super(message)
+    this.status = status
+    this.code = code
+  }
+}
+
+/** Structural check usable from any bundle. */
+export function isPortForwardUnavailable(error: unknown): error is { readonly name: typeof PORT_FORWARD_UNAVAILABLE_ERROR; readonly reason: PortForwardUnavailableReason } {
+  return typeof error === 'object' && error !== null
+    && (error as { name?: unknown }).name === PORT_FORWARD_UNAVAILABLE_ERROR
+    && typeof (error as { reason?: unknown }).reason === 'string'
 }
 
 /** Encode a validated path without allowing query/fragment delimiters through. */

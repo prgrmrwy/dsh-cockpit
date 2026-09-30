@@ -6,7 +6,7 @@
 
 从 0.4.0 起，插件还是设备 DSH 页面与驾驶舱之间的**唯一通信切面**：它以稳定
 Cordis 服务名 `cockpitBridge.editorOpen` 向任意同页面插件提供远程编辑器打开能力，
-0.5.0 起再以 `cockpitBridge.portForward` 提供设备回环端口的发布能力。
+0.5.0 起再以 `cockpitBridge.portForward` 提供设备回环端口的发布能力（0.5.2 起区分「不可用」与「被拒绝」两类失败）。
 消费方只传绝对路径；bridge 使用父页面握手下发的 SSH config alias，在原始用户点击
 链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。
 
@@ -79,7 +79,10 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 - **调用**：`register(channelId, devicePort): Promise<void>` 声明某端口可发布，`publish(channelId): Promise<{ channelId, url }>` 取得宿主机可访问地址。两者都是**异步**的（各一次跨源请求），因此消费方不能在点击链路里 await —— 会丢掉 user activation 导致弹窗被拦。
 - **不是通用隧道**：设备由请求 `Origin` 解析，调用方无法指定；只能发布**已登记**的 channel；句柄绑定单个端口；每设备通道数有上限。安全边界由这三条结构性约束 + 「只在宿主机回环监听」承担，不依赖「登记方不可伪造」。
 - **与 `editorOpen` 的关键差异**：这两个调用**会让驾驶舱执行服务端动作**（spawn 一个 `ssh -L`），因此 capability 请求头是**必需**的，不接受无头部的兼容路径。
-- **降级**：握手未完成、本机设备、端口未登记、转发失败，均以稳定原因拒绝，消费方据此回落自身本机地址。
+- **降级（两类失败，消费方必须区分）**：
+  - **不可用**（`PortForwardUnavailableError`，`reason` 为 `no-cockpit` / `local-device`）：握手未完成（不在驾驶舱内）或本设备就是驾驶舱宿主机（握手配置无 `sshAlias`），此时**没有转发可言**，浏览器与设备端口在同一台机器，消费方回落自身本机地址；与服务不存在时的结果一致。本机设备判定在插件本地**同步**完成，不发请求、不触发 capability 续签。
+  - **被拒绝**（`PortForwardRejectedError`，带 HTTP `status` 与驾驶舱稳定 `code`，如 `port-not-registered` / `forward-limit`）：驾驶舱在但拒绝或失败，消费方**不得**回落本机地址（浏览器通常在另一台机器上）。仅 capability 失效（401 / `bridge-capability-invalid`）会触发一次续签重试。
+  - 两者按 `name` / 字段**结构性**判定（`@dsh-cockpit/shared` 提供 `isPortForwardUnavailable`），不依赖类同一性——消费方与本插件不在同一 bundle。
 - **边界**：驾驶舱不进入被转发流量的数据路径，不解析、不重写、不记录其内容。
 
 ## 安装

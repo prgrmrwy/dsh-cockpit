@@ -1,6 +1,6 @@
 import { Body, Controller, Delete, Get, HttpException, HttpStatus, Inject, Logger, Param, Post, Put, Query, Req, Res } from '@nestjs/common'
 import type { AddDeviceRequest, ApiError, DeviceStatusFacts, UpdateDeviceRequest } from '@dsh-cockpit/shared'
-import { ConnectivityService } from '../connectivity/connectivity.service.js'
+import { ConnectivityService, PortForwardError } from '../connectivity/connectivity.service.js'
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
 import { WorkbenchLaunchError } from '../connectivity/workbench-launch.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
@@ -494,6 +494,12 @@ function toHttp(cause: unknown): HttpException {
   // a missing bridge capability); re-wrapping it would silently downgrade
   // that to the generic 400 below.
   if (cause instanceof HttpException) return cause
+  // Port-forward refusals are part of the seam's contract: the device-side
+  // consumer keys its fallback on `code` (a local device needs no forward and
+  // may use its own loopback address), so they must not collapse into the
+  // generic device-command-failed below. 409: the request was well-formed and
+  // authorized; it conflicts with the device's current state.
+  if (cause instanceof PortForwardError) return new HttpException(toError(cause.code, cause.message), HttpStatus.CONFLICT)
   const message = cause instanceof Error ? cause.message : String(cause)
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)

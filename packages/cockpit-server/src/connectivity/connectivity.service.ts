@@ -17,6 +17,19 @@ import { BridgeRejectionLog, type BridgeRejectionDecision } from './bridge-rejec
 /** Per-device cap on additional forwards. */
 const MAX_PUBLISHABLE_CHANNELS = 8
 
+/** Stable, structured refusal codes of the port-forward seam. The spec
+ * (cockpit-device-port-forward) requires a consumer to be able to tell "this
+ * device needs no forward" apart from a genuine failure, so it can fall back
+ * to its own loopback address for exactly that case and for nothing else. */
+export type PortForwardCode = 'local-device' | 'port-not-registered' | 'forward-limit'
+
+export class PortForwardError extends Error {
+  constructor(readonly code: PortForwardCode, message: string) {
+    super(message)
+    this.name = 'PortForwardError'
+  }
+}
+
 /** Optional collaborators for ConnectivityService.
  *
  * Everything here is optional BY DESIGN: production resolves the capability
@@ -589,7 +602,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     // The cap bounds ssh child processes per device; it is one of the three
     // structural limits the capability relies on (see the change's design D4).
     if (!ports.has(channelId) && ports.size >= MAX_PUBLISHABLE_CHANNELS) {
-      throw new Error(`too many publishable channels (max ${MAX_PUBLISHABLE_CHANNELS})`)
+      throw new PortForwardError('forward-limit', `too many publishable channels (max ${MAX_PUBLISHABLE_CHANNELS})`)
     }
     ports.set(channelId, devicePort)
     this.#recordBridgeSuccess(lifecycle.deviceId)
@@ -604,9 +617,13 @@ export class ConnectivityService implements OnApplicationShutdown {
   async publishPort(origin: string, channelId: string): Promise<{ url: string; localPort: number }> {
     const lifecycle = this.#lifecycleByOrigin(origin)
     const facts = lifecycle.current()
-    if (facts.kind !== 'remote' || facts.sshAlias === undefined) throw new Error('local device needs no port forward')
+    if (facts.kind !== 'remote' || facts.sshAlias === undefined) {
+      throw new PortForwardError('local-device', 'local device needs no port forward')
+    }
     const devicePort = this.#publishablePorts.get(lifecycle.deviceId)?.get(channelId)
-    if (devicePort === undefined) throw new Error(`port for channel ${channelId} is not registered`)
+    if (devicePort === undefined) {
+      throw new PortForwardError('port-not-registered', `port for channel ${channelId} is not registered`)
+    }
 
     const existing = this.#publishedChannels.get(publishKey(lifecycle.deviceId, channelId))
     if (existing !== undefined) return { url: existing.url, localPort: existing.localPort }
