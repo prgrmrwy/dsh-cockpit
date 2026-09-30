@@ -18,11 +18,12 @@ export default tseslint.config(
     },
   },
   {
-    files: ['bin/cockpit', 'tests/**/*.mjs'],
+    files: ['bin/cockpit', 'tests/**/*.mjs', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: {
         AbortController: 'readonly',
         clearTimeout: 'readonly',
+        console: 'readonly',
         fetch: 'readonly',
         process: 'readonly',
         setTimeout: 'readonly',

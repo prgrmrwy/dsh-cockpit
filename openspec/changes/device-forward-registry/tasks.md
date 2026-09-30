@@ -210,8 +210,8 @@
 
 ## 12. 收尾验证
 
-- [ ] 12.1 Run `pnpm build && pnpm typecheck && pnpm lint && pnpm test`; confirm all pass
-- [ ] 12.2 Run `openspec validate device-forward-registry --strict`; confirm it passes and every test-plan row is 🟢
-- [ ] 12.3 新建 `scripts/acceptance/forward-grace.mjs`（test-plan 验收项）：读 token、轮询 `GET /api/devices`、按三步判定，不满足则非零退出
+- [x] 12.1 Run `pnpm build && pnpm typecheck && pnpm lint && pnpm test`; confirm all pass — exit 0：root 12、shared 8、server 302（24 文件）、web 92（10 文件）、bridge 31（3 文件），全部通过
+- [x] 12.2 Run `openspec validate device-forward-registry --strict`; confirm it passes and every test-plan row is 🟢 — `Change 'device-forward-registry' is valid`；59/59 行 🟢
+- [x] 12.3 新建 `scripts/acceptance/forward-grace.mjs`（test-plan 验收项）：读 token、轮询 `GET /api/devices`、按三步判定，不满足则非零退出 — 判定逻辑为纯函数，`tests/forward-grace.test.mjs` 固定其判定（前置条件、pid 稳定、30–40 秒窗口、参数）；缺参数或缺 token 时非零退出；eslint 覆盖 `scripts/**/*.mjs`
 - [ ] 12.4 Run `node scripts/acceptance/forward-grace.mjs --device <id>` against a real browser session; confirm it exits 0（人类决策：30 秒宽限期真实浏览器实测），并记录实测时间
 - [ ] 12.5 Manual browser check: 设备面板创建 / 删除常驻、设备页面重载释放持有、DSH 设置区块只读显示均符合 spec

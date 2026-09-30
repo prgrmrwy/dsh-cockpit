@@ -16,7 +16,7 @@
     "dev": "pnpm -r --parallel dev",
     "test": "node --test tests/*.test.mjs && pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "lint": "eslint bin/cockpit tests/*.mjs && pnpm -r lint"
+    "lint": "eslint bin/cockpit tests/*.mjs scripts/acceptance/*.mjs && pnpm -r lint"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
