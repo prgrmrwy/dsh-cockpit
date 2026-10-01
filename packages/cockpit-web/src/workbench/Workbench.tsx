@@ -21,7 +21,7 @@ export interface WorkbenchProps {
   readonly requestBridgeCapability?: (deviceId: string) => Promise<BridgeCapabilityPayload>
   /** Supplies a one-shot tokenized root and the auth generation it represents. */
   readonly requestWorkbenchLaunch?: (deviceId: string) => Promise<{ url: string; authGeneration: number }>
-  /** Navigation deadline for the tokenized URL; test seam only. */
+  /** Navigation deadline for the accepted launch URL; test seam only. */
   readonly navigationDeadlineMs?: number
 }
 
@@ -65,7 +65,7 @@ const DEFAULT_NAVIGATION_DEADLINE_MS = 10_000
  * tokenized navigation the parent genuinely does NOT know whether the exchange
  * succeeded. It must therefore never claim success, and never treat the
  * unknown as a failure worth retrying automatically. */
-type LaunchPhase = 'idle' | 'pending' | 'tokenized' | 'clean' | 'unobservable' | 'failed'
+type LaunchPhase = 'idle' | 'pending' | 'navigating' | 'unobservable' | 'failed' | 'clean'
 
 export interface WorkbenchLaunchFailure {
   readonly code: string
@@ -74,9 +74,19 @@ export interface WorkbenchLaunchFailure {
 
 interface FrameInfo {
   readonly deviceId: string
-  /** The frame's steady, token-free src. A tokenized URL is NEVER stored here:
-   * it lives in `tokenUrlRef` only for the duration of one navigation. */
+  /** Monotonic within this Workbench mount; fences async results from an older
+   * iframe lifecycle when a disabled device is later re-enabled. */
+  readonly lifecycle: number
+  /** Non-sensitive endpoint used for origin checks and bridge messaging. In
+   * launch mode this value is never bound to the iframe `src`; navigation is a
+   * one-shot command after a validated launch response. */
   readonly url: string
+  /** True once this lifecycle has received an accepted navigation. Existing
+   * documents stay visible while a later tuple waits for its launch response. */
+  readonly hasNavigated: boolean
+  /** Non-sensitive tuple already assigned to this frame; equal accepted
+   * responses are deduplicated without retaining their URL. */
+  readonly lastNavigationAttemptKey: string | undefined
   readonly state: DeviceStatusFacts['state']
   readonly diagnostic: string | undefined
   readonly lastUpdatedAt: number
@@ -96,13 +106,15 @@ interface FrameInfo {
 export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs }: WorkbenchProps) {
   const deadlineMs = navigationDeadlineMs ?? DEFAULT_NAVIGATION_DEADLINE_MS
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
+  const lifecycleRef = useRef(0)
   const iframeRefs = useRef<Map<string, HTMLIFrameElement>>(new Map())
+  const mountedRef = useRef(false)
   const [frames, setFrames] = useState<readonly FrameInfo[]>([])
   const capabilityRef = useRef<Map<string, BridgeCapabilityPayload>>(new Map())
   const renewalTimersRef = useRef<Map<string, { timer: ReturnType<typeof setTimeout>; attempt: number }>>(new Map())
   const renewalInFlightRef = useRef<Set<string>>(new Set())
   const renewalRequestedAtRef = useRef<Map<string, number>>(new Map())
-  /** One tokenized navigation attempt per device + endpoint origin + auth
+  /** One launch navigation attempt per device + endpoint origin + auth
    * generation. Entries are recorded before starting the request so failures,
    * StrictMode effects and iframe load events cannot create refresh loops. */
   const launchAttemptsRef = useRef<Set<string>>(new Set())
@@ -110,14 +122,48 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
   /** Current endpoint/generation target per device. A late response must still
    * match it before it may update that device's mounted frame. */
   const launchTargetRef = useRef<Map<string, string>>(new Map())
-  /** The one-shot tokenized URL a frame is currently navigating to. Deliberately
-   * OUTSIDE React state: state would keep the token alive across renders, and
-   * clearing it here is what "the parent no longer holds the token" means. */
-  const tokenUrlRef = useRef<Map<string, string>>(new Map())
+  /** One-shot navigation handoff. The full URL is erased as soon as the iframe
+   * ref consumes it; only a non-sensitive attempt key remains until load or
+   * deadline. Nothing passes through React state or JSX `src`. */
+  const pendingNavigationRef = useRef<Map<string, { url: string | undefined; attemptKey: string; lifecycle: number; applied: boolean }>>(new Map())
   const deadlineTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   /** Explicit user retries, which are the ONLY way a failed or unobservable
    * tuple may be attempted again. */
   const [retryNonce, setRetryNonce] = useState(0)
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      for (const timer of deadlineTimersRef.current.values()) clearTimeout(timer)
+      deadlineTimersRef.current.clear()
+      pendingNavigationRef.current.clear()
+      iframeRefs.current.clear()
+    }
+  }, [])
+
+  /** Apply the one-shot URL after the iframe ref exists. No React render
+   * supplies or replays `src`; the ref record is consumed by exactly one DOM
+   * assignment. */
+  const applyPendingNavigation = (deviceId: string, iframe: HTMLIFrameElement): void => {
+    if (!mountedRef.current) return
+    const navigation = pendingNavigationRef.current.get(deviceId)
+    if (navigation === undefined || navigation.applied) return
+    const frame = registryRef.current.get(deviceId)
+    if (
+      frame === undefined
+      || frame.lifecycle !== navigation.lifecycle
+      || frame.launchPhase !== 'navigating'
+      || launchTargetRef.current.get(deviceId) !== navigation.attemptKey
+    ) {
+      pendingNavigationRef.current.delete(deviceId)
+      return
+    }
+    const url = navigation.url
+    pendingNavigationRef.current.set(deviceId, { ...navigation, applied: true, url: undefined })
+    if (url !== undefined) iframe.src = url
+    startDeadline(deviceId, navigation.attemptKey)
+  }
 
   /** Merge a partial update into one device's frame and republish. */
   const publishFrame = (deviceId: string, patch: Partial<FrameInfo>): void => {
@@ -125,6 +171,8 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     if (frame === undefined) return
     registryRef.current.set(deviceId, { ...frame, ...patch })
     setFrames([...registryRef.current.values()])
+    const iframe = iframeRefs.current.get(deviceId)
+    if (iframe !== undefined) applyPendingNavigation(deviceId, iframe)
   }
 
   const clearDeadline = (deviceId: string): void => {
@@ -140,18 +188,21 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
    * On expiry the reference is dropped but the in-flight iframe `src` is left
    * ALONE on purpose: replacing it with the clean endpoint would abort a
    * navigation that may be about to succeed. The DOM attribute may therefore
-   * keep the token until the frame loads, is destroyed or the device changes —
+   * keep the token until a later legitimate navigation or frame destruction —
    * an accepted, documented residue, not a claim of cleanup. The phase becomes
    * `unobservable` because that is genuinely all the parent knows.
    */
-  const startDeadline = (deviceId: string, endpoint: URL): void => {
+  const startDeadline = (deviceId: string, attemptKey: string): void => {
     clearDeadline(deviceId)
     deadlineTimersRef.current.set(deviceId, setTimeout(() => {
       deadlineTimersRef.current.delete(deviceId)
-      tokenUrlRef.current.delete(deviceId)
+      const navigation = pendingNavigationRef.current.get(deviceId)
+      if (navigation === undefined || navigation.attemptKey !== attemptKey) return
+      pendingNavigationRef.current.delete(deviceId)
       const frame = registryRef.current.get(deviceId)
-      if (frame === undefined || frame.launchPhase !== 'tokenized') return
-      publishFrame(deviceId, { url: endpoint.toString(), launchPhase: 'unobservable' })
+      if (frame === undefined || frame.launchPhase !== 'navigating') return
+      publishFrame(deviceId, { launchPhase: 'unobservable' })
+      notifyActivated(deviceId)
     }, deadlineMs))
   }
 
@@ -160,8 +211,14 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
    * more, without touching the device's connection. */
   const retryLaunch = (deviceId: string, origin: string | undefined, generation: number): void => {
     clearDeadline(deviceId)
-    tokenUrlRef.current.delete(deviceId)
-    launchAttemptsRef.current.delete(`${deviceId}\u0000${origin ?? ''}\u0000${generation}`)
+    pendingNavigationRef.current.delete(deviceId)
+    const lifecycle = registryRef.current.get(deviceId)?.lifecycle ?? ''
+    launchAttemptsRef.current.delete(`${deviceId}\u0000${origin ?? ''}\u0000${generation}\u0000${lifecycle}`)
+    launchTargetRef.current.delete(deviceId)
+    const frame = registryRef.current.get(deviceId)
+    if (frame !== undefined && requestWorkbenchLaunch !== undefined) {
+      registryRef.current.set(deviceId, { ...frame, hasNavigated: false, lastNavigationAttemptKey: undefined })
+    }
     publishFrame(deviceId, { launchPhase: 'idle', launchFailure: undefined })
     setRetryNonce(nonce => nonce + 1)
   }
@@ -314,13 +371,15 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       registryRef.current.delete(deviceId)
       iframeRefs.current.delete(deviceId)
       launchTargetRef.current.delete(deviceId)
+      capabilityRef.current.delete(deviceId)
+      renewalRequestedAtRef.current.delete(deviceId)
+      renewalInFlightRef.current.delete(deviceId)
+      clearRenewalTimer(deviceId)
+      const deadline = deadlineTimersRef.current.get(deviceId)
+      if (deadline !== undefined) clearTimeout(deadline)
+      deadlineTimersRef.current.delete(deviceId)
       latestLaunchGenerationRef.current.delete(deviceId)
-      tokenUrlRef.current.delete(deviceId)
-      const timer = deadlineTimersRef.current.get(deviceId)
-      if (timer !== undefined) {
-        clearTimeout(timer)
-        deadlineTimersRef.current.delete(deviceId)
-      }
+      pendingNavigationRef.current.delete(deviceId)
       for (const key of launchAttemptsRef.current) {
         if (key.startsWith(`${deviceId}\u0000`)) launchAttemptsRef.current.delete(key)
       }
@@ -335,7 +394,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     if (prior === undefined) {
       registryRef.current.set(device.deviceId, {
         deviceId: device.deviceId,
-        url: requestWorkbenchLaunch === undefined ? device.endpoint ?? '' : '',
+        lifecycle: ++lifecycleRef.current,
+        url: device.endpoint ?? '',
+        hasNavigated: requestWorkbenchLaunch === undefined,
+        lastNavigationAttemptKey: undefined,
         state: device.state,
         diagnostic: device.diagnostic,
         lastUpdatedAt: device.lastUpdatedAt,
@@ -344,6 +406,10 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         launchFailure: undefined,
       })
       setFrames([...registryRef.current.values()])
+      if (requestWorkbenchLaunch === undefined) {
+        const iframe = iframeRefs.current.get(device.deviceId)
+        if (iframe !== undefined) applyPendingNavigation(device.deviceId, iframe)
+      }
       return
     }
 
@@ -351,23 +417,36 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     // update: assigning an equivalent clean URL would reload the native page.
     // A genuinely new tunnel origin still replaces the dead endpoint.
     let url = prior.url
+    let originChanged = false
     if (device.endpoint !== undefined) {
       try {
-        if (url === '' || new URL(url).origin !== new URL(device.endpoint).origin) url = device.endpoint
+        const priorOrigin = url === '' ? undefined : new URL(url).origin
+        originChanged = priorOrigin !== new URL(device.endpoint).origin
+        if (requestWorkbenchLaunch === undefined || originChanged) url = device.endpoint
       } catch {
-        url = device.endpoint
+        url = requestWorkbenchLaunch === undefined ? device.endpoint : url
       }
     }
     const updated: FrameInfo = {
       ...prior,
       url,
+      hasNavigated: originChanged && requestWorkbenchLaunch !== undefined ? false : prior.hasNavigated,
+      lastNavigationAttemptKey: originChanged ? undefined : prior.lastNavigationAttemptKey,
       state: device.state,
       diagnostic: device.diagnostic,
       lastUpdatedAt: device.lastUpdatedAt,
       ...(isValidSshAlias(device.sshAlias) ? { sshAlias: device.sshAlias } : {}),
     }
     registryRef.current.set(device.deviceId, updated)
-    if (updated.url !== prior.url || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt || updated.sshAlias !== prior.sshAlias) {
+    if (originChanged) {
+      clearDeadline(device.deviceId)
+      pendingNavigationRef.current.delete(device.deviceId)
+      launchTargetRef.current.delete(device.deviceId)
+      for (const key of launchAttemptsRef.current) {
+        if (key.startsWith(`${device.deviceId}\u0000`)) launchAttemptsRef.current.delete(key)
+      }
+    }
+    if (updated.url !== prior.url || updated.hasNavigated !== prior.hasNavigated || updated.lastNavigationAttemptKey !== prior.lastNavigationAttemptKey || updated.state !== prior.state || updated.diagnostic !== prior.diagnostic || updated.lastUpdatedAt !== prior.lastUpdatedAt || updated.sshAlias !== prior.sshAlias) {
       setFrames([...registryRef.current.values()])
     }
   }, [device, requestWorkbenchLaunch])
@@ -393,7 +472,9 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
     if (latestGeneration === undefined || generation > latestGeneration) {
       latestLaunchGenerationRef.current.set(device.deviceId, generation)
     }
-    const attemptKey = `${device.deviceId}\u0000${origin}\u0000${generation}`
+    const currentFrame = registryRef.current.get(device.deviceId)
+    if (currentFrame === undefined) return
+    const attemptKey = `${device.deviceId}\u0000${origin}\u0000${generation}\u0000${currentFrame.lifecycle}`
     launchTargetRef.current.set(device.deviceId, attemptKey)
     if (launchAttemptsRef.current.has(attemptKey)) return
     launchAttemptsRef.current.add(attemptKey)
@@ -412,7 +493,7 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         latestLaunchGenerationRef.current.set(device.deviceId, authGeneration)
         // A generation bump changes the tuple identity, so the frame's steady
         // target follows it while the tokenized URL stays out of state.
-        launchTargetRef.current.set(device.deviceId, `${device.deviceId}\u0000${origin}\u0000${authGeneration}`)
+        launchTargetRef.current.set(device.deviceId, `${device.deviceId}\u0000${origin}\u0000${authGeneration}\u0000${currentFrame.lifecycle}`)
       }
       let parsed: URL
       try {
@@ -426,11 +507,27 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
       // Recovery may commit and return a newer generation than the request
       // started with. Record that accepted tuple too, otherwise a later SSE
       // update or device switch can issue the same launch and reload this frame.
-      launchAttemptsRef.current.add(`${device.deviceId}\u0000${origin}\u0000${authGeneration}`)
+      const acceptedAttemptKey = `${device.deviceId}\u0000${origin}\u0000${authGeneration}\u0000${currentFrame.lifecycle}`
+      if (frame.lastNavigationAttemptKey === acceptedAttemptKey) return
+      launchAttemptsRef.current.add(acceptedAttemptKey)
+      launchTargetRef.current.set(device.deviceId, acceptedAttemptKey)
       // The tokenized URL is handed to the iframe through a ref, never state.
-      tokenUrlRef.current.set(device.deviceId, url)
-      publishFrame(device.deviceId, { launchPhase: 'tokenized', launchFailure: undefined })
-      startDeadline(device.deviceId, parsed)
+      // Hand the accepted URL to the iframe exactly once. JSX never receives
+      // the URL, so status renders cannot replay a navigation; token material
+      // is erased from this handoff as soon as the ref applies it.
+      clearDeadline(device.deviceId)
+      pendingNavigationRef.current.set(device.deviceId, {
+        url,
+        attemptKey: launchTargetRef.current.get(device.deviceId)!,
+        lifecycle: frame.lifecycle,
+        applied: false,
+      })
+      publishFrame(device.deviceId, {
+        launchPhase: 'navigating',
+        launchFailure: undefined,
+        hasNavigated: true,
+        lastNavigationAttemptKey: acceptedAttemptKey,
+      })
     }).catch((cause: unknown) => {
       if (launchTargetRef.current.get(device.deviceId) !== attemptKey) return
       // This tuple stays attempted: an automatic retry would spin. The overlay
@@ -464,27 +561,27 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
 
   /** A cross-origin load event says NOTHING about whether the DSH exchange
    * succeeded: an error page fires it too, and the parent cannot read the
-   * status, final URL or cookies. So the load is used for exactly two bounded
-   * things — drop the parent's token reference and scrub its own DOM attribute
-   * with one deliberate clean-endpoint navigation — and never as proof. */
+   * status, final URL or cookies. Load drops the parent's temporary URL
+   * reference and updates an observability phase only; it never rewrites src. */
   const handleFrameLoad = (deviceId: string): void => {
     const frame = registryRef.current.get(deviceId)
     if (frame === undefined) return
-    const pendingToken = tokenUrlRef.current.get(deviceId)
-    clearDeadline(deviceId)
-    if (pendingToken !== undefined) {
-      tokenUrlRef.current.delete(deviceId)
-      let clean = frame.url
-      try {
-        const loaded = new URL(pendingToken)
-        loaded.search = ''
-        loaded.hash = ''
-        clean = loaded.toString()
-      } catch { /* malformed endpoint stays covered by lifecycle diagnostics */ }
-      publishFrame(deviceId, { url: clean, launchPhase: 'clean' })
+    const navigation = pendingNavigationRef.current.get(deviceId)
+    if (navigation === undefined && frame.launchPhase === 'idle') {
+      if (device?.deviceId === deviceId) notifyActivated(deviceId)
       return
     }
-    if (frame.launchPhase === 'tokenized') return
+    if (navigation === undefined && (frame.launchPhase === 'pending' || frame.launchPhase === 'failed')) {
+      return
+    }
+    clearDeadline(deviceId)
+    if (navigation?.applied && navigation.attemptKey === launchTargetRef.current.get(deviceId)) {
+      pendingNavigationRef.current.delete(deviceId)
+      publishFrame(deviceId, { launchPhase: 'unobservable' })
+      if (device?.deviceId === deviceId) notifyActivated(deviceId)
+      return
+    }
+    if (frame.launchPhase === 'navigating') return
     if (device?.deviceId === deviceId) notifyActivated(deviceId)
   }
 
@@ -517,7 +614,9 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
         // The auth overlay is strictly a fallback for a device that IS ready at
         // the connection layer: the connection overlay owns every other case.
         const authFailure = active && !offline && frame.launchFailure
-        const source = tokenUrlRef.current.get(frame.deviceId) ?? frame.url
+        const launchPending = active && requestWorkbenchLaunch !== undefined
+          && !frame.hasNavigated
+          && (frame.launchPhase === 'idle' || frame.launchPhase === 'pending')
         return (
           <div
             key={frame.deviceId}
@@ -528,13 +627,19 @@ export function Workbench({ device, enabledDeviceIds, onReconnect, onManageDevic
             <iframe
               ref={element => {
                 if (element === null) iframeRefs.current.delete(frame.deviceId)
-                else iframeRefs.current.set(frame.deviceId, element)
+                else {
+                  iframeRefs.current.set(frame.deviceId, element)
+                  applyPendingNavigation(frame.deviceId, element)
+                }
               }}
-              src={source}
+              {...(requestWorkbenchLaunch === undefined ? { src: frame.url || undefined } : {})}
               title={frame.deviceId}
               sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
               allow="clipboard-read; clipboard-write"
               className="workbench-iframe"
+              style={launchPending ? { visibility: 'hidden' } : undefined}
+              aria-hidden={launchPending}
+              tabIndex={launchPending ? -1 : 0}
               data-workbench-device={frame.deviceId}
               data-workbench-phase={frame.launchPhase}
               // The iframe element is what actually governs the cross-origin
