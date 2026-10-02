@@ -4,7 +4,41 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { Workbench } from '../src/workbench/Workbench.jsx'
 
-afterEach(cleanup)
+const srcWatchRestorers = new Set<() => void>()
+afterEach(() => {
+  cleanup()
+  for (const restore of srcWatchRestorers) restore()
+})
+
+function watchSrcAssignments(...frames: HTMLIFrameElement[]): { assignments: string[]; observe: (frame: HTMLIFrameElement) => void; disconnect: () => void } {
+  const assignments: string[] = []
+  const observers = new Set<MutationObserver>()
+  const observed = new WeakSet<HTMLIFrameElement>()
+  const observe = (frame: HTMLIFrameElement): void => {
+    if (observed.has(frame)) return
+    observed.add(frame)
+    // JSX may set its initial src before render returns; count that value once,
+    // then observe all subsequent writes including same-value rewrites.
+    if (frame.hasAttribute('src')) assignments.push(frame.getAttribute('src') ?? '')
+    const observer = new MutationObserver(records => {
+      for (const record of records) {
+        if (record.type === 'attributes' && record.attributeName === 'src') assignments.push(frame.getAttribute('src') ?? '')
+      }
+    })
+    observer.observe(frame, { attributes: true, attributeFilter: ['src'] })
+    observers.add(observer)
+  }
+  frames.forEach(observe)
+  let disconnected = false
+  const disconnect = (): void => {
+    if (disconnected) return
+    disconnected = true
+    observers.forEach(observer => observer.disconnect())
+    srcWatchRestorers.delete(disconnect)
+  }
+  srcWatchRestorers.add(disconnect)
+  return { assignments, observe, disconnect }
+}
 
 /** Baseline READY typert-shaped device. Individual tests override only the
  * field under test, so a fixture can never silently drop required facts. */
@@ -17,37 +51,99 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
 })
 
 describe('workbench', () => {
-  it('lazy-creates an iframe only when a device is selected', () => {
-    const { container, rerender } = render(<StrictMode><Workbench device={undefined} /></StrictMode>)
-    expect(container.querySelector('iframe')).toBeNull()
+  it('keeps an rc.2-compatible clean launch response to one src assignment', async () => {
+    const legacyDevice = device({
+      dshAuthConfigured: false,
+      dshAuthState: 'not-configured',
+      dshAuthAutoDiscovery: false,
+      dshAuthGeneration: 0,
+    })
+    let resolveLaunch!: (result: { url: string; authGeneration: number }) => void
+    const launch = vi.fn(() => new Promise<{ url: string; authGeneration: number }>(resolve => { resolveLaunch = resolve }))
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={legacyDevice} requestWorkbenchLaunch={launch} /></StrictMode>,
+    )
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+    expect(frame.hasAttribute('src')).toBe(false)
+    expect(src.assignments).toEqual([])
 
-    rerender(<StrictMode><Workbench device={device()} /></StrictMode>)
-    const frame = container.querySelector('iframe[data-workbench-device="d1"]')
-    expect(frame).not.toBeNull()
-    expect(frame!.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    // For an unauthenticated compatibility device the server may return its
+    // clean endpoint; that accepted response still owns exactly one navigation.
+    resolveLaunch({ url: 'http://127.0.0.1:51688/', authGeneration: 0 })
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/']))
+    frame.dispatchEvent(new Event('load'))
+    rerender(<StrictMode><Workbench device={{ ...legacyDevice, lastUpdatedAt: 1 }} requestWorkbenchLaunch={launch} /></StrictMode>)
+    await Promise.resolve()
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/'])
+    expect(launch).toHaveBeenCalledTimes(1)
     // Chrome 136+ tightened the default allowlist of clipboard-read/write to
     // `self`; the cross-origin workbench iframe must declare them explicitly.
-    expect(frame!.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
+    expect(frame.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
+    src.disconnect()
   })
 
-  it('uses a tokenized root once then scrubs the steady iframe src', async () => {
-    const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
-    const { container } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+  it('does not navigate during delayed launch, then keeps one accepted iframe navigation', async () => {
+    let resolveLaunch!: (value: { url: string; authGeneration: number }) => void
+    const requestWorkbenchLaunch = vi.fn(() => new Promise<{ url: string; authGeneration: number }>(resolve => {
+      resolveLaunch = resolve
+    }))
+    const { container, rerender } = render(
+      <StrictMode><Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} /></StrictMode>,
+    )
+    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+    await Promise.resolve()
+    const pendingFrame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(pendingFrame)
+    expect(pendingFrame.hasAttribute('src')).toBe(false)
+    expect(pendingFrame.style.visibility).toBe('hidden')
+
+    // Device first-snapshot/SSE status changes while launch is in flight must
+    // update diagnostics without mounting a device page at the bare endpoint.
+    rerender(<StrictMode><Workbench
+      device={device({ lastUpdatedAt: 1, diagnostic: 'snapshot refresh' })}
+      requestWorkbenchLaunch={requestWorkbenchLaunch}
+    /></StrictMode>)
+    await Promise.resolve()
+    const stillPendingFrame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    expect(stillPendingFrame.hasAttribute('src')).toBe(false)
+    expect(stillPendingFrame.style.visibility).toBe('hidden')
+    expect(src.assignments).toEqual([])
+
+    resolveLaunch({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
+    await waitFor(() => expect(container.querySelector('iframe[data-workbench-device="d1"]')).not.toBeNull())
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
-    await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
-    // jsdom fires iframe load synchronously for the assigned token URL, so the
-    // component has already scrubbed its steady src by the time we observe it.
-    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque'))
+    await Promise.resolve()
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque']))
+
+    // load clears only the parent-side marker; it must not overwrite src with
+    // a clean URL (which would issue another document navigation).
+    frame.dispatchEvent(new Event('load'))
+    frame.dispatchEvent(new Event('load'))
+    await Promise.resolve()
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque']))
     expect(requestWorkbenchLaunch).toHaveBeenCalledWith('d1')
+    src.disconnect()
   })
 
-  it('does not reauthenticate when server cookie reuse keeps the auth generation stable', async () => {
+  it('does not reauthenticate or rewrite src when cookie reuse keeps auth generation stable', async () => {
     const requestWorkbenchLaunch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
-    const { rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    const { container, rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
     await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque']))
 
     rerender(<Workbench device={device({ lastUpdatedAt: 1, diagnostic: 'reconnected with cookie' })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
     await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque'])
+    src.disconnect()
   })
 
   it('navigates once when auth generation increases and never retries that generation', async () => {
@@ -57,16 +153,134 @@ describe('workbench', () => {
     const { container, rerender } = render(<Workbench device={device()} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=first'))
+    frame.dispatchEvent(new Event('load'))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=first')
 
     rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 1 })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
     await waitFor(() => expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(frame.getAttribute('src')).toContain('token=recovered'))
     frame.dispatchEvent(new Event('load'))
-    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=recovered')
 
     rerender(<Workbench device={device({ dshAuthGeneration: 2, lastUpdatedAt: 2, diagnostic: 'still ready' })} requestWorkbenchLaunch={requestWorkbenchLaunch} />)
     expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not rewrite either frame src when switching away from and back to a recovered generation', async () => {
+    const calls = new Map<string, number>()
+    const requestWorkbenchLaunch = vi.fn(async (deviceId: string) => {
+      const call = (calls.get(deviceId) ?? 0) + 1
+      calls.set(deviceId, call)
+      const port = deviceId === 'd1' ? 51000 : 52000
+      return {
+        url: `http://127.0.0.1:${port}/?token=${deviceId}-${call}`,
+        // Device A's first launch recovers auth and commits a new generation.
+        authGeneration: deviceId === 'd1' ? 2 : 1,
+      }
+    })
+    const a = device({ deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/', dshAuthGeneration: 1 })
+    const b = device({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/', dshAuthGeneration: 1 })
+    const view = (active: DeviceStatusFacts) => (
+      <Workbench
+        device={active}
+        enabledDeviceIds={['d1', 'd2']}
+        requestWorkbenchLaunch={requestWorkbenchLaunch}
+      />
+    )
+    const { container, rerender } = render(view(a))
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frameA)
+
+    await waitFor(() => expect(calls.get('d1')).toBe(1))
+    await waitFor(() => expect(frameA.getAttribute('src')).toBe('http://127.0.0.1:51000/?token=d1-1'))
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51000/?token=d1-1']))
+    frameA.dispatchEvent(new Event('load'))
+
+    rerender(view(b))
+    await waitFor(() => expect(calls.get('d2')).toBe(1))
+    const frameB = container.querySelector('iframe[data-workbench-device="d2"]') as HTMLIFrameElement
+    src.observe(frameB)
+    await waitFor(() => expect(src.assignments).toEqual([
+      'http://127.0.0.1:51000/?token=d1-1',
+      'http://127.0.0.1:52000/?token=d2-1',
+    ]))
+
+    // The shell learns A's committed generation while B is active, then A is
+    // selected again. Its already accepted recovery URL must not be reissued.
+    rerender(view(device({
+      deviceId: 'd1', displayName: 'A', endpoint: 'http://127.0.0.1:51000/', dshAuthGeneration: 2,
+    })))
+
+    expect(calls.get('d1')).toBe(1)
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(frameA)
+    expect(frameA.getAttribute('src')).toBe('http://127.0.0.1:51000/?token=d1-1')
+    expect(requestWorkbenchLaunch).toHaveBeenCalledTimes(2)
+    expect(src.assignments).toEqual([
+      'http://127.0.0.1:51000/?token=d1-1',
+      'http://127.0.0.1:52000/?token=d2-1',
+    ])
+    src.disconnect()
+  })
+
+  it('counts only accepted src assignments while the previous document awaits a new-origin launch', async () => {
+    let resolveSecond!: (result: { url: string; authGeneration: number }) => void
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSecond = resolve }))
+    const first = device()
+    const { container, rerender } = render(<Workbench device={first} requestWorkbenchLaunch={launch} />)
+    const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=first'))
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=first'])
+    frame.dispatchEvent(new Event('load'))
+
+    rerender(<Workbench device={device({ endpoint: 'http://127.0.0.1:51689/' })} requestWorkbenchLaunch={launch} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    // A changed tunnel origin never races a bare-endpoint navigation.
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=first')
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=first'])
+    resolveSecond({ url: 'http://127.0.0.1:51689/?token=second', authGeneration: 1 })
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51689/?token=second'))
+    expect(src.assignments).toEqual([
+      'http://127.0.0.1:51688/?token=first',
+      'http://127.0.0.1:51689/?token=second',
+    ])
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(frame)
+    src.disconnect()
+  })
+
+  it('fences old launch responses and counts only the current navigation across disable/re-enable', async () => {
+    const resolvers: Array<(result: { url: string; authGeneration: number }) => void> = []
+    const launch = vi.fn(() => new Promise<{ url: string; authGeneration: number }>(resolve => { resolvers.push(resolve) }))
+    const { container, rerender } = render(
+      <Workbench device={device()} enabledDeviceIds={['d1']} requestWorkbenchLaunch={launch} />,
+    )
+    const oldFrame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(oldFrame)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+
+    rerender(<Workbench device={undefined} enabledDeviceIds={[]} requestWorkbenchLaunch={launch} />)
+    await waitFor(() => expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBeNull())
+    rerender(<Workbench device={device()} enabledDeviceIds={['d1']} requestWorkbenchLaunch={launch} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    const newFrame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    src.observe(newFrame)
+    expect(newFrame).not.toBe(oldFrame)
+
+    // The previous lifecycle's pending launch may complete after the device is
+    // re-enabled; it must not navigate the new iframe or clear its current fence.
+    resolvers[0]!({ url: 'http://127.0.0.1:51688/?token=stale', authGeneration: 1 })
+    await Promise.resolve()
+    expect(newFrame.hasAttribute('src')).toBe(false)
+    expect(src.assignments).toEqual([])
+
+    resolvers[1]!({ url: 'http://127.0.0.1:51688/?token=current', authGeneration: 1 })
+    await waitFor(() => expect(newFrame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=current'))
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=current'])
+    expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(newFrame)
+    src.disconnect()
   })
 
   it('does not loop after a launch failure until a higher generation arrives', async () => {
@@ -96,11 +310,11 @@ describe('workbench', () => {
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     await waitFor(() => expect(frame.getAttribute('src')).toContain('token=current'))
     frame.dispatchEvent(new Event('load'))
-    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/'))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=current')
 
     resolveFirst({ url: 'http://127.0.0.1:51688/?token=stale', authGeneration: 1 })
     await Promise.resolve()
-    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=current')
   })
 
   it('keeps the iframe alive across device switches', () => {
@@ -118,22 +332,26 @@ describe('workbench', () => {
     expect(container.querySelectorAll('iframe')).toHaveLength(2)
   })
 
-  it('unmounts a disabled iframe, retains transient disconnects, and recreates it after re-enable', () => {
+  it('unmounts a disabled iframe without src rewrites and assigns the re-enabled endpoint once', async () => {
     const ready = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
     const disconnected = device({ deviceId: 'd1', state: 'CONNECTING', diagnostic: 'reconnecting', endpoint: undefined })
     const { container, rerender } = render(
       <StrictMode><Workbench device={ready} enabledDeviceIds={['d1']} /></StrictMode>,
     )
-    const original = container.querySelector('iframe[data-workbench-device="d1"]')
+    const original = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(original)
     expect(original).not.toBeNull()
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51000/']))
 
     rerender(<StrictMode><Workbench device={disconnected} enabledDeviceIds={['d1']} /></StrictMode>)
     expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBe(original)
     expect(container.querySelector('[data-cockpit-offline="d1"]')).not.toBeNull()
+    expect(src.assignments).toEqual(['http://127.0.0.1:51000/'])
 
     rerender(<StrictMode><Workbench device={undefined} enabledDeviceIds={[]} /></StrictMode>)
     expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBeNull()
     expect(container.querySelector('[data-cockpit-offline="d1"]')).toBeNull()
+    expect(src.assignments).toEqual(['http://127.0.0.1:51000/'])
 
     const reenabled = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:53000/' })
     rerender(<StrictMode><Workbench device={reenabled} enabledDeviceIds={['d1']} /></StrictMode>)
@@ -141,20 +359,31 @@ describe('workbench', () => {
     expect(recreated).not.toBeNull()
     expect(recreated).not.toBe(original)
     expect(recreated!.getAttribute('src')).toBe('http://127.0.0.1:53000/')
+    src.observe(recreated as HTMLIFrameElement)
+    expect(src.assignments).toEqual(['http://127.0.0.1:51000/', 'http://127.0.0.1:53000/'])
+    src.disconnect()
   })
 
-  it('removes an unselected iframe when its device is deleted', () => {
+  it('removes a deleted iframe without rewriting the remaining device src', async () => {
     const a = device({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/' })
     const b = device({ deviceId: 'd2', endpoint: 'http://127.0.0.1:52000/' })
     const { container, rerender } = render(
       <StrictMode><Workbench device={a} enabledDeviceIds={['d1', 'd2']} /></StrictMode>,
     )
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frameA)
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51000/']))
     rerender(<StrictMode><Workbench device={b} enabledDeviceIds={['d1', 'd2']} /></StrictMode>)
     expect(container.querySelectorAll('iframe')).toHaveLength(2)
+    const frameB = container.querySelector('iframe[data-workbench-device="d2"]') as HTMLIFrameElement
+    src.observe(frameB)
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51000/', 'http://127.0.0.1:52000/']))
 
     rerender(<StrictMode><Workbench device={b} enabledDeviceIds={['d2']} /></StrictMode>)
     expect(container.querySelector('iframe[data-workbench-device="d1"]')).toBeNull()
     expect(container.querySelector('iframe[data-workbench-device="d2"]')).not.toBeNull()
+    expect(src.assignments).toEqual(['http://127.0.0.1:51000/', 'http://127.0.0.1:52000/'])
+    src.disconnect()
   })
 
   it('shows a management action instead of a disabled reconnect overlay', () => {
@@ -457,49 +686,55 @@ describe('workbench launch authentication', () => {
     dshAuthConfigured: true, dshAuthState: 'ready', dshAuthGeneration: 1, ...overrides,
   })
 
-  it('performs exactly one clean-endpoint navigation after a token iframe load', async () => {
+  it('keeps the accepted iframe navigation without a clean-endpoint reload', async () => {
     const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
     const { container } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
 
     // The tokenized navigation is observable through the phase, which does not
     // depend on how long the window stays open in a given DOM implementation.
-    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('clean'))
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('navigating'))
     expect(launch).toHaveBeenCalledTimes(1)
-    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
-    expect(frame.getAttribute('src')).not.toContain('token')
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
+    expect(frame.getAttribute('src')).toContain('token')
 
-    // A later load (the child's own 303 landing, or a repeat) must not add a
-    // second navigation, a re-request or a reload loop.
+    // load clears only the parent's short-lived URL reference; it cannot scrub
+    // the iframe DOM attribute without triggering another document navigation.
+    frame.dispatchEvent(new Event('load'))
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('unobservable'))
     frame.dispatchEvent(new Event('load'))
     frame.dispatchEvent(new Event('load'))
-    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/')
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
     expect(launch).toHaveBeenCalledTimes(1)
   })
 
-  it('clears parent token references at deadline without replacing the in-flight iframe src', async () => {
-    // The deadline is a BACKSTOP for a navigation that never reports load, so it
-    // is asserted on the navigation itself: whatever the deadline does, it must
-    // not reassign the in-flight src (that would abort a possibly-working
-    // navigation) and it must not start a retry loop.
+  it('counts one src assignment across deadline cleanup and a late load', async () => {
+    // The deadline must not reassign the in-flight src (which could abort a
+    // navigation that may still succeed) or create an automatic retry loop.
     const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=opaque', authGeneration: 1 })
-    const { container } = render(
+    const { container, rerender } = render(
       <Workbench device={authFacts()} requestWorkbenchLaunch={launch} navigationDeadlineMs={15} />,
     )
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
     await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque']))
 
-    // Let the deadline fire.
+    // Deadline and later load/status updates are observational, never reloads.
     await new Promise(resolve => setTimeout(resolve, 60))
-
-    // The tokenized navigation was never replaced by a second navigation, and
-    // no retry/loop started: the parent still holds exactly the one navigation
-    // it was allowed to start.
     expect(launch).toHaveBeenCalledTimes(1)
-    expect(frame.getAttribute('src') ?? '').toMatch(/\/\?token=opaque$|^http:\/\/127\.0\.0\.1:51688\/$/u)
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
+    expect(frame.getAttribute('data-workbench-phase')).toBe('unobservable')
+    frame.dispatchEvent(new Event('load'))
+    rerender(<Workbench device={authFacts({ lastUpdatedAt: 1, diagnostic: 'late status' })} requestWorkbenchLaunch={launch} navigationDeadlineMs={15} />)
+    await Promise.resolve()
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=opaque')
+    expect(src.assignments).toEqual(['http://127.0.0.1:51688/?token=opaque'])
+    expect(launch).toHaveBeenCalledTimes(1)
+    src.disconnect()
   })
 
-  it('does not retry a failed or unknown launch tuple until user retry or tuple change', async () => {
+  it('does not retry a failed launch tuple until user retry or tuple change', async () => {
     const launch = vi.fn()
       .mockRejectedValueOnce(new Error('workbench authentication required'))
       .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=retried', authGeneration: 2 })
@@ -512,6 +747,7 @@ describe('workbench launch authentication', () => {
     rerender(<Workbench device={authFacts({ lastUpdatedAt: 2, state: 'READY' })} requestWorkbenchLaunch={launch} />)
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     frame.dispatchEvent(new Event('load'))
+    expect(frame.hasAttribute('src')).toBe(false)
     expect(launch).toHaveBeenCalledTimes(1)
 
     // An explicit user retry is the sanctioned way back.
@@ -532,7 +768,7 @@ describe('workbench launch authentication', () => {
     expect(overlay.querySelector('button')).not.toBeNull()
     // No bare 401 is ever presented, and no tokenized src was assigned.
     expect(overlay.textContent).not.toMatch(/401|authentication required/u)
-    expect(container.querySelector('iframe')!.getAttribute('src')).not.toContain('token')
+    expect(container.querySelector('iframe')!.hasAttribute('src')).toBe(false)
   })
 
   it('shows an actionable auth overlay without creating a token iframe when recovery is unavailable', async () => {
@@ -559,19 +795,20 @@ describe('workbench launch authentication', () => {
       const overlay = container.querySelector('[data-cockpit-auth="d1"]')!
       expect(overlay.textContent, code).toContain('请求来源不被允许。')
       expect(overlay.textContent, code).not.toContain('request origin is not the cockpit')
-      expect(container.querySelector('iframe')!.getAttribute('src'), code).not.toContain('token')
+      expect(container.querySelector('iframe')!.hasAttribute('src'), code).toBe(false)
       unmount()
     }
   })
 
-  it('launches once for a higher auth generation across either load cleanup path', async () => {
+  it('launches once for a higher auth generation across load and deadline cleanup', async () => {
     const launch = vi.fn()
       .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
       .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=recovered', authGeneration: 2 })
     const { container, rerender } = render(<Workbench device={authFacts()} requestWorkbenchLaunch={launch} />)
     const frame = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
     await waitFor(() => expect(launch).toHaveBeenCalledTimes(1))
-    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('clean'))
+    await waitFor(() => expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=first'))
+    frame.dispatchEvent(new Event('load'))
 
     // A silent server-side re-issue (cookie renewed, generation bumped) is a new
     // tuple: exactly one more tokenized navigation for it, and nothing more.
@@ -582,6 +819,7 @@ describe('workbench launch authentication', () => {
     // Neither a re-render nor a load event may launch that generation again.
     rerender(<Workbench device={authFacts({ dshAuthGeneration: 2, lastUpdatedAt: 2, diagnostic: 'unchanged' })} requestWorkbenchLaunch={launch} />)
     frame.dispatchEvent(new Event('load'))
+    expect(frame.getAttribute('src')).toBe('http://127.0.0.1:51688/?token=recovered')
     expect(launch).toHaveBeenCalledTimes(2)
   })
 
@@ -597,7 +835,7 @@ describe('workbench launch authentication', () => {
     rerender(<Workbench device={authFacts({ deviceId: 'd1', enabled: true })} requestWorkbenchLaunch={succeeding} />)
     const retry = container.querySelector('[data-cockpit-auth-retry="d1"]') as HTMLButtonElement
     retry.click()
-    await waitFor(() => expect(container.querySelector('iframe')!.getAttribute('data-workbench-phase')).toBe('tokenized'))
+    await waitFor(() => expect(container.querySelector('iframe')!.getAttribute('data-workbench-phase')).toBe('navigating'))
     // The failure overlay is gone, and nothing claims success.
     expect(container.querySelector('[data-cockpit-auth="d1"]')).toBeNull()
   })

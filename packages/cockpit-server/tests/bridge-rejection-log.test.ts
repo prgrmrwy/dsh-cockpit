@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { Logger } from '@nestjs/common'
 import { DevicesController } from '../src/devices/devices.controller.js'
+import { ForwardRejection } from '../src/connectivity/forward-table.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../src/auth/bridge-capability.js'
 import {
   BRIDGE_REJECTION_WARN_THRESHOLD,
@@ -201,6 +202,48 @@ describe('controller bridge rejection logging', () => {
     await expect(controller.bridgeSessionOpened(
       request({ origin: 'http://127.0.0.1:4317', [BRIDGE_CAPABILITY_HEADER]: 'stale' }),
       { sessionId: 's1' },
+    )).rejects.toMatchObject({ status: 400, response: { code: 'bridge-capability-invalid' } })
+  })
+})
+
+/** The forwards seam's refusals are contract, not incidents: the device page
+ * falls back to its own loopback address on `local-device` (and on a seam
+ * that is unavailable) and on nothing else, so the code must survive the
+ * HTTP mapping intact and never look like a stale capability. */
+describe('controller forwards refusal mapping', () => {
+  const request = (headers: Record<string, string | string[] | undefined> = {}) => ({ headers }) as never
+  const body = { devicePort: 3939, holder: 'memex', instanceId: 'inst-1111111111111111' }
+
+  function controllerRefusing(error: Error) {
+    return new DevicesController({
+      acquireBridgeForward: vi.fn(() => { throw error }),
+    } as never, {} as never)
+  }
+
+  it('maps a local-device refusal to 409 with its stable code', async () => {
+    const controller = controllerRefusing(new ForwardRejection('local-device'))
+    await expect(controller.bridgeForwardsAcquire(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'cap' }),
+      body,
+    )).rejects.toMatchObject({ status: 409, response: { code: 'local-device' } })
+  })
+
+  it('maps every business refusal to 409 with its own code', async () => {
+    for (const code of ['forward-limit', 'reserved-port', 'invalid-port', 'invalid-holder', 'device-unavailable'] as const) {
+      await expect(controllerRefusing(new ForwardRejection(code)).bridgeForwardsAcquire(
+        request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'cap' }),
+        body,
+      )).rejects.toMatchObject({ status: 409, response: { code } })
+    }
+  })
+
+  it('keeps a capability rejection distinguishable from a forwards refusal', async () => {
+    // The bridge renews its capability only on this code; a 409 refusal must
+    // never be mistaken for an expired capability (that was the 5s stall).
+    const controller = controllerRefusing(new Error('invalid or expired bridge capability'))
+    await expect(controller.bridgeForwardsAcquire(
+      request({ origin: 'http://127.0.0.1:3080', [BRIDGE_CAPABILITY_HEADER]: 'stale' }),
+      body,
     )).rejects.toMatchObject({ status: 400, response: { code: 'bridge-capability-invalid' } })
   })
 })

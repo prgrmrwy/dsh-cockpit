@@ -82,6 +82,7 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
   - `release(handle)`、`list()`（最近一次快照）、`subscribe(listener)`。
   - 握手未完成或不在驾驶舱 iframe 中时，`acquire` / `list` **同步**抛出 `code: 'unavailable'`，消费方据此回落本机地址。
 - **错误**：业务拒绝以 `code` 抛出（`forward-limit`、`reserved-port`、`invalid-port`、`invalid-holder`、`invalid-label`、`local-device`、`device-unavailable`），不换发能力串、不重试；能力串失效（400/401）换发一次后重试。
+- **消费方必须区分两类失败**：`unavailable`（不在驾驶舱中）与 `local-device`（本设备就是驾驶舱宿主机）表示**没有转发可言**，浏览器与设备端口在同一台机器，消费方回落本机地址；其余 `code` 表示驾驶舱在但拒绝或失败，消费方**不得**回落本机地址（浏览器通常在另一台机器上，`localhost:<port>` 会解析到错误的机器）。按 `code` 字段结构性判定，不依赖类同一性。
 - **页面实例**：每次 effect 启动与 bfcache 恢复（`pageshow` 且 `persisted`）生成新的一次性实例标识；`pagehide` 与 dispose 时经父页面发送 `dsh-cockpit:bridge-instance-ended`，驾驶舱据此释放该实例的全部持有。
 - **边界**：只转发设备回环地址、只在宿主机回环监听、每条绑定单个端口、每设备至多 8 条、只作用于调用页面自己的设备；不能建立常驻条目或删除任何条目。驾驶舱不进入被转发流量的数据路径。
 - **设置页区块**：`settings.section` 可用时，注入只读的「驾驶舱转发」区块（条目、状态、持有者标签、`N / 8`）；settings 缺席时其它能力不受影响。
