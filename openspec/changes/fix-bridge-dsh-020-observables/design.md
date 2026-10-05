@@ -1,6 +1,6 @@
 ## Context
 
-DSH 0.2.0-rc.2（639ed015）删去 list.current 与 uiSession.pendingInteractions；官方 UiSession 通过 status observable 暴露每 Session 的 running、pendingInteraction、completionUnread。bridge 0.5.1 仍读旧字段，devbox 完整候选 boot 失败，现有假对象测试只提供旧字段而未发现问题。
+DSH 0.2.0-rc.2（639ed015）删去 list.current 与 uiSession.pendingInteractions；官方 UiSession 通过 `sessionStatus` observable 暴露每 Session 的 running、pendingInteraction、completionUnread。bridge 0.5.1 仍读旧字段，devbox 完整候选 boot 失败，现有假对象测试只提供旧字段而未发现问题。
 
 ## Goals / Non-Goals
 
