@@ -35,13 +35,15 @@ function countingFetch(handler: (url: string, init?: RequestInit) => Response | 
 }
 
 describe('workbench launch coordination', () => {
-  it('shares authority-scoped validation while isolating waiter and device cancellation', async () => {
+  it.each(['/', './'])('shares authority-scoped validation while isolating cancellation with %s redirect', async location => {
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
     const { fetchImpl, calls } = countingFetch(async url => {
       if (!url.includes('?token=')) return challenge()
       await gate
-      return minted('current')
+      const response = minted('current')
+      response.headers.set('location', location)
+      return response
     })
     const coordinator = new WorkbenchLaunchCoordinator()
     const launch = (signal?: AbortSignal) => coordinator.launch(snapshot(), endpoint, fetchImpl, {
