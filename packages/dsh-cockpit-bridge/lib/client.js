@@ -662,8 +662,10 @@ window.__ModuleLoader__.load({
 								fail(response.status, await readErrorCode(response), activeConfig);
 								return;
 							}
+							if (disposed || config !== activeConfig) return;
 							pendingFingerprint = fingerprint;
-							pendingDirty = false;
+							pendingDirty = JSON.stringify(pendingSnapshot()) !== fingerprint;
+							if (pendingDirty) rerunRequested = true;
 							failureCount = 0;
 						}
 						purgeExpired();
