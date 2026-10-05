@@ -111,10 +111,57 @@ function isActivation(event: MessageEvent, config: BridgeConfig | undefined): bo
 }
 
 interface PendingInteraction { readonly sessionId: string; readonly kind: 'approval' | 'question'; readonly key: string }
-interface PendingObservable { getSnapshot(): ReadonlyMap<string, PendingInteraction>; subscribe(listener: () => void): () => void }
+interface Observable<T> { getSnapshot(): T; subscribe(listener: () => void): () => void }
+interface SessionListSnapshot {
+  readonly current?: string
+  readonly byId?: Readonly<Record<string, { readonly id: string; readonly retainedBy?: { readonly mainView?: number } }>>
+}
 type BridgeContext = Context & {
-  readonly sessions: { readonly list: { getSnapshot(): { readonly current?: string }; subscribe(listener: () => void): () => void } }
-  readonly uiSession: { readonly pendingInteractions: PendingObservable }
+  readonly sessions: { readonly list: Observable<SessionListSnapshot> }
+  readonly uiSession?: { readonly pendingInteractions?: unknown; readonly sessionStatus?: unknown }
+}
+
+/** 0.2.0 removed current. A present byId is authoritative even with no main view. */
+function currentSelection(snapshot: SessionListSnapshot): string | undefined {
+  if (snapshot.byId !== undefined && !Object.hasOwn(snapshot, 'current')) {
+    return Object.values(snapshot.byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)?.id
+  }
+  if (snapshot.byId !== undefined && Object.values(snapshot.byId).some(row => row.retainedBy !== undefined)) {
+    return Object.values(snapshot.byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)?.id
+  }
+  return snapshot.current
+}
+
+function isObservable(value: unknown): value is Observable<ReadonlyMap<string, unknown>> {
+  return typeof value === 'object' && value !== null
+    && typeof (value as Observable<unknown>).getSnapshot === 'function'
+    && typeof (value as Observable<unknown>).subscribe === 'function'
+}
+
+/** Project only public identifiers; do not read or forward interaction contents. */
+function pendingSource(ui: BridgeContext['uiSession']): Observable<readonly PendingInteraction[]> | undefined {
+  const legacy = ui?.pendingInteractions
+  const status = ui?.sessionStatus
+  const source = isObservable(legacy) ? legacy : isObservable(status) ? status : undefined
+  if (source === undefined) return
+  return {
+    subscribe: listener => source.subscribe(listener),
+    getSnapshot: () => {
+      const snapshot = source.getSnapshot()
+      if (!(snapshot instanceof Map)) throw new Error('unknown pending snapshot')
+      const result: PendingInteraction[] = []
+      for (const row of snapshot.values()) {
+        const item = source === legacy ? row : (row as { pendingInteraction?: unknown } | undefined)?.pendingInteraction
+        if (item === undefined) continue
+        if (typeof item !== 'object' || item === null) throw new Error('unknown pending interaction')
+        const { sessionId, kind, key } = item as Partial<PendingInteraction>
+        if (kind !== 'approval' && kind !== 'question') continue
+        if (typeof sessionId !== 'string' || typeof key !== 'string') throw new Error('invalid pending identity')
+        result.push({ sessionId, kind, key })
+      }
+      return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key))
+    },
+  }
 }
 
 export function apply(ctx: BridgeContext): void {
@@ -223,23 +270,17 @@ export function apply(ctx: BridgeContext): void {
     let failureCount = 0
     let flushTimer: ReturnType<typeof setTimeout> | undefined
     let retryTimer: ReturnType<typeof setTimeout> | undefined
-    let lastSelection = ctx.sessions.list.getSnapshot().current
-    let pendingDirty = ctx.uiSession !== undefined
+    let lastSelection = currentSelection(ctx.sessions.list.getSnapshot())
+    const pending = pendingSource(ctx.uiSession)
+    let pendingDirty = pending !== undefined
     let pendingFingerprint = ''
     const outbox = new Map<string, OutboxEntry>()
 
 
-    const pendingSnapshot = (): readonly PendingInteraction[] => {
-      const source = ctx.uiSession?.pendingInteractions.getSnapshot()
-      if (source === undefined) return []
-      return [...source.values()]
-        .filter(item => item.kind === 'approval' || item.kind === 'question')
-        .map(item => ({ sessionId: item.sessionId, kind: item.kind, key: item.key }))
-        .sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key))
-    }
+    const pendingSnapshot = (): readonly PendingInteraction[] => pending?.getSnapshot() ?? []
 
     const currentKey = (): string | undefined => {
-      const current = ctx.sessions.list.getSnapshot().current
+      const current = currentSelection(ctx.sessions.list.getSnapshot())
       return current === undefined ? undefined : current
     }
 
@@ -354,7 +395,7 @@ export function apply(ctx: BridgeContext): void {
         if (!helloReady) {
           let response: Response
           try {
-            const current = ctx.sessions.list.getSnapshot().current
+            const current = currentSelection(ctx.sessions.list.getSnapshot())
             response = await post('/api/bridge/hello', {
               version: PLUGIN_VERSION,
               protocolVersion: PROTOCOL_VERSION,
@@ -374,16 +415,17 @@ export function apply(ctx: BridgeContext): void {
             rerunRequested = true
             return
           }
+          if (disposed) return
           helloReady = true
-          pendingDirty = ctx.uiSession !== undefined
+          pendingDirty = pending !== undefined
           failureCount = 0
           // A successful hello is a recovery point. Re-asserting the current
           // selection also recreates an ack that may have expired from outbox.
-          const current = ctx.sessions.list.getSnapshot().current
+          const current = currentSelection(ctx.sessions.list.getSnapshot())
           if (current !== undefined) enqueue(current)
         }
 
-        if (pendingDirty && ctx.uiSession !== undefined) {
+        if (pendingDirty && pending !== undefined) {
           const items = pendingSnapshot()
           const fingerprint = JSON.stringify(items)
           let response: Response
@@ -466,7 +508,7 @@ export function apply(ctx: BridgeContext): void {
     const onSelectionChange = (): void => {
       // Capture now. Never defer getSnapshot(): a subsequent archive can clear
       // current before the 250 ms network batching window expires.
-      const current = ctx.sessions.list.getSnapshot().current
+      const current = currentSelection(ctx.sessions.list.getSnapshot())
       if (current === lastSelection) {
         // An ordinary store refresh stays deduplicated, but if this ID is still
         // pending after a failure it is an explicit recovery opportunity.
@@ -479,13 +521,31 @@ export function apply(ctx: BridgeContext): void {
       requestRun(FLUSH_DELAY_MS, true)
     }
 
-    const unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
-    const unsubscribePending = ctx.uiSession?.pendingInteractions.subscribe(() => {
-      const fingerprint = JSON.stringify(pendingSnapshot())
-      if (fingerprint === pendingFingerprint) return
-      pendingDirty = true
-      requestRun(FLUSH_DELAY_MS, true)
-    })
+    let unsubscribe = (): void => {}
+    let unsubscribePending: (() => void) | undefined
+    try {
+      // Validate the initial shape before registering any callbacks.
+      pending?.getSnapshot()
+      unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
+      unsubscribePending = pending?.subscribe(() => {
+        if (disposed) return
+        try {
+          const fingerprint = JSON.stringify(pendingSnapshot())
+          if (fingerprint === pendingFingerprint) return
+          pendingDirty = true
+          requestRun(FLUSH_DELAY_MS, true)
+        } catch {
+          // Unknown is not an empty snapshot. Retain last acknowledged state.
+        }
+      })
+    } catch {
+      disposed = true
+      unsubscribe()
+      unsubscribePending?.()
+      clearFlushTimer()
+      clearRetryTimer()
+      return () => {}
+    }
     const onMessage = (event: MessageEvent): void => {
       const nextConfig = parseConfig(event)
       if (nextConfig !== undefined && (config === undefined || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
@@ -503,9 +563,9 @@ export function apply(ctx: BridgeContext): void {
         return
       }
       if (!isActivation(event, config)) return
-      const current = ctx.sessions.list.getSnapshot().current
+      const current = currentSelection(ctx.sessions.list.getSnapshot())
       if (current !== undefined) enqueue(current)
-      pendingDirty = ctx.uiSession !== undefined
+      pendingDirty = pending !== undefined
       helloReady = false
       requestRun(0, true)
     }
