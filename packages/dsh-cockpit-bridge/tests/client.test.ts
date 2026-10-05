@@ -180,6 +180,24 @@ describe('cockpit bridge client', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('resends a pending update that arrives during an in-flight snapshot', async () => {
+    const fixture = fakeCtx({ current: 'A' }, new Map([['A', { sessionId: 'A', kind: 'question', key: 'first' }]]))
+    const apply = await loadApply(); apply(fixture.ctx)
+    let finish!: (response: Pick<Response, 'ok' | 'status'>) => void
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/pending-snapshot') && !finish) return new Promise(resolve => { finish = resolve })
+      return ok()
+    })
+    configure(); await vi.advanceTimersByTimeAsync(0)
+    fixture.setPending(new Map())
+    await vi.advanceTimersByTimeAsync(250)
+    finish(ok()); await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/pending-snapshot').map(row => row.items)).toEqual([
+      [{ sessionId: 'A', kind: 'question', key: 'first' }], [],
+    ])
+    fixture.cleanup()
+  })
+
   it('cleans list subscription when pending subscription rejects initialization', async () => {
     const fixture = fakeCtx({ current: 'A' }, new Map())
     const release = vi.fn()

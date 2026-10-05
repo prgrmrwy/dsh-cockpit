@@ -445,8 +445,11 @@ export function apply(ctx: BridgeContext): void {
             fail(response.status, await readErrorCode(response), activeConfig)
             return
           }
+          if (disposed || config !== activeConfig) return
           pendingFingerprint = fingerprint
-          pendingDirty = false
+          // A newer snapshot may have arrived while the accepted one was in flight.
+          pendingDirty = JSON.stringify(pendingSnapshot()) !== fingerprint
+          if (pendingDirty) rerunRequested = true
           failureCount = 0
         }
 
