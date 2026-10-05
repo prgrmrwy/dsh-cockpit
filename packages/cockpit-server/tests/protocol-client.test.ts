@@ -44,7 +44,7 @@ describe('DSH 0.1.2 authentication', () => {
 })
 
 describe('protocol classification fixtures', () => {
-  it('distinguishes rc.2, unauthenticated typert, authenticated typert, and a generic 401', async () => {
+  it.each(['/', './'])('distinguishes rc.2, unauthenticated typert, authenticated typert, and a generic 401 with %s redirect', async location => {
     const originalFetch = globalThis.fetch
     try {
       globalThis.fetch = vi.fn(async url => {
@@ -61,7 +61,7 @@ describe('protocol classification fixtures', () => {
         const target = String(url)
         if (target.endsWith('/api/host.describe')) return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
         if (target === 'http://127.0.0.1:3081/') return response('dsh web authentication required; reopen the URL printed by dsh web.', 401)
-        if (target.includes('/?token=')) return response('', 303, { location: '/', 'set-cookie': cookieName + '=signed; Max-Age=2592000; HttpOnly' })
+        if (target.includes('/?token=')) return response('', 303, { location, 'set-cookie': cookieName + '=signed; Max-Age=2592000; HttpOnly' })
         if (target.endsWith('/api/session/list')) {
           const rpcId = JSON.parse(String(init?.body)).rpcId
           return response({ type: 'server-response', rpcId, result: { ok: true, value: { items: [] } } })
