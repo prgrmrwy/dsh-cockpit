@@ -14,5 +14,5 @@
 ## 3. devbox 验证与交付
 
 - [x] 3.1 bridge 全量 test/typecheck/build 通过，明确记录未运行的其它 workspace 验证
-- [ ] 3.2 devbox 隔离候选装载精确构建产物，证明完整 client boot、选择上报与 pending 出现/解除；不触及生产
-- [ ] 3.3 审查完整源码差异、运行 OpenSpec strict，交付 source commit/patch 与轻量证据，未发布物不得写入 ohmydsh 正式 pin
+- [x] 3.2 devbox 隔离候选装载精确构建产物，证明完整 client boot、选择上报与 pending 出现/解除；不触及生产
+- [x] 3.3 审查完整源码差异、运行 OpenSpec strict，交付 source commit/patch 与轻量证据，未发布物不得写入 ohmydsh 正式 pin
