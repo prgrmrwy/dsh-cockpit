@@ -45,12 +45,20 @@
 | specs/cockpit-device-port-forward/spec.md → 转发表的投影、标签与诊断受数据卫生约束 | 非法标签被拒绝，超长诊断被截断 | packages/cockpit-server/tests/forward-table.test.ts | rejects a newline holder and a 65-char label and truncates a 5000-char diagnostic to 300 | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅供驾驶舱自身页面使用 | 驾驶舱页面创建常驻条目 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | creates a pinned 6379 entry from the cockpit page and records it in the registry | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 转发表管理端点仅供驾驶舱自身页面使用 | 只携带能力串的请求不能使用管理端点 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | rejects capability-only calls to the forward management endpoints | 🟢 green |
-| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 设置页列出转发 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | lists the system and 3939 rows with 1 / 8 and no mutation controls | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 设置页列出转发 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | lists the main channel and a held 3939 row with 1 / 8 and no mutation controls | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 区块说明地址在哪台机器上有效 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | explains where the local address is valid and where entries are created and deleted | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 不在驾驶舱中时显示说明 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | shows not-connected text and no rows outside the cockpit | 🟢 green |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 设备禁用时终止全部附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | terminates every forward on disable and keeps the pinned mark | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 本机设备说明同机无需隧道 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | tells a local device that its components reach local addresses without a tunnel | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 已连接但表为空时给出下一步 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | invites a next step when the table holds only the main channel | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 每种状态都有文字 | packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts | gives every state a word so colour is never the only signal | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 配色只取宿主令牌且不引入外部资源 | packages/dsh-cockpit-bridge/tests/forwards-styles.test.ts | maps section colours onto host theme tokens without literals or external resources | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 导航行图标只作用于本区块那一行 | packages/dsh-cockpit-bridge/tests/nav-icon.test.ts | marks only the row whose text is this section's label, and unmarks it on disposal | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → bridge 在 DSH 设置页只读呈现本设备转发清单 | 导航行定位失败时保留官方图标 | packages/dsh-cockpit-bridge/tests/nav-icon.test.ts | stays silent when its row cannot be located | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 设备禁用时清理全部附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | terminates every forward on disable and keeps the pinned mark | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 附加转发失败不影响工作台 | packages/cockpit-server/tests/connectivity.service.test.ts | keeps device status and the workbench channel untouched when an additional forward fails | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 主通道重连或认证更新不影响附加转发 | packages/cockpit-server/tests/connectivity.service.test.ts | keeps additional forwards across a manual reconnect and a launch URL update | 🟢 green |
-| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 驾驶舱退出时清理自有转发 | packages/cockpit-server/tests/runtime-control.test.ts | terminates owned additional forward children on shutdown without touching foreign ssh | 🟢 green |
-| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 能力串无效时以既有响应拒绝 | packages/cockpit-server/tests/forwards.controller.test.ts | rejects an expired, unknown or origin-mismatched capability on acquire with 400 | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → 附加转发只在宿主机回环监听并随设备生命周期回收 | 驾驶舱退出清理自有转发 | packages/cockpit-server/tests/runtime-control.test.ts | terminates owned additional forward children on shutdown without touching foreign ssh | 🟢 green |
+| specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 能力串无效时拒绝 | packages/cockpit-server/tests/forwards.controller.test.ts | rejects an expired, unknown or origin-mismatched capability on acquire with 400 | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 不对应在线设备的 origin 带无效能力串返回 400 | packages/cockpit-server/tests/forwards.controller.test.ts | returns 400, not 409, for an invalid capability from an origin with no live device | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 主通道断开期间释放照常生效 | packages/cockpit-server/tests/forwards.controller.test.ts | releases a holder by the grant device while the workbench channel is reconnecting | 🟢 green |
 | specs/cockpit-device-port-forward/spec.md → 端口发布请求须经既有 capability 校验 | 同源页面只带 cookie 调用申请端点被拒绝 | packages/cockpit-server/tests/app-forwards.e2e.test.ts | rejects a cookie-only same-origin call to forwards/acquire with 401 | 🟢 green |
@@ -90,7 +98,8 @@
 - **共享夹具（bridge）**：沿用 `client.test.ts` 的 `FakeWindow`、`fakeCtx` 与 `fetchMock`。
   - `FakeWindow` 需扩展：支持 `pagehide` / `pageshow` 事件（带 `persisted`），并记录 `parent.postMessage` 的 `targetOrigin`。
   - `fakeCtx` 需扩展：`ctx.slots.inject/register`，用于设置区块。
-  - `forwards-settings.test.ts` 只断言区块的渲染描述（行数据、占用、是否有控件），不引入 DOM 库，因为 bridge 包的测试环境是 `node`。
+  - `forwards-settings.test.ts` 只断言区块的渲染描述（说明文案、行数据、占用、状态文字、空态、是否有控件），不引入 DOM 库，因为 bridge 包的测试环境是 `node`。
+  - `forwards-styles.test.ts` 只断言样式字符串的纪律（颜色只走 `var(--dsw-alias-…)`、规则里无字面色值、无 `url(`/`@import`/外部资源），与 `cockpit-web/tests/styles.test.ts` 同一做法。
 - **共享夹具（web）**：
   - `workbench-forwards.test.tsx` 沿用 `workbench.test.tsx` 的 `device()` 工厂与 jsdom。
   - 父页面收到的 `MessageEvent` 用 `new MessageEvent('message', { source: iframe.contentWindow, origin })` 构造。
@@ -114,7 +123,11 @@
   - spawn 的 argv 是 `-L 127.0.0.1:<local>:127.0.0.1:<devicePort>`，只绑定回环；
   - 转发表模块不创建任何 `net.Server` / `net.Socket`，用 `vi.spyOn(net, 'createServer')` 与 `'connect'` 断言未被调用。
 - **日志卫生**：“投影不含实例与页面标识”一行中，日志部分通过替换 Nest `Logger` 的 `log/warn/error` 收集输出，再断言不含 I1、P1。
-- **驾驶舱退出**：“驾驶舱退出时清理自有转发”扩展 `runtime-control.test.ts` 的 shutdown 用例，断言附加通道的 fake 子进程收到 `SIGTERM`，而非自有的 ssh 替身不被触碰。“不遗留 `ppid=1` 孤儿”依赖 `TunnelManager` 既有的进程组清理，由既有 `ssh-tunnel.test.ts` 覆盖，不另起真实进程。
+- **驾驶舱退出**：“驾驶舱退出清理自有转发”扩展 `runtime-control.test.ts` 的 shutdown 用例，断言附加通道的 fake 子进程收到 `SIGTERM`，而非自有的 ssh 替身不被触碰。“不遗留 `ppid=1` 孤儿”依赖 `TunnelManager` 既有的进程组清理，由既有 `ssh-tunnel.test.ts` 覆盖，不另起真实进程。
+- **MODIFIED 块的场景身份**：`设备禁用时清理全部附加转发`、`驾驶舱退出清理自有转发`、`能力串无效时拒绝` 三个场景名必须与主 spec 逐字一致（校验器按场景名判定是否丢场景，改名的场景会被判为丢失）。`附加转发失败不影响工作台` 原先被 MODIFIED 块丢掉，本次以主 spec 的事实为准恢复，并补一条真实测试（`connectivity.service.test.ts`）：附加转发失败时设备状态分级与工作台主通道不受影响。
+- **设置区块改版的 6 条新行**：先在旧实现上写出并确认为红（`pnpm --filter dsh-cockpit-bridge test` 报 6 项失败：视图模型形状、说明文案、令牌映射），实现后转绿。`forwards-styles.test.ts` 按**属性名**枚举颜色声明（`color` / `background*` / `border` 与四边、`outline` / `fill` / `stroke` / `shadow`），`border-radius`、`border-width` 属几何而非颜色，不参与该规则；同一行还覆盖“无外部资源”：CSS 中不得出现 `url(`、`@import`、`http:`、`@font-face` 与 `prefers-color-scheme`。
+- **导航行图标的两行**：`nav-icon.test.ts` 用 jsdom（本 change 给 bridge 新增 devDependency `jsdom@^30.0.1`，lockfile 只动 importer 3 行）。这个文件的风险全在选择器上，所以测试就该跑真 DOM：标记只落在「文案 === 本区块 label」的那一行、dialog 之外的同文案按钮不受影响、label 变化后重新标记、定位失败静默、dispose 摘掉全部标记、无 `document` 时不注册。测试与实现同批写出，灵敏度用三处变异确认：标记所有行 → 3 例失败；dispose 不摘标记 → 2 例失败；定位失败抛错 → 2 例失败。样式侧的「规则只匹配自有类名或本标记」也以变异（把 `[标记]>svg` 放宽成裸 `svg`）确认会失败。
+- **14.2 是写成即绿的测试**（故障隔离在基线上已成立），按既有惯例以两处变异确认它能抓到缺陷：① 去掉 `forward-table.ts#fail` 里的 `entry.diagnostic` 赋值 → 该行失败；② 让失败的附加通道在假隧道里顺带 kill 工作台子进程 → 该行失败。第 ② 次变异还暴露了原断言只按 `channelId` 过滤、不看 `alive` 的漏洞，断言已改为只统计存活子进程。
 - **N/A — 验收项“30 秒宽限期真实浏览器实测”**：
   - 为什么没有代码测试：它要验证的是真实浏览器的 EventSource 自动重连间隔与后台标签页节流。jsdom 与 fake timers 不能复现，仓库也没有 Playwright 等浏览器驱动。引入浏览器驱动超出本 change 范围。
   - 门禁检查是一个会失败的脚本 `scripts/acceptance/forward-grace.mjs`，在 tasks 中新建。它按 `bin/cockpit` 的方式从 `DSH_COCKPIT_HOME/token` 读 cookie，然后每秒轮询 `GET /api/devices`，读取目标设备转发表投影。

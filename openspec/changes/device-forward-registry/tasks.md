@@ -211,7 +211,54 @@
 ## 12. 收尾验证
 
 - [x] 12.1 Run `pnpm build && pnpm typecheck && pnpm lint && pnpm test`; confirm all pass — exit 0：root 12、shared 8、server 302（24 文件）、web 92（10 文件）、bridge 31（3 文件），全部通过
-- [x] 12.2 Run `openspec validate device-forward-registry --strict`; confirm it passes and every test-plan row is 🟢 — `Change 'device-forward-registry' is valid`；59/59 行 🟢
+- [x] 12.2 Run `openspec validate device-forward-registry --strict`; confirm it passes and every test-plan row is 🟢 — `Change 'device-forward-registry' is valid`；59/59 行 🟢（**该结论在 2026-10-08 复核时已失效，原因与修复见 14.1**；行数此后因组 13 增至 65，最终状态见 14.5）
 - [x] 12.3 新建 `scripts/acceptance/forward-grace.mjs`（test-plan 验收项）：读 token、轮询 `GET /api/devices`、按三步判定，不满足则非零退出 — 判定逻辑为纯函数，`tests/forward-grace.test.mjs` 固定其判定（前置条件、pid 稳定、30–40 秒窗口、参数）；缺参数或缺 token 时非零退出；eslint 覆盖 `scripts/**/*.mjs`
 - [ ] 12.4 Run `node scripts/acceptance/forward-grace.mjs --device <id>` against a real browser session; confirm it exits 0（人类决策：30 秒宽限期真实浏览器实测），并记录实测时间
-- [ ] 12.5 Manual browser check: 设备面板创建 / 删除常驻、设备页面重载释放持有、DSH 设置区块只读显示均符合 spec
+- [ ] 12.5 Manual browser check: 设备面板创建 / 删除常驻、设备页面重载释放持有、DSH 设置区块只读显示均符合 spec（含 13.17 的深浅色核对）
+
+## 13. 设置区块的可读性与样式（design D9；追加范围，owner 决定 2026-10-08）
+
+原 8.x 只做到「有行、有占用、无控件」，落地的是一张无样式 `<table>` 加两句 `<p>`：在设置面板里既不像宿主的一部分，也没有一处说明这些隧道是什么、地址在哪台机器上有效、去哪里增删。本组按 D9 的「区块要回答什么」重做呈现。
+
+- [x] 13.1 Write failing test: `explains where the local address is valid and where entries are created and deleted` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason) — 写成后 6 项确认红（视图模型形状、说明文案、令牌映射）
+- [x] 13.2 Implement: 视图模型增加说明段（由驾驶舱建立 / 本地地址只在驾驶舱那台机器上有效 / 创建与删除在驾驶舱设备面板）to pass 13.1 — 视图模型输出说明段与 hint
+- [x] 13.3 Refactor; full suite stays green
+- [x] 13.4 Write failing test: `tells a local device that its components reach local addresses without a tunnel` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason) — 本机设备态改为 title + guidance
+- [x] 13.5 Implement: 本机设备态给出同机无需隧道的说明，且不含条目与占用 to pass 13.4 — 本机设备说明同机无需隧道，且不含条目与占用
+- [x] 13.6 Refactor; full suite stays green
+- [x] 13.7 Write failing test: `invites a next step when the table holds only the main channel` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason) — 空表给出下一步，主通道与附加条目分组
+- [x] 13.8 Implement: 主通道与附加条目分组，空表给出「组件申请或驾驶舱添加常驻后出现」的下一步 to pass 13.7 — `main` / `additional` 分组 + 空态引导
+- [x] 13.9 Refactor; full suite stays green
+- [x] 13.10 Write failing test: `gives every state a word so colour is never the only signal` in `packages/dsh-cockpit-bridge/tests/forwards-settings.test.ts` (assert it fails for the right reason) — 同时把既有行测试改为按「主通道 / 常驻 / 随持有者」与 13.2 的说明段断言 — 同时把既有行测试改为断言主通道/常驻/随持有者与说明段
+- [x] 13.11 Implement: 四种状态各有文字，诊断独立成行并带标签 to pass 13.10 — 四种状态文字保留，诊断独立成行并带「诊断」标签
+- [x] 13.12 Refactor; full suite stays green
+- [x] 13.13 Write failing test: `maps section colours onto host theme tokens without literals or external resources` in `packages/dsh-cockpit-bridge/tests/forwards-styles.test.ts` (assert it fails for the right reason) — 断言令牌命名空间、无字面色值、无外部资源、规则只匹配自有类名
+- [x] 13.14 Implement: 新增 `src/client/settings-styles.ts`（自有类名前缀 + 插件标记 + 令牌映射，无字面色值、无 `url(`/`@import`），注册时幂等注入、dispose 时移除 to pass 13.13 — 实现为 `dshcf-` 类名前缀 + `data-dsh-cockpit-forwards` 标记；无 `document` 时静默跳过
+- [x] 13.15 Refactor; full suite stays green
+- [x] 13.16 重跑 `pnpm --filter dsh-cockpit-bridge build`，确认 `lib/client.js` 仍构建成功且 `react` 保持 external — `pnpm build` 通过；`lib/client.js` 构建成功，`react` 保持 external
+- [x] 13.17 用真实 DSH 主题令牌渲染区块截图核对深色与浅色（自有预览夹具，不进入仓库）；把结论并入 12.5 的人工浏览器核对清单 — 用真实 DSH 主题令牌（从 `@deepseek-ai/dsh-client-ui-theme` 提取的 `body` / `body[data-ds-dark-theme]` 两组）渲染真实组件截图：深色与浅色均可读，380px 窄栏不溢出；据此把空槽改用 `state-idle-primary`（原先 `border-l1` 在深色下几乎不可见）、主通道 chip 改用 `border-l2` 填充。预览夹具在仓库外（`/tmp/dshcf-preview`）
+
+## 14. 归档前置修正（MODIFIED 块的场景身份）
+
+`openspec validate --strict` 在 2026-10-08 复核时失败：本 change 的两个 MODIFIED 块改写了主 spec 的场景名，校验器按场景名判定，于是把「改名」判成「丢场景」，归档会被拒绝。12.2 当时通过是因为主 spec 之后又被同步过（`8e2b2bb`）。
+
+- [x] 14.1 把 MODIFIED 块中被改名的场景改回主 spec 的逐字名称：`设备禁用时清理全部附加转发`、`驾驶舱退出清理自有转发`、`能力串无效时拒绝`；并为被整个丢掉的 `附加转发失败不影响工作台` 恢复场景，to pass `openspec validate device-forward-registry --strict` — 已执行，`Change 'device-forward-registry' is valid`
+- [x] 14.2 Write failing test: `keeps device status and the workbench channel untouched when an additional forward fails` in `packages/cockpit-server/tests/connectivity.service.test.ts` (assert it fails for the right reason) — 写成即绿（隔离在基线上已成立）
+- [x] 14.3 Implement: 需要时让附加转发失败只影响该条目自身，to pass 14.2（若基线上即为绿，按既有惯例以变异确认测试能抓到缺陷，并在 test-plan 注明） — 行为已满足，无实现改动；按惯例以两处变异确认测试有效（去诊断赋值、失败连带 kill 工作台），见 test-plan
+- [x] 14.4 Refactor; full suite stays green
+- [x] 14.5 更新 `test-plan.md` 的行名与新增行，并按 12.1 全量重跑 `pnpm build && pnpm typecheck && pnpm lint && pnpm test` — 行名与新增行已更新（65 行全 🟢，无 🔴）；全量门禁 exit 0：root 12、shared 8、server 332（25 文件）、web 95（11 文件）、bridge 50（5 文件，组 15 后复跑），无 skipped；`openspec validate device-forward-registry --strict` 报 `is valid`
+## 15. 设置导航行图标（design D9；owner 追加 2026-10-08）
+
+`settings.section` 只投影 `id/order/label`，导航行图标由宿主在闭集里按 id 选，第三方区块一律回退齿轮。本组按 ohmydsh `dsh-memex` 已上线的**有界 DOM 适配**范式，为本区块的行画一个转发语义字形。
+
+- [x] 15.1 Write failing test: `marks only the row whose text is this section's label, and unmarks it on disposal` in `packages/dsh-cockpit-bridge/tests/nav-icon.test.ts` (assert it fails for the right reason) — jsdom 环境；同时覆盖「label 变化后重新标记」与「没有 document 时不注册」 — 与实现同批写出（4 个用例），改用变异确认灵敏度：①把「文案比对」改成恒真（标记所有导航行）→ 3 例失败；②dispose 不摘标记 → 2 例失败；③定位失败改为抛错 → 2 例失败；另含「无 document 时不注册」
+- [x] 15.2 Implement: 新增 `src/client/nav-icon.ts`，把标记写到「可见文案 === 当前 label」的那一个导航按钮上（MutationObserver + 幂等 reconcile），dispose 时移除全部标记，to pass 15.1 — `nav-icon.ts`：只标记 `[role="dialog"] nav button` 中文案等于当前 label 的那一个，MutationObserver + 幂等 reconcile
+- [x] 15.3 Refactor; full suite stays green
+- [x] 15.4 Write failing test: `stays silent when its row cannot be located` in `packages/dsh-cockpit-bridge/tests/nav-icon.test.ts` (assert it fails for the right reason) — 见 15.1 的变异③与「定位失败」用例
+- [x] 15.5 Implement: 定位失败不抛错、不写标记、保留宿主官方图标 to pass 15.4 — 找不到行时不抛错、不写标记，宿主官方图标原样保留
+- [x] 15.6 Refactor; full suite stays green
+- [x] 15.7 Implement: `settings-styles.ts` 增加导航标记 + 字形（两个端口 + 指向右侧的箭头）的 mask 规则；`::before` 显式 `inline-block`，隐藏官方 svg（design D9 的失败面分析），并在 `forwards-styles.test.ts` 追加断言（标记只作用于自己的行、mask 用 `currentColor`、无字面色值/外部资源） — 字形与标记规则落在 `settings-styles.ts`（`NAV_MARKER` + mask）；`forwards-styles.test.ts` 追加「规则只匹配自有类名或本标记」「mask 用 currentColor」「标记规则隐藏官方 svg」，并以变异（把规则放宽成裸 `svg`）确认断言有效
+- [x] 15.8 在 `index.ts` 的 settings 子 fiber 内注册适配（label 与槽复用同一 `SECTION_LABEL`），dispose 时随 effect 回收 — 与样式注入并列注册在 settings 子 fiber 内，label 复用同一 `SECTION_LABEL`
+- [x] 15.9 依赖变化：`dsh-cockpit-bridge` 新增 devDependency `jsdom@^30.0.1`（jsdom 测试环境）。**只加 importer 一行**——`pnpm add` 会把 rolldown/oxc 等无关包上浮（1.2.9→1.2.13），故回滚 lockfile 后手工补 3 行并 `pnpm install --frozen-lockfile` 验证；lockfile 最终 diff 仅 3 行 — `pnpm add` 会把 rolldown/oxc 无关上浮（1.2.9→1.2.13），故回滚 lockfile 后手工补 importer 3 行，`pnpm install --frozen-lockfile` 通过（jsdom 链接到 bridge/node_modules）
+- [x] 15.10 重跑 `pnpm --filter dsh-cockpit-bridge build`，确认 `lib/client.js` 仍构建成功且 `react` 保持 external — `pnpm build` 通过，`lib/client.js` 构建成功，react 保持 external
+- [x] 15.11 仓外预览夹具里搭一个假的设置导航行，截图核对字形在深浅色下的可读性与对齐；把结论并入 12.5 的人工核对清单 — 假设置导航（记忆 / 驾驶舱转发 / 订阅）中标记只落在「驾驶舱转发」行；字形在 5x 缩放下深浅色均可读。**过程修正（owner 反馈后重做）**：初版「两个端口 + 箭头」在 16px 下挤成一团；二版「端口 + 离场箭头」虽重量相当但形似另一图标家族。终版按 owner 要求改为 **transfer（相向双箭头）**，并把风格对齐宿主自身标准——从 `dsh-client-ui-settings-shell` 的 `navIcon(id)` 追到 `dsh-client-ui-primitives` 的 `Icon*OutlineMedium`：`stroke-width 1.3`（`ICON_MEDIUM_STROKE`）、`viewBox 0 0 16 16`、`fill:none`、`stroke:currentColor`、圆头圆角取自 `IconChevronsUpDownOutlineMedium`、几何落在 1.5–14.5 框内。预览夹具的相邻行改用**真实** DSH 图标路径（齿轮与 chevrons）对比，深浅色下重量与风格一致（design D9 已更新）

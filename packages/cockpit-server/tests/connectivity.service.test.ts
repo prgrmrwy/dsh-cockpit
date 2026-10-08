@@ -77,6 +77,8 @@ interface FakeChild {
   alive: boolean
 }
 const children: FakeChild[] = []
+/** Channels that must fail to establish, for the failure-isolation test only. */
+const failingChannels = new Set<string>()
 let nextPid = 7000
 
 class FakeTunnelManager {
@@ -84,8 +86,8 @@ class FakeTunnelManager {
   constructor(readonly options: unknown) {}
   async connect(request: { deviceId: string; sshAlias: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number }) {
     tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort, channelId: request.channelId, remoteDshPort: request.remoteDshPort })
-    if (!tunnel.established) throw new Error('no ssh in test environment')
     const channelId = request.channelId ?? 'workbench'
+    if (!tunnel.established || failingChannels.has(channelId)) throw new Error('no ssh in test environment')
     const key = `${request.deviceId}\u0000${channelId}`
     this.#kill(key)
     const preferred = request.preferredLocalPort
@@ -336,6 +338,7 @@ beforeEach(() => {
   takenPorts.clear()
   tunnelConnects.length = 0
   children.length = 0
+  failingChannels.clear()
   nextFreshPort = 51000
   tunnel.established = false
   rc2.available = true
@@ -748,6 +751,41 @@ describe('additional forwards survive workbench connection replacement', () => {
 
     expect(child.alive).toBe(true)
     expect(children.filter(candidate => candidate.channelId === 'fwd-3939')).toEqual([child])
+
+    await service.onApplicationShutdown()
+  })
+
+  it('keeps device status and the workbench channel untouched when an additional forward fails', async () => {
+    const { service, child } = await readyRemoteWithForward()
+    // Liveness matters: a killed child still sits in `children`.
+    const liveWorkbench = () => children.filter(candidate => candidate.channelId === 'workbench' && candidate.alive)
+    const workbenchBefore = liveWorkbench()
+    const endpointBefore = service.statuses()[0]!.endpoint
+    const attemptsBefore = tunnelConnects.filter(request => request.channelId === 'workbench').length
+    expect(workbenchBefore).toHaveLength(1)
+
+    // One additional forward cannot establish; nothing else is told to fail.
+    failingChannels.add('fwd-5432')
+    try {
+      service.acquireForward('a', 5432, { pageId: 'page-bbbbbbbbbbbbbbbb', instanceId: 'inst-bbbbbbbbbbbbbbbb', holder: 'cards' })
+      await waitFor(() => service.statuses()[0]?.forwards?.rows.some(row => row.devicePort === 5432 && row.state === 'retrying'))
+
+      // The failure reaches the requester as a structured reason — a state plus
+      // a bounded diagnostic — rather than as a broken device.
+      const row = service.statuses()[0]!.forwards!.rows.find(candidate => candidate.devicePort === 5432)!
+      expect(row).toMatchObject({ kind: 'additional', state: 'retrying', holderCount: 1 })
+      expect((row as { diagnostic?: string }).diagnostic ?? '').not.toBe('')
+    } finally {
+      failingChannels.delete('fwd-5432')
+    }
+
+    // The device's own grading, its workbench channel and its other forwards
+    // are all exactly where they were.
+    expect(service.statuses()[0]?.state).toBe('READY')
+    expect(service.statuses()[0]?.endpoint).toBe(endpointBefore)
+    expect(child.alive).toBe(true)
+    expect(liveWorkbench()).toEqual(workbenchBefore)
+    expect(tunnelConnects.filter(request => request.channelId === 'workbench')).toHaveLength(attemptsBefore)
 
     await service.onApplicationShutdown()
   })

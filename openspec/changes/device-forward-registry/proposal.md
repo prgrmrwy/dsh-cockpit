@@ -36,6 +36,9 @@
 - **新 bridge 接缝 `cockpitBridge.forwards`**，提供 acquire / release / list / subscribe。**BREAKING**：它在 bridge 0.6.0 中直接替换 `cockpitBridge.portForward`，同一版本移除旧端点 `publishable-port` 与 `publish-port`，不保留兼容层。
 - **驾驶舱父页面向设备 iframe 推送转发表快照**，`targetOrigin` 精确到设备 origin，bridge 不轮询。
 - **bridge 在 DSH 设置页只读展示**本设备的转发清单、状态与 `N / 8` 占用，不提供创建或删除。
+  - **这个区块要回答两个问题**：这些隧道是什么，现在是否正常。因此它先说明（谁建立的、地址在谁的机器上有效、创建与删除去哪里做），再列数据，而不是只把数据摊开。
+  - **呈现跟随宿主主题**：颜色只用 DSH 官方 `--dsw-alias-*` 角色令牌（深色/浅色自适应），版式与结构由 bridge 自己的类名和自注入样式表承担；不引入自己的配色、字体或图标资源。
+  - **状态不止靠颜色**：每种状态同时有文字；未连接、本机设备与空表各自给出下一步，而不是一句结论。
 - **驾驶舱设备管理面板新增每设备转发清单**：可查看，可手动创建常驻条目，可删除；同时显示上限占用与 pid。
 - **数据卫生**：
   - 标签只能是 1–64 个可打印 ASCII 字符；
@@ -87,7 +90,7 @@ bridge 回调路由名单的唯一权威来源，是 `cockpit-api-auth` 中的 r
   - `Workbench.tsx`：推送快照，并转发实例结束消息。
   - `panels/Panels.tsx`：新增转发清单。
 - **dsh-cockpit-bridge 0.6.0**：
-  - 新增 `forwards` 接缝、实例 id 与 `pagehide` 通知、只读设置区块。
+  - 新增 `forwards` 接缝、实例 id 与 `pagehide` 通知、只读设置区块，以及它自己的样式表 `settings-styles.ts`（只把颜色角色映射到官方令牌，不定义配色）。
   - 调整 `seamRequest` 的错误分层。
   - 删除 `portForward`。
 - **文档**：README 端口发布段落与 BACKLOG 中相关条目。
