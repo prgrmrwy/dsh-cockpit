@@ -56,6 +56,14 @@
   - `release-instance` validates `pageId` → 400 `invalid-page`;
   - it starts the page grace timer, so an ended-instance set cannot stay resident forever.
 
+### Acceptance Round（2026-10-08，0.6.2 发布后）
+
+- **发布**：bridge 0.6.2 已发布为 GitHub release（tag `dsh-cockpit-bridge-v0.6.2`，资产 48718 B，`sha256 99c24ff2…46a4`，下载物与本地字节一致，URL 实测 200）。本机与 lumevm 的 ohmydsh manifest pin 均已指向该 URL 并完成 `dsh build`（两边部署物 `version=0.6.2`，`lib/client.js` 含 `dsh-cockpit-forwards-nav` 与 `dshcf-meter`）。
+- **12.4 实测 PASS**：`PASS  offline-watch=60s background=360s reclaim=30.2s`（lumevm，`additional:3939 ready, 1 holder, pid 69907`）。
+- **12.5 三项中两项已真机核对**（详见 tasks 12.5 的逐项记录）：面板建/删常驻与区块同步、区块只读与新呈现、本机设备态、导航字形；**唯一未完成**的是「设备页重载释放持有」，原因是本次的浏览器驱动无法在跨源 frame 内发起 reload，已给出人工复核步骤。
+- **不需要重启本机 DSH**（修正早先的判断）：DSH 的客户端插件由宿主**按请求从磁盘提供**，`dsh build` 后本机 3080 的页面刷新即可加载 0.6.2 —— 已由「本机设备区块显示新版 `本机设备无需转发` + 新说明」实测证明；本 change 又只改客户端半区（host 半区 `lib/index.js` 未变），故无需重启。原计划里「重启会终结会话」的顾虑随之消失。
+- **环境陷阱（运维）**：lumevm 的 SSH 别名走 `lume-ssh-proxy`，它调用裸 `lume`；若驾驶舱从 PATH 不含 `~/.local/bin` 的 shell 启动，lumevm 会静默降级为 `SSH_UNREACHABLE`（devbox 不受影响）。用带 `~/.local/bin` 的 PATH 重启驾驶舱后即 READY。
+
 ### Delivery Decisions（owner，2026-10-08）
 
 - **不 bump 版本**：owner 决定本次不动 `packages/dsh-cockpit-bridge` 的版本号（仍为 0.6.1），到正式发包时再 bump。

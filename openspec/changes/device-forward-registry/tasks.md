@@ -213,8 +213,11 @@
 - [x] 12.1 Run `pnpm build && pnpm typecheck && pnpm lint && pnpm test`; confirm all pass — exit 0：root 12、shared 8、server 302（24 文件）、web 92（10 文件）、bridge 31（3 文件），全部通过
 - [x] 12.2 Run `openspec validate device-forward-registry --strict`; confirm it passes and every test-plan row is 🟢 — `Change 'device-forward-registry' is valid`；59/59 行 🟢（**该结论在 2026-10-08 复核时已失效，原因与修复见 14.1**；行数此后因组 13 增至 65，最终状态见 14.5）
 - [x] 12.3 新建 `scripts/acceptance/forward-grace.mjs`（test-plan 验收项）：读 token、轮询 `GET /api/devices`、按三步判定，不满足则非零退出 — 判定逻辑为纯函数，`tests/forward-grace.test.mjs` 固定其判定（前置条件、pid 稳定、30–40 秒窗口、参数）；缺参数或缺 token 时非零退出；eslint 覆盖 `scripts/**/*.mjs`
-- [ ] 12.4 Run `node scripts/acceptance/forward-grace.mjs --device <id>` against a real browser session; confirm it exits 0（人类决策：30 秒宽限期真实浏览器实测），并记录实测时间
-- [ ] 12.5 Manual browser check: 设备面板创建 / 删除常驻、设备页面重载释放持有、DSH 设置区块只读显示均符合 spec（含 13.17 的深浅色核对）
+- [x] 12.4 Run `node scripts/acceptance/forward-grace.mjs --device <id>` against a real browser session; confirm it exits 0（人类决策：30 秒宽限期真实浏览器实测），并记录实测时间 — **2026-10-08 实测 PASS**：`--device device-wr3r7ako --device-port 3939`（lumevm，持有者由设备页的 memex「打开卡片」经 shim 建立，1 holder，pid 69907）。脚本判定输出 `PASS  offline-watch=60s background=360s reclaim=30.2s`：① 驾驶舱标签页 `set offline on` 6 秒后恢复（`navigator.onLine=false→true` 已核对离线确实生效），pid 在 60 秒观察窗内不变；② 切到另一标签页后台 **360 秒**，pid 不变；③ 关闭驾驶舱标签页后条目在 **30.2 秒** 被回收（落在 30–40 秒窗口内，早于窗口即失败）。首轮曾因 `agent-browser offline` 不是顶层命令（应为 `set offline`）而得到空洞通过，已中止重跑，上面是真实离线的那次
+- [ ] 12.5 Manual browser check: 设备面板创建 / 删除常驻、设备页面重载释放持有、DSH 设置区块只读显示均符合 spec（含 13.17 的深浅色核对） — **2026-10-08 三项里两项已在真机核对**：
+  - ✅ 设备面板创建 / 删除常驻：驾驶舱设备管理面板建 6379「redis」→ 面板 `1 / 8`、子进程 pid 67399、标签与「常驻」徽标齐全；DSH 区块**同步**出现该行（`1 / 8` + 常驻 + redis）；删除后面板与区块同时回到 `0 / 8`。
+  - ✅ DSH 设置区块只读显示：lumevm（0.6.2）区块渲染「说明 + `3080 → 127.0.0.1:54695` + 就绪 + 主通道 + 附加转发 `0 / 8` + 空态引导 + 只读说明」，无任何创建 / 删除 / 释放控件；本机设备（host）显示「本机设备无需转发」+ 同机说明（13.17 的本机态）；导航行显示 transfer 字形，与相邻宿主图标重量一致。
+  - ⏳ **设备页面重载释放持有：未由本次自动化核对**。真机核对需要一次「设备页自身的重载」（Chrome 里在 iframe 内右键 → 重新加载框架，或 DevTools 对 frame 执行 reload）。本次使用的浏览器驱动无法在跨源 frame 内发起 reload（`eval` 只作用于主帧，`iframe.src = iframe.src` 是 no-op）；用 `about:blank` 中转的替代做法**不能**作为证据（它可能让父页面在 iframe 卸载时清掉 origin 集合而拒绝 instance-ended，且释放后 shim 也可能重新持有，两者无法区分）。请人工用一次 frame reload 复核：打开驾驶舱 → lumevm → 设置 → 记忆 → 展开 → 打开卡片（产生 1 个持有者，面板 `1 / 8`）→ 在该设备页内右键「重新加载框架」→ 期望条目在数秒内（远早于 30 秒宽限）从面板消失。
 
 ## 13. 设置区块的可读性与样式（design D9；追加范围，owner 决定 2026-10-08）
 
