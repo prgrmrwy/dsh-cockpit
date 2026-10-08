@@ -103,6 +103,13 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 设备的 DSH web 才能获得协议 v2 的可靠确认；重启前旧版本仍按尽力而为方式工作，
 不影响原生 DSH 工作台。
 
+## 0.6.1 发布说明（DSH 0.2.0 兼容）
+
+- 适配 DSH 0.2.0：当前会话改读 `sessions.list` 的 `byId[*].retainedBy.mainView`（0.2.0 删除了 `current`），待处理交互改读 `uiSession.sessionStatus`；0.1.x 旧形状继续兼容。未知 pending 来源不再发送假的空快照。
+- 修复快照在途期间到达的解除被旧响应覆盖而漏报的问题（在途后比较实时指纹并补发）。
+- 与驾驶舱服务端同时发布的认证修复：DSH 0.2.0 成功交换 launch token 返回 `Location: ./`，服务端现精确接受 `/` 与 `./` 两种根表示，其余重定向仍拒绝。
+- 服务名、协议与 `cockpitBridge.forwards` 契约不变；0.6.0 → 0.6.1 无需迁移，回滚只需改回 0.6.0 pin（但 0.6.0 在 DSH 0.2 下页面会加载失败）。
+
 ## 0.6.0 发布说明（升级与回滚）
 
 - **必须与驾驶舱同时发布**：0.6.0 删除了 `cockpitBridge.portForward`，驾驶舱同一版本删除了 `/api/bridge/publishable-port` 与 `/api/bridge/publish-port`。bridge 0.5.x 配新驾驶舱，或 bridge 0.6.0 配旧驾驶舱，端口转发都不可用（消费方回落本机地址，原生 DSH 工作台不受影响）。
