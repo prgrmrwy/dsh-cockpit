@@ -280,14 +280,206 @@ window.__ModuleLoader__.load({
 			};
 		}
 		//#endregion
+		//#region src/client/settings-styles.ts
+		/**
+		* Styles for the read-only “驾驶舱转发” settings section (design D9).
+		*
+		* The section lives inside the host's settings panel, so the **host owns the
+		* theme**: every colour below is a role mapped onto an official `--dsw-alias-*`
+		* token, and the section contributes structure, scale and one memorable device
+		* instead of a palette of its own. That is why nothing here hard-codes a colour
+		* or reads `prefers-color-scheme` — dark and light are the host's to switch.
+		*
+		* The memorable device is the eight-slot occupancy meter: the additional-entry
+		* pool really is bounded at eight, so drawing the slots answers “how much room
+		* is left” without asking anyone to remember the number.
+		*
+		* Rules only ever match this plugin's own `dshcf-` classes (the section carries
+		* {@link SECTION_ATTRIBUTE}), so the sheet cannot reach another plugin's row.
+		* No webfonts, no images, no network.
+		*
+		* @module dsh-cockpit-bridge/client/settings-styles
+		*/
+		/** Marks the section root, so the stylesheet and the injected node stay ours. */
+		const SECTION_ATTRIBUTE = "data-dsh-cockpit-forwards";
+		/** Marks this section's own row in the settings navigation (see `nav-icon.ts`):
+		* the slot projects no icon field, so the row is identified by its label and
+		* then drawn by the sheet below. */
+		const NAV_MARKER = "data-dsh-cockpit-forwards-nav";
+		/**
+		* A 16px transfer glyph: two opposing arrows, the conventional "traffic moves
+		* between two ends" mark, drawn as a mask so it inherits `currentColor` like the
+		* official glyphs.
+		*
+		* Style is calibrated against the host's own nav icons rather than invented:
+		* `dsh-client-ui-settings-shell` renders every section row through
+		* `navIcon(id)`, which returns an `Icon*OutlineMedium` primitive from
+		* `@deepseek-ai/dsh-client-ui-primitives` — `viewBox="0 0 16 16"`, `fill="none"`,
+		* `stroke="currentColor"`, `stroke-width: ICON_MEDIUM_STROKE` (= 1.3, not 1: the
+		* set ships a 1px "Regular" weight too), `aria-hidden`, geometry inside the
+		* 1.5–14.5 box. Round caps/joins come from `IconChevronsUpDownOutlineMedium`,
+		* the set's own arrow-shaped icon, so the arrowheads match its chevrons.
+		*
+		* Two ports joined by an arrow was tried first and read as a dense blob at
+		* 16px; one outline plus one stroke (the earlier port glyph) then read as a
+		* different icon family from its neighbours. No emoji font, no image asset, no
+		* network.
+		*/
+		const TRANSFER_MASK = `url("data:image/svg+xml,${encodeURIComponent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#000\" stroke-width=\"1.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M1.8 5.6h11.4\"/><path d=\"m10.9 3.3 2.3 2.3-2.3 2.3\"/><path d=\"M14.2 10.4H2.8\"/><path d=\"m5.1 8.1-2.3 2.3 2.3 2.3\"/></svg>")}")`;
+		const STYLE_ID = "dsh-cockpit-forwards-styles";
+		/** The section's whole stylesheet. */
+		const SECTION_CSS = `
+.dshcf{
+  --dshcf-ink:var(--dsw-alias-label-primary,inherit);
+  --dshcf-ink-2:var(--dsw-alias-label-secondary,inherit);
+  --dshcf-ink-3:var(--dsw-alias-label-tertiary,inherit);
+  --dshcf-rule:var(--dsw-alias-border-l2,currentColor);
+  --dshcf-rule-weak:var(--dsw-alias-border-l1,currentColor);
+  --dshcf-rule-strong:var(--dsw-alias-border-l3,currentColor);
+  --dshcf-accent:var(--dsw-alias-state-business-primary,currentColor);
+  --dshcf-ok:var(--dsw-alias-state-success-primary,currentColor);
+  --dshcf-warn:var(--dsw-alias-state-warn-primary,currentColor);
+  --dshcf-error:var(--dsw-alias-state-error-primary,currentColor);
+  --dshcf-mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  display:flex;flex-direction:column;gap:10px;
+  color:var(--dshcf-ink);font-size:12px;line-height:1.55;
+}
+/* Prose explains; it never runs the width of a wide panel. */
+.dshcf-lede{margin:0;max-width:62ch;color:var(--dshcf-ink-2)}
+.dshcf-title{margin:0;font-size:13px;font-weight:500}
+.dshcf-guidance{margin:0;max-width:62ch;color:var(--dshcf-ink-2)}
+/* The pool is a section of its own: the meter governs the rows under it. */
+.dshcf-pool{display:flex;flex-direction:column;gap:2px;border-top:1px solid var(--dshcf-rule-strong);padding-top:10px}
+.dshcf-usage{display:flex;align-items:center;gap:8px}
+.dshcf-usage-label{color:var(--dshcf-ink-3);font-size:11px}
+.dshcf-meter{display:inline-flex;gap:2px;margin-left:auto}
+/* An unused slot must still be visible: the pool size is the information. */
+.dshcf-seg{width:14px;height:4px;border-radius:1px;background:var(--dsw-alias-state-idle-primary,currentColor)}
+.dshcf-seg[data-filled="true"]{background:var(--dshcf-accent)}
+.dshcf-usage-count{font-family:var(--dshcf-mono);font-size:11px;color:var(--dshcf-ink-3);font-variant-numeric:tabular-nums}
+.dshcf-rows{list-style:none;margin:0;padding:0;display:flex;flex-direction:column}
+/* One row is the object itself: device port becomes a local address. Ports and
+   addresses are monospace because one misread digit costs real debugging time. */
+.dshcf-row{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 10px;padding:7px 0}
+.dshcf-row+.dshcf-row{border-top:1px solid var(--dshcf-rule-weak)}
+.dshcf-port{font-family:var(--dshcf-mono);font-size:13px;font-weight:500;font-variant-numeric:tabular-nums}
+.dshcf-arrow{color:var(--dshcf-ink-3)}
+.dshcf-address{font-family:var(--dshcf-mono);color:var(--dshcf-ink-2)}
+.dshcf-state{font-size:11px;color:var(--dshcf-ink-2);margin-left:auto}
+.dshcf-row[data-state="ready"] .dshcf-state{color:var(--dshcf-ok)}
+.dshcf-row[data-state="retrying"] .dshcf-state{color:var(--dshcf-warn)}
+.dshcf-row[data-state="starting"] .dshcf-state{color:var(--dshcf-ink-3)}
+.dshcf-row[data-state="paused"] .dshcf-state{color:var(--dshcf-ink-3)}
+/* Lifetime is the one filled chip: whether an entry survives its holders is the
+   single thing a row must say at a glance. */
+.dshcf-life{font-size:11px;padding:0 6px;border:1px solid var(--dshcf-rule);border-radius:4px;color:var(--dshcf-ink-3);white-space:nowrap}
+.dshcf-row[data-kind="main"] .dshcf-life{border-color:transparent;background:var(--dshcf-rule);color:var(--dshcf-ink-2)}
+.dshcf-holders{flex-basis:100%;font-family:var(--dshcf-mono);font-size:11px;color:var(--dshcf-ink-3);overflow-wrap:anywhere}
+/* A diagnostic is labelled and gets its own line; it is never mixed into the
+   holder labels it would otherwise look like. */
+.dshcf-diag{flex-basis:100%;margin:2px 0 0;display:flex;gap:6px;font-size:11px;color:var(--dshcf-error);overflow-wrap:anywhere}
+.dshcf-diag-label{flex:none;color:var(--dshcf-ink-3)}
+.dshcf-empty{margin:4px 0 0;max-width:62ch;color:var(--dshcf-ink-3)}
+.dshcf-hint{margin:0;border-top:1px solid var(--dshcf-rule);padding-top:8px;max-width:62ch;color:var(--dshcf-ink-3)}
+/* Nav row glyph. Both rules are scoped to the marker, which only ever lands on
+   the row whose visible text is this section's label, so the sheet cannot reach
+   another plugin's row. The replacement is an explicit inline-block rather than
+   an anonymous inline box: if the host row is not a flex container, an inline
+   ::before would ignore width/height and the row would lose its icon entirely
+   (the official svg is hidden by the rule above it). This way the worst case is
+   a slightly off alignment instead of no icon at all. */
+[${NAV_MARKER}]>svg{display:none}
+[${NAV_MARKER}]::before{content:'';display:inline-block;vertical-align:-3px;flex:none;width:16px;height:16px;
+  background-color:currentColor;
+  -webkit-mask:${TRANSFER_MASK} center/16px 16px no-repeat;mask:${TRANSFER_MASK} center/16px 16px no-repeat}
+`;
+		/**
+		* Inject the section stylesheet, once per page.
+		*
+		* Returns the disposer that removes it again, or `undefined` when there is no
+		* document to inject into (non-browser environments). The first injector owns
+		* the sheet: a second mount reuses the node and returns a no-op disposer, so
+		* unloading one mount can never strip the styles from another.
+		*/
+		function injectSectionStyles(host = globalThis.document) {
+			if (host === void 0) return void 0;
+			if (host.getElementById(STYLE_ID) !== null) return () => {};
+			const style = host.createElement("style");
+			style.id = STYLE_ID;
+			style.textContent = SECTION_CSS;
+			host.head.appendChild(style);
+			let removed = false;
+			return () => {
+				if (removed) return;
+				removed = true;
+				style.remove();
+			};
+		}
+		//#endregion
+		//#region src/client/nav-icon.ts
+		/**
+		* Paint the port-to-port glyph on this section's own row in the DSH settings
+		* navigation.
+		*
+		* `settings.section` projects only `id`, `order` and `label`, and the settings
+		* shell picks the row icon from a closed list of built-in ids — so a third-party
+		* section renders the fallback gear. Until that contract grows an icon field, a
+		* plugin can only identify its **own** row after the dialog mounts, which is the
+		* same bounded adaptation ohmydsh's `dsh-memex` ships for its book glyph.
+		*
+		* Scope discipline: the marker is written only onto the button whose visible
+		* text equals our current label, the paired CSS selects nothing but that marker,
+		* and every marker is removed on disposal. Failure to locate the row is silent —
+		* the official gear stays and the page is unaffected.
+		*
+		* @module dsh-cockpit-bridge/client/nav-icon
+		*/
+		/**
+		* Keep the marker on the settings-nav button showing this section's label.
+		* @param label - resolver for the section's current display label.
+		* @returns disposer that stops observing and removes every owned marker.
+		*/
+		function registerForwardsSettingsNavIcon(label) {
+			const doc = globalThis.document;
+			if (doc === void 0) return () => {};
+			let disposed = false;
+			const sync = () => {
+				if (disposed) return;
+				const current = label().trim();
+				if (current.length === 0) return;
+				for (const button of doc.querySelectorAll("[role=\"dialog\"] nav button")) if (button.textContent?.trim() === current) button.setAttribute(NAV_MARKER, "");
+				else button.removeAttribute(NAV_MARKER);
+			};
+			sync();
+			const observer = new MutationObserver(sync);
+			observer.observe(doc.body, {
+				childList: true,
+				subtree: true,
+				characterData: true
+			});
+			return () => {
+				disposed = true;
+				observer.disconnect();
+				for (const marked of doc.querySelectorAll(`[${NAV_MARKER}]`)) marked.removeAttribute(NAV_MARKER);
+			};
+		}
+		//#endregion
 		//#region src/client/settings.ts
 		/**
-		* Read-only "驾驶舱转发" settings section (device-forward-registry D9).
+		* Read-only “驾驶舱转发” settings section (device-forward-registry D9).
 		*
 		* Lists this device's forward table from the snapshot the cockpit parent page
 		* pushes. It offers no create, delete or release control: management happens
 		* in the cockpit device panel. Labels and diagnostics are rendered as React
 		* text children only, never as HTML.
+		*
+		* The reader may not be the person operating the cockpit, so the section says
+		* what it is showing before it shows it: the tunnels are the cockpit's, the
+		* local address is only valid on the machine running the cockpit, and the
+		* controls live in the cockpit's device panel. `settingsView` holds that copy
+		* as data, which is what the bridge's node-only tests assert.
+		*
+		* Presentation lives in `settings-styles.ts` (the host owns the theme).
 		*/
 		const SECTION_LABEL = "驾驶舱转发";
 		const STATE_TEXT = {
@@ -296,46 +488,69 @@ window.__ModuleLoader__.load({
 			retrying: "重试中",
 			paused: "暂停"
 		};
+		const LEDE = "驾驶舱为这台设备建立的回环转发。表中的本地地址只在运行驾驶舱的那台机器上有效。";
+		const HINT = "创建与删除在驾驶舱设备面板中进行；本页只读。";
+		const EMPTY_GUIDANCE = "还没有附加转发。设备上的组件申请转发，或在驾驶舱设备面板中添加常驻条目后，会出现在这里。";
+		const NOT_CONNECTED_TITLE = "未连接驾驶舱";
+		const NOT_CONNECTED_GUIDANCE = ["这个区块只在设备页面运行于驾驶舱工作台内时才会填充。", "在驾驶舱里打开这台设备，就能在这里看到它的转发表。"];
+		const READING_TITLE = "正在读取转发表";
+		const LOCAL_TITLE = "本机设备无需转发";
+		const LOCAL_GUIDANCE = ["驾驶舱与这台 DSH 在同一台机器上，设备上的组件直接访问本地地址即可，不需要经过 SSH 隧道。"];
+		function additionalRow(row) {
+			const address = row.state === "ready" && row.localPort !== void 0 ? `127.0.0.1:${row.localPort}` : "";
+			if (row.kind === "system") return {
+				key: "system",
+				kind: "main",
+				port: String(row.devicePort),
+				address,
+				state: STATE_TEXT[row.state],
+				stateKind: row.state,
+				lifetime: "主通道",
+				holders: "",
+				diagnostic: ""
+			};
+			return {
+				key: String(row.devicePort),
+				kind: "additional",
+				port: String(row.devicePort),
+				address,
+				state: STATE_TEXT[row.state],
+				stateKind: row.state,
+				lifetime: row.pinned ? "常驻" : "随持有者",
+				holders: [row.label, ...row.holders].filter((value) => value !== void 0 && value !== "").join(", "),
+				diagnostic: row.diagnostic ?? ""
+			};
+		}
 		/** Pure view model: what the section shows for a handshake state and a
 		* snapshot. */
 		function settingsView(connected, snapshot) {
 			if (!connected) return {
 				kind: "message",
-				text: "未连接驾驶舱"
+				title: NOT_CONNECTED_TITLE,
+				guidance: NOT_CONNECTED_GUIDANCE
 			};
 			if (snapshot === void 0) return {
 				kind: "message",
-				text: "正在读取转发表"
+				title: READING_TITLE,
+				guidance: []
 			};
 			if (snapshot.local === true) return {
 				kind: "message",
-				text: "本机设备无需转发"
+				title: LOCAL_TITLE,
+				guidance: LOCAL_GUIDANCE
 			};
+			const rows = snapshot.rows.map(additionalRow);
 			return {
 				kind: "rows",
-				usage: `${snapshot.additionalCount} / ${snapshot.limit}`,
-				hint: "在驾驶舱设备面板中管理",
-				rows: snapshot.rows.map((row) => {
-					const address = row.state === "ready" && row.localPort !== void 0 ? `127.0.0.1:${row.localPort}` : "";
-					if (row.kind === "system") return {
-						key: "system",
-						port: String(row.devicePort),
-						address,
-						state: STATE_TEXT[row.state],
-						pinned: "系统",
-						holders: "",
-						diagnostic: ""
-					};
-					return {
-						key: String(row.devicePort),
-						port: String(row.devicePort),
-						address,
-						state: STATE_TEXT[row.state],
-						pinned: row.pinned ? "常驻" : "随持有者",
-						holders: [row.label, ...row.holders].filter((value) => value !== void 0 && value !== "").join(", "),
-						diagnostic: row.diagnostic ?? ""
-					};
-				}),
+				lede: LEDE,
+				main: rows.filter((row) => row.kind === "main"),
+				additional: rows.filter((row) => row.kind === "additional"),
+				usage: {
+					count: snapshot.additionalCount,
+					limit: snapshot.limit
+				},
+				emptyGuidance: EMPTY_GUIDANCE,
+				hint: HINT,
 				controls: []
 			};
 		}
@@ -356,20 +571,57 @@ window.__ModuleLoader__.load({
 				}
 			};
 		}
-		const cell = (text) => (0, react.createElement)("td", null, text);
+		/** Eight slots is the whole point of the meter, so an implausible limit simply
+		* loses the meter rather than drawing a wall of segments. */
+		function meter(usage) {
+			if (!Number.isInteger(usage.limit) || usage.limit < 1 || usage.limit > 24) return void 0;
+			const filled = Math.max(0, Math.min(usage.count, usage.limit));
+			return (0, react.createElement)("span", {
+				className: "dshcf-meter",
+				"aria-hidden": "true"
+			}, ...Array.from({ length: usage.limit }, (_, index) => (0, react.createElement)("span", {
+				className: "dshcf-seg",
+				key: index,
+				"data-filled": index < filled ? "true" : "false"
+			})));
+		}
+		/** The section root carries the marker the stylesheet is scoped to. */
+		function sectionProps() {
+			return {
+				className: "dshcf",
+				[SECTION_ATTRIBUTE]: ""
+			};
+		}
+		function rowElement(row) {
+			return (0, react.createElement)("li", {
+				className: "dshcf-row",
+				key: row.key,
+				"data-kind": row.kind,
+				"data-state": row.stateKind
+			}, (0, react.createElement)("span", { className: "dshcf-port" }, row.port), (0, react.createElement)("span", {
+				className: "dshcf-arrow",
+				"aria-hidden": "true"
+			}, "→"), (0, react.createElement)("span", { className: "dshcf-address" }, row.address === "" ? "尚未就绪" : row.address), (0, react.createElement)("span", { className: "dshcf-state" }, row.state), (0, react.createElement)("span", { className: "dshcf-life" }, row.lifetime), ...row.holders === "" ? [] : [(0, react.createElement)("span", { className: "dshcf-holders" }, row.holders)], ...row.diagnostic === "" ? [] : [(0, react.createElement)("p", { className: "dshcf-diag" }, (0, react.createElement)("span", { className: "dshcf-diag-label" }, "诊断"), (0, react.createElement)("span", null, row.diagnostic))]);
+		}
 		function ForwardsSettingsSection(props) {
 			const { view, subscribe } = props;
 			const current = (0, react.useSyncExternalStore)(subscribe ?? (() => () => {}), view ?? (() => void 0));
 			if (current === void 0) return null;
-			if (current.kind === "message") return (0, react.createElement)("p", null, current.text);
-			return (0, react.createElement)("section", null, (0, react.createElement)("p", null, `附加转发占用 ${current.usage}`), (0, react.createElement)("table", null, (0, react.createElement)("thead", null, (0, react.createElement)("tr", null, ...[
-				"设备端口",
-				"本地地址",
-				"状态",
-				"类型",
-				"标签 / 持有者",
-				"诊断"
-			].map((title) => (0, react.createElement)("th", { key: title }, title)))), (0, react.createElement)("tbody", null, ...current.rows.map((row) => (0, react.createElement)("tr", { key: row.key }, cell(row.port), cell(row.address), cell(row.state), cell(row.pinned), cell(row.holders), cell(row.diagnostic))))), (0, react.createElement)("p", null, current.hint));
+			if (current.kind === "message") return (0, react.createElement)("section", sectionProps(), (0, react.createElement)("p", { className: "dshcf-title" }, current.title), ...current.guidance.map((text, index) => (0, react.createElement)("p", {
+				className: "dshcf-guidance",
+				key: index
+			}, text)));
+			const meterElement = meter(current.usage);
+			return (0, react.createElement)("section", sectionProps(), (0, react.createElement)("p", { className: "dshcf-lede" }, current.lede), ...current.main.length === 0 ? [] : [(0, react.createElement)("ul", {
+				className: "dshcf-rows",
+				key: "main"
+			}, ...current.main.map(rowElement))], (0, react.createElement)("div", { className: "dshcf-pool" }, (0, react.createElement)("div", { className: "dshcf-usage" }, (0, react.createElement)("span", { className: "dshcf-usage-label" }, "附加转发"), ...meterElement === void 0 ? [] : [meterElement], (0, react.createElement)("span", { className: "dshcf-usage-count" }, `${current.usage.count} / ${current.usage.limit}`)), ...current.additional.length === 0 ? [(0, react.createElement)("p", {
+				className: "dshcf-empty",
+				key: "empty"
+			}, current.emptyGuidance)] : [(0, react.createElement)("ul", {
+				className: "dshcf-rows",
+				key: "additional"
+			}, ...current.additional.map(rowElement))]), (0, react.createElement)("p", { className: "dshcf-hint" }, current.hint));
 		}
 		//#endregion
 		//#region src/client/index.ts
@@ -507,6 +759,13 @@ window.__ModuleLoader__.load({
 			});
 			ctx.inject(["slots"], (child) => {
 				const slots = child.slots;
+				child.effect(() => {
+					const removeStyles = injectSectionStyles();
+					return () => {
+						removeStyles?.();
+					};
+				}, "cockpit-bridge: forwards section styles");
+				child.effect(() => registerForwardsSettingsNavIcon(() => SECTION_LABEL), "cockpit-bridge: forwards settings nav glyph");
 				slots.inject("settings.section", () => slots.register({
 					name: "settings.section",
 					id: "dsh-cockpit-forwards",

@@ -33,7 +33,9 @@ import {
   type CockpitEditorOpenService,
 } from '@dsh-cockpit/shared'
 import { createForwards } from './forwards.js'
+import { registerForwardsSettingsNavIcon } from './nav-icon.js'
 import { createSettingsStore, ForwardsSettingsSection, SECTION_LABEL, type SettingsInjected } from './settings.js'
+import { injectSectionStyles } from './settings-styles.js'
 
 /** The slice of the `slots` service (dsh-client-ui-renderer) used here. */
 interface SlotsLike {
@@ -232,6 +234,16 @@ export function apply(ctx: BridgeContext): void {
   const settings = createSettingsStore({ connected: () => config !== undefined, snapshot: () => forwards.snapshot() })
   ctx.inject(['slots'], child => {
     const slots = (child as Context & { readonly slots: SlotsLike }).slots
+    // The section brings its own stylesheet: the host owns the theme, so the
+    // sheet only maps colour roles onto official tokens (settings-styles.ts).
+    child.effect(() => {
+      const removeStyles = injectSectionStyles()
+      return () => { removeStyles?.() }
+    }, 'cockpit-bridge: forwards section styles')
+    // `settings.section` projects no icon field, so the nav row is identified by
+    // its label and drawn by the sheet (design D9, nav-icon.ts).
+    child.effect(() => registerForwardsSettingsNavIcon(() => SECTION_LABEL),
+      'cockpit-bridge: forwards settings nav glyph')
     slots.inject('settings.section', () => slots.register({
       name: 'settings.section',
       id: 'dsh-cockpit-forwards',

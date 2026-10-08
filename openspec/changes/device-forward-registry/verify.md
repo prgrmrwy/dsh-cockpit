@@ -38,10 +38,12 @@
   | bridge | 3 | 31 |
 
 - `openspec validate device-forward-registry --strict` reports `Change 'device-forward-registry' is valid`.
+  - ⚠️ 2026-10-08 复核：这条在 `fc88e40` 之后**曾经不再成立**。主 spec 后来被 `8e2b2bb`（归档前同步）改过，而本 change 的两个 MODIFIED 块改写了主 spec 的场景名（`设备禁用时终止全部附加转发`、`驾驶舱退出时自有转发`、`能力串无效时以既有响应拒绝`），校验器按场景名判定，于是把改名判成丢场景并拒绝归档；`附加转发失败不影响工作台` 则是被整个丢掉。组 14 把三个名字改回主 spec 逐字名称并恢复被丢掉的场景，validate 重新通过（修复过程与补测记在 tasks 组 14）。**教训**：MODIFIED 块替换的是整块 requirement，场景名是身份，改名等于删除。
 - Non-executable checks run:
   - `node --test tests/forward-grace.test.mjs`: 4/4 pass. It pins the acceptance script's judgments: precondition, pid stability, the 30–40s reclaim window, argument parsing.
   - `node scripts/acceptance/forward-grace.mjs` with no `--device` exits 1. With a missing token file it also exits 1.
   - The real-browser run itself is task 12.4 and is still open.
+- 2026-10-08 组 13/15 复跑（`pnpm build && pnpm typecheck && pnpm lint && pnpm test`，exit 0）：root 12、shared 8、server 332、web 95、bridge 50（新增 `forwards-styles.test.ts`、`nav-icon.test.ts`）；`openspec validate --strict` 报 `is valid`。设置区块与导航字形的视觉核对在**仓库外**的真实 DSH 令牌夹具里完成（深浅色 + 380px 窄栏 + 5x 放大的导航字形），未进入仓库。
 - 11.5 stale-reference grep: `grep -rn "publish-port\|publishable-port\|已登记端口" README.md BACKLOG.md packages/*/src` finds nothing (exit 1).
 - 11.4 bundle: `pnpm --filter dsh-cockpit-bridge build` produces `lib/client.js`, with `react` external and supplied by the DSH profile.
 
@@ -49,9 +51,16 @@
 - [x] review.md has `VERDICT: APPROVE_WITH_CHANGES` with `CHANGES_APPLIED: yes`.
 - [x] The verdict is not stale. `git log 80589ad..HEAD` shows no commits touching `proposal.md`, `design.md`, `specs/` or `review.md` during implementation.
   - Implementation-time notes live in tasks.md only. One example: the snapshot keeps the system row without pid, so the D9 settings section can show the workbench channel as its spec scenario requires.
+- [x] **范围追加已由 owner 接受（2026-10-08）**：owner 明确表示接受把「设置区块可读性与样式」与「设置导航行图标」并入本 change，**不重跑 review**。下面保留当时记下的影响面，作为审计痕迹。上面的“verdict 不过期”只对 `fc88e40` 那次验证成立。此后按 owner 决定把「设置区块可读性与样式」并入本 change（tasks 组 13），改动了 `proposal.md`（What Changes 的区块表述）、`design.md`（D9 扩写为「区块要回答什么 + 宿主拥有主题 + 一个记忆点」）与 `specs/cockpit-device-port-forward/spec.md`（设置区块 requirement 增加自解释、状态文字与主题约束及 5 条新场景）。因此 `review.md` 的 APPROVE_WITH_CHANGES 严格说不能直接沿用——owner 已在上面明确接受这次追加，故**不重跑 review**，归档时以 owner 接受为凭。组 14 的场景身份修正不动语义，只把被改名的场景改回主 spec 的逐字名称并恢复被丢掉的场景。
 - [x] All findings fixed or rebutted. 🟡-1 through 🟡-8 are fixed and accepted by the reviewer. 📌-9, 📌-10 and 📌-11 were deferred by the author as non-blocking; 📌-9 was addressed in code anyway:
   - `release-instance` validates `pageId` → 400 `invalid-page`;
   - it starts the page grace timer, so an ended-instance set cannot stay resident forever.
+
+### Delivery Decisions（owner，2026-10-08）
+
+- **不 bump 版本**：owner 决定本次不动 `packages/dsh-cockpit-bridge` 的版本号（仍为 0.6.1），到正式发包时再 bump。
+  - 由此产生的已知不一致：仓库里重建的 `lib/client.js`（含设置区块改版与图标）与本机/ohmydsh 已部署的 0.6.1 发布物**内容不同、版本号相同**。任何本地部署（验收用）都必须以临时路径或别名区分，或先发包再部署，避免把「改动过的 0.6.1」当成已发布的 0.6.1。
+  - 版本 bump 与 GitHub release 资产、ohmydsh manifest 的 `spec`/`version`/`integrity` 三者必须在同一次发包里一起更新。
 
 ### Change Delivery
 - Commit range on branch `ws/dsh-cockpit-openspec-change-device-forward-regis`: `42e2f31..fc88e40`, 14 implementation commits on top of base `80589ad`, plus this verify commit.
@@ -63,5 +72,6 @@
 DECISION: PASS_WITH_WARNINGS
 
 ⚠️ PASS WITH WARNINGS:
-1. Tasks 12.4 (real-browser 30s grace acceptance) and 12.5 (manual browser check) are still open. They are human-run and must pass before archive.
-2. Release coupling. The cockpit and bridge 0.6.0 must ship and roll back together. Downstream `cockpitBridge.portForward` consumers, such as the ohmydsh memex shim, fall back to local addresses until they migrate. Rolling back drops pinned marks on the old version's next registry write. All of this is documented in the bridge README's "0.6.0 发布说明" (release notes).
+1. Tasks 12.4 (real-browser 30s grace acceptance) and 12.5 (manual browser check) are still open. They are human-run and must pass before archive. 12.5 现在还要覆盖设置区块改版后的深浅色呈现（13.17 的自有预览夹具只能证明样式与令牌，不能替代真实宿主）。
+2. **范围追加已由 owner 接受，无需重跑 review**（见 Review Integrity）。仍待人工完成的是 12.4/12.5 两项浏览器验收。
+3. Release coupling. The cockpit and bridge 0.6.0 must ship and roll back together. Downstream `cockpitBridge.portForward` consumers, such as the ohmydsh memex shim, fall back to local addresses until they migrate. Rolling back drops pinned marks on the old version's next registry write. All of this is documented in the bridge README's "0.6.0 发布说明" (release notes).
