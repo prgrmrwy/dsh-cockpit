@@ -203,10 +203,19 @@ describe('cockpit bridge client', () => {
     const release = vi.fn()
     fixture.ctx.sessions.list.subscribe = () => release
     fixture.ctx.uiSession!.pendingInteractions.subscribe = () => { throw new Error('subscribe failed') }
+    const listeners = (window as unknown as FakeWindow).listeners
+    const before = listeners.size
     const apply = await loadApply()
     expect(() => apply(fixture.ctx)).not.toThrow()
     expect(release).toHaveBeenCalledOnce()
-    expect((window as unknown as FakeWindow).listeners.size).toBe(0)
+    // 0.6 adds an independent forwards page-instance effect that owns its own
+    // window listeners; only the status effect's message listener must be absent.
+    const fakeWindow = window as unknown as FakeWindow
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin: COCKPIT_ORIGIN, capability: CAPABILITY })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/api/bridge/hello'), expect.anything())
+    // Exactly the forwards page-instance listener; the status listener was never added.
+    expect(listeners.size).toBe(before + 1)
   })
 
   it('waits for an authenticated parent config and uses its dynamic origin', async () => {

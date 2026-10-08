@@ -375,7 +375,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.6.0";
+		const PLUGIN_VERSION = "0.6.1";
 		const PROTOCOL_VERSION = 2;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
@@ -408,6 +408,44 @@ window.__ModuleLoader__.load({
 		}
 		function isActivation(event, config) {
 			return config !== void 0 && event.source === window.parent && event.origin === config.cockpitOrigin && typeof event.data === "object" && event.data !== null && event.data.type === "dsh-cockpit:device-activated";
+		}
+		/** 0.2.0 removed current. A present byId is authoritative even with no main view. */
+		function currentSelection(snapshot) {
+			if (snapshot.byId !== void 0 && !Object.hasOwn(snapshot, "current")) return Object.values(snapshot.byId).find((row) => (row.retainedBy?.mainView ?? 0) > 0)?.id;
+			if (snapshot.byId !== void 0 && Object.values(snapshot.byId).some((row) => row.retainedBy !== void 0)) return Object.values(snapshot.byId).find((row) => (row.retainedBy?.mainView ?? 0) > 0)?.id;
+			return snapshot.current;
+		}
+		function isObservable(value) {
+			return typeof value === "object" && value !== null && typeof value.getSnapshot === "function" && typeof value.subscribe === "function";
+		}
+		/** Project only public identifiers; do not read or forward interaction contents. */
+		function pendingSource(ui) {
+			const legacy = ui?.pendingInteractions;
+			const status = ui?.sessionStatus;
+			const source = isObservable(legacy) ? legacy : isObservable(status) ? status : void 0;
+			if (source === void 0) return;
+			return {
+				subscribe: (listener) => source.subscribe(listener),
+				getSnapshot: () => {
+					const snapshot = source.getSnapshot();
+					if (!(snapshot instanceof Map)) throw new Error("unknown pending snapshot");
+					const result = [];
+					for (const row of snapshot.values()) {
+						const item = source === legacy ? row : row?.pendingInteraction;
+						if (item === void 0) continue;
+						if (typeof item !== "object" || item === null) throw new Error("unknown pending interaction");
+						const { sessionId, kind, key } = item;
+						if (kind !== "approval" && kind !== "question") continue;
+						if (typeof sessionId !== "string" || typeof key !== "string") throw new Error("invalid pending identity");
+						result.push({
+							sessionId,
+							kind,
+							key
+						});
+					}
+					return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key));
+				}
+			};
 		}
 		function apply(ctx) {
 			let config;
@@ -509,21 +547,14 @@ window.__ModuleLoader__.load({
 				let failureCount = 0;
 				let flushTimer;
 				let retryTimer;
-				let lastSelection = ctx.sessions.list.getSnapshot().current;
-				let pendingDirty = ctx.uiSession !== void 0;
+				let lastSelection = currentSelection(ctx.sessions.list.getSnapshot());
+				const pending = pendingSource(ctx.uiSession);
+				let pendingDirty = pending !== void 0;
 				let pendingFingerprint = "";
 				const outbox = /* @__PURE__ */ new Map();
-				const pendingSnapshot = () => {
-					const source = ctx.uiSession?.pendingInteractions.getSnapshot();
-					if (source === void 0) return [];
-					return [...source.values()].filter((item) => item.kind === "approval" || item.kind === "question").map((item) => ({
-						sessionId: item.sessionId,
-						kind: item.kind,
-						key: item.key
-					})).sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key));
-				};
+				const pendingSnapshot = () => pending?.getSnapshot() ?? [];
 				const currentKey = () => {
-					const current = ctx.sessions.list.getSnapshot().current;
+					const current = currentSelection(ctx.sessions.list.getSnapshot());
 					return current === void 0 ? void 0 : current;
 				};
 				const purgeExpired = (now = Date.now()) => {
@@ -616,7 +647,7 @@ window.__ModuleLoader__.load({
 						if (!helloReady) {
 							let response;
 							try {
-								const current = ctx.sessions.list.getSnapshot().current;
+								const current = currentSelection(ctx.sessions.list.getSnapshot());
 								response = await post("/api/bridge/hello", {
 									version: PLUGIN_VERSION,
 									protocolVersion: PROTOCOL_VERSION,
@@ -636,13 +667,14 @@ window.__ModuleLoader__.load({
 								rerunRequested = true;
 								return;
 							}
+							if (disposed) return;
 							helloReady = true;
-							pendingDirty = ctx.uiSession !== void 0;
+							pendingDirty = pending !== void 0;
 							failureCount = 0;
-							const current = ctx.sessions.list.getSnapshot().current;
+							const current = currentSelection(ctx.sessions.list.getSnapshot());
 							if (current !== void 0) enqueue(current);
 						}
-						if (pendingDirty && ctx.uiSession !== void 0) {
+						if (pendingDirty && pending !== void 0) {
 							const items = pendingSnapshot();
 							const fingerprint = JSON.stringify(items);
 							let response;
@@ -718,7 +750,7 @@ window.__ModuleLoader__.load({
 					}, delay);
 				};
 				const onSelectionChange = () => {
-					const current = ctx.sessions.list.getSnapshot().current;
+					const current = currentSelection(ctx.sessions.list.getSnapshot());
 					if (current === lastSelection) {
 						const key = current ?? CLEARED_KEY;
 						if (outbox.has(key)) requestRun(FLUSH_DELAY_MS, true);
@@ -728,12 +760,27 @@ window.__ModuleLoader__.load({
 					enqueue(current);
 					requestRun(FLUSH_DELAY_MS, true);
 				};
-				const unsubscribe = ctx.sessions.list.subscribe(onSelectionChange);
-				const unsubscribePending = ctx.uiSession?.pendingInteractions.subscribe(() => {
-					if (JSON.stringify(pendingSnapshot()) === pendingFingerprint) return;
-					pendingDirty = true;
-					requestRun(FLUSH_DELAY_MS, true);
-				});
+				let unsubscribe = () => {};
+				let unsubscribePending;
+				try {
+					pending?.getSnapshot();
+					unsubscribe = ctx.sessions.list.subscribe(onSelectionChange);
+					unsubscribePending = pending?.subscribe(() => {
+						if (disposed) return;
+						try {
+							if (JSON.stringify(pendingSnapshot()) === pendingFingerprint) return;
+							pendingDirty = true;
+							requestRun(FLUSH_DELAY_MS, true);
+						} catch {}
+					});
+				} catch {
+					disposed = true;
+					unsubscribe();
+					unsubscribePending?.();
+					clearFlushTimer();
+					clearRetryTimer();
+					return () => {};
+				}
 				const onMessage = (event) => {
 					const nextConfig = parseConfig(event);
 					if (nextConfig !== void 0 && (config === void 0 || nextConfig.cockpitOrigin === config.cockpitOrigin)) {
@@ -744,9 +791,9 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					if (!isActivation(event, config)) return;
-					const current = ctx.sessions.list.getSnapshot().current;
+					const current = currentSelection(ctx.sessions.list.getSnapshot());
 					if (current !== void 0) enqueue(current);
-					pendingDirty = ctx.uiSession !== void 0;
+					pendingDirty = pending !== void 0;
 					helloReady = false;
 					requestRun(0, true);
 				};
