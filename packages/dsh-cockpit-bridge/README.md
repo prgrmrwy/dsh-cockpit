@@ -14,15 +14,16 @@ Cordis 服务名 `cockpitBridge.editorOpen` 向任意同页面插件提供远程
 
 官方侧栏打开会话（`ctx.sessions.open` → `SessionManager.select`）是纯浏览器端
 内存状态，事件流上没有任何"选中"信号；驾驶舱又按架构原则不读 iframe DOM。
-**这个插件运行在官方 web 客户端**（同源），订阅 `sessions.list` 的 `current`
-变化，在用户点击会话时把该会话 ID 上报给驾驶舱。驾驶舱切回一个已加载的设备
+**这个插件运行在官方 web 客户端**（同源），订阅 `sessions.list` 的当前选择
+变化（旧版 `current`，DSH 0.2.0 使用 `byId` 中 `retainedBy.mainView > 0` 的会话），在用户点击会话时把该会话 ID 上报给驾驶舱。驾驶舱切回一个已加载的设备
 iframe 时，插件会重新确认当前选中的会话，使该会话若刚好处于完成未读状态，
 其绿点按官方 select 语义清除。
 
 - 驾驶舱按请求 `Origin` 匹配设备，**插件不需要知道自己是哪台设备**——它也不
   再假设驾驶舱固定跑在某个端口，实际 Origin 由父页面握手动态提供。
-- DSH 0.1.2 下同时订阅官方 `ctx.uiSession.pendingInteractions`，变化时只发送
-  当前完整的 `sessionId/kind/key` 集合；不注册 approval/question listener，不做决定，
+- 旧版订阅官方 `ctx.uiSession.pendingInteractions`；DSH 0.2.0 读取 `ctx.uiSession.sessionStatus`
+  中每会话的 `pendingInteraction`（仅当前最高优先级交互，不推断隐藏队列）。缺少已识别来源时不发送假空快照；订阅异常不阻断原生 Web 启动。
+  变化时只发送当前可见的 `sessionId/kind/key` 集合；不注册 approval/question listener，不做决定，
   不读不传交互内容、会话内容、settings、credentials 或 provider token。
 - 驾驶舱不可达时保留待确认队列并按退避重试，绝不影响 DSH 页面；outbox 有
   固定容量与 TTL，避免驾驶舱长期离线时无界增长。
@@ -101,6 +102,13 @@ iframe 时，插件会重新确认当前选中的会话，使该会话若刚好�
 **已经安装旧版本插件的设备**：升级到本版本同样需要重新 `dsh build` 并重启该
 设备的 DSH web 才能获得协议 v2 的可靠确认；重启前旧版本仍按尽力而为方式工作，
 不影响原生 DSH 工作台。
+
+## 0.6.1 发布说明（DSH 0.2.0 兼容）
+
+- 适配 DSH 0.2.0：当前会话改读 `sessions.list` 的 `byId[*].retainedBy.mainView`（0.2.0 删除了 `current`），待处理交互改读 `uiSession.sessionStatus`；0.1.x 旧形状继续兼容。未知 pending 来源不再发送假的空快照。
+- 修复快照在途期间到达的解除被旧响应覆盖而漏报的问题（在途后比较实时指纹并补发）。
+- 与驾驶舱服务端同时发布的认证修复：DSH 0.2.0 成功交换 launch token 返回 `Location: ./`，服务端现精确接受 `/` 与 `./` 两种根表示，其余重定向仍拒绝。
+- 服务名、协议与 `cockpitBridge.forwards` 契约不变；0.6.0 → 0.6.1 无需迁移，回滚只需改回 0.6.0 pin（但 0.6.0 在 DSH 0.2 下页面会加载失败）。
 
 ## 0.6.0 发布说明（升级与回滚）
 

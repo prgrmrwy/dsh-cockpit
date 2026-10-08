@@ -109,6 +109,115 @@ describe('cockpit bridge client', () => {
     vi.unstubAllGlobals()
   })
 
+  it('supports 0.2.0 retained mainView and sessionStatus without leaking interaction content', async () => {
+    const fixture = fakeCtx({ current: 'A' }, new Map())
+    const snapshot = fixture.ctx.sessions.list.getSnapshot
+    Object.assign(fixture.ctx.sessions.list, { getSnapshot: () => ({
+      current: 'stale-legacy',
+      byId: Object.fromEntries(['A', 'B'].map(id => [id, { id, retainedBy: { mainView: snapshot().current === id ? 1 : 0 } }])),
+    }) })
+    const oldPending = fixture.ctx.uiSession!.pendingInteractions
+    Object.assign(fixture.ctx, { uiSession: { sessionStatus: {
+      getSnapshot: () => new Map([...oldPending.getSnapshot()].map(([id, pendingInteraction]) => [id, { running: false, pendingInteraction }])),
+      subscribe: oldPending.subscribe,
+    } } })
+    const apply = await loadApply()
+    expect(() => apply(fixture.ctx)).not.toThrow()
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/hello')[0]?.current).toBe('A')
+    fixture.set('B'); fixture.set(undefined)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/session-opened').map(row => row.current)).toEqual(['A', 'B', null])
+    fixture.setPending(new Map([['B', { sessionId: 'B', kind: 'question', key: 'q1', secretText: 'DO_NOT_SEND' } as never]]))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)?.items).toEqual([{ sessionId: 'B', kind: 'question', key: 'q1' }])
+    fixture.setPending(new Map([['B', { sessionId: 'B', kind: 'approval', key: 'a1' }]]))
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)?.items).toEqual([{ sessionId: 'B', kind: 'approval', key: 'a1' }])
+    fixture.setPending(new Map())
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/pending-snapshot').at(-1)?.items).toEqual([])
+    fixture.cleanup()
+    const count = fetchMock.mock.calls.length
+    fixture.set('A'); fixture.setPending(new Map([['B', { sessionId: 'B', kind: 'question', key: 'q2' }]]))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetchMock.mock.calls).toHaveLength(count)
+  })
+
+  it.each([{}, { pendingInteractions: {} }, { sessionStatus: { getSnapshot: () => new Map() } }])('does not claim a pending seam when its observable is missing: %j', async uiSession => {
+    const fixture = fakeCtx({ current: 'A' })
+    Object.assign(fixture.ctx, { uiSession })
+    const apply = await loadApply()
+    expect(() => apply(fixture.ctx)).not.toThrow()
+    configure(); await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/hello')).toHaveLength(1)
+    expect(bodiesFor('/api/bridge/pending-snapshot')).toHaveLength(0)
+    fixture.cleanup()
+  })
+
+  it('does not publish a fabricated empty snapshot for an invalid pending source', async () => {
+    const fixture = fakeCtx({ current: 'A' })
+    Object.assign(fixture.ctx, { uiSession: { sessionStatus: { getSnapshot: () => null, subscribe: () => () => {} } } })
+    const apply = await loadApply()
+    expect(() => apply(fixture.ctx)).not.toThrow()
+    configure(); await vi.advanceTimersByTimeAsync(1000)
+    expect(bodiesFor('/api/bridge/pending-snapshot')).toHaveLength(0)
+    fixture.cleanup()
+  })
+
+  it('does not read inactive services when a pending hello completes after disposal', async () => {
+    const fixture = fakeCtx({ current: 'A' })
+    const apply = await loadApply(); apply(fixture.ctx)
+    let finish!: (response: Pick<Response, 'ok' | 'status'>) => void
+    fetchMock.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    configure(); await vi.advanceTimersByTimeAsync(0)
+    fixture.cleanup()
+    const inactiveRead = vi.fn(() => { throw Error('inactive context') })
+    fixture.ctx.sessions.list.getSnapshot = inactiveRead
+    finish(ok()); await vi.advanceTimersByTimeAsync(0)
+    expect(inactiveRead).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('resends a pending update that arrives during an in-flight snapshot', async () => {
+    const fixture = fakeCtx({ current: 'A' }, new Map([['A', { sessionId: 'A', kind: 'question', key: 'first' }]]))
+    const apply = await loadApply(); apply(fixture.ctx)
+    let finish!: (response: Pick<Response, 'ok' | 'status'>) => void
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith('/pending-snapshot') && !finish) return new Promise(resolve => { finish = resolve })
+      return ok()
+    })
+    configure(); await vi.advanceTimersByTimeAsync(0)
+    fixture.setPending(new Map())
+    await vi.advanceTimersByTimeAsync(250)
+    finish(ok()); await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/pending-snapshot').map(row => row.items)).toEqual([
+      [{ sessionId: 'A', kind: 'question', key: 'first' }], [],
+    ])
+    fixture.cleanup()
+  })
+
+  it('cleans list subscription when pending subscription rejects initialization', async () => {
+    const fixture = fakeCtx({ current: 'A' }, new Map())
+    const release = vi.fn()
+    fixture.ctx.sessions.list.subscribe = () => release
+    fixture.ctx.uiSession!.pendingInteractions.subscribe = () => { throw new Error('subscribe failed') }
+    const listeners = (window as unknown as FakeWindow).listeners
+    const before = listeners.size
+    const apply = await loadApply()
+    expect(() => apply(fixture.ctx)).not.toThrow()
+    expect(release).toHaveBeenCalledOnce()
+    // 0.6 adds an independent forwards page-instance effect that owns its own
+    // window listeners; only the status effect's message listener must be absent.
+    const fakeWindow = window as unknown as FakeWindow
+    fakeWindow.emitMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin: COCKPIT_ORIGIN, capability: CAPABILITY })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('/api/bridge/hello'), expect.anything())
+    // Exactly the forwards page-instance listener; the status listener was never added.
+    expect(listeners.size).toBe(before + 1)
+  })
+
   it('waits for an authenticated parent config and uses its dynamic origin', async () => {
     const { ctx } = fakeCtx({ current: 'already-open' })
     const apply = await loadApply()

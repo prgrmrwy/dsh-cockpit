@@ -13,6 +13,34 @@ function response(body: string, status: number, headers: Record<string, string>)
 }
 
 describe('DSH launch token exchange authority binding', () => {
+  it.each(['/', './'])('accepts only the known clean root redirect %s without following it', async location => {
+    const fetcher = vi.fn(async (_input, init) => {
+      expect(init?.redirect).toBe('manual')
+      expect(init?.method).toBe('GET')
+      return response('', 303, { location, 'set-cookie': `${cookieNameFor(endpoint.host)}=signed; Max-Age=60; Path=/; HttpOnly` })
+    }) as unknown as typeof fetch
+    const result = await exchangeDshLaunchToken(endpoint, token, { fetch: fetcher })
+    expect(result.cleanUrl.href).toBe(new URL('/', endpoint).href)
+    expect(result.authority).toBe(endpoint.host)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(['', '//example.invalid/', 'http://127.0.0.1:3081/', '/?x=1', './?token=x', '/#x', './#x', '/child', '../', '/%2e/', '%2f', '.'])('rejects unrecognized redirect %j', async location => {
+    const fetcher = vi.fn(async () => response('', 303, { location, 'set-cookie': `${cookieNameFor(endpoint.host)}=signed; Max-Age=60` })) as unknown as typeof fetch
+    await expect(exchangeDshLaunchToken(endpoint, token, { fetch: fetcher })).rejects.toThrow(/authentication failed/)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    undefined,
+    `${cookieNameFor(endpoint.host)}=; Max-Age=60`,
+    `${cookieNameFor(endpoint.host)}=signed`,
+    `${cookieNameFor(endpoint.host)}=signed; Expires=Thu, 01 Jan 1970 00:00:00 GMT`,
+    `${cookieNameFor(otherAuthority)}=signed; Max-Age=60`,
+  ])('keeps cookie validation strict for relative redirect: %j', async cookie => {
+    const fetcher = vi.fn(async () => response('', 303, { location: './', ...(cookie === undefined ? {} : { 'set-cookie': cookie }) })) as unknown as typeof fetch
+    await expect(exchangeDshLaunchToken(endpoint, token, { fetch: fetcher })).rejects.toThrow(/authentication failed/)
+  })
   it('allows the same current typert token to validate and then exchange for the browser', async () => {
     // The supported typert contract: one current token can be exchanged by the
     // server to VALIDATE it and then by the browser to obtain its own cookie.

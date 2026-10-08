@@ -64,7 +64,10 @@ export async function exchangeDshLaunchToken(
     headers: { accept: 'text/html' },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   })
-  if (response.status !== 303 || response.headers.get('location') !== '/') {
+  // DSH 0.1.x returns '/', while 0.2.0 returns './'. Both are clean roots
+  // for this root request; do not normalize or follow arbitrary redirects.
+  const location = response.headers.get('location')
+  if (response.status !== 303 || (location !== '/' && location !== './')) {
     throw new Error('DSH authentication failed; paste the current dsh web startup URL')
   }
   const rawCookies = typeof response.headers.getSetCookie === 'function'
