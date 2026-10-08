@@ -2,7 +2,7 @@ import { Logger } from '@nestjs/common'
 import type { CockpitEvent, DeviceState, SessionActivitySummary, SystemForwardRow } from '@dsh-cockpit/shared'
 import { DualEventStream, Rc2Client } from './rc2-client.js'
 import { createDeviceProtocol, DshAuthenticationRequiredError, type DeviceProtocolClient, type DeviceProtocolStream } from './protocol-client.js'
-import { TunnelManager, WORKBENCH_CHANNEL } from './tunnel-manager.js'
+import { TunnelManager, WORKBENCH_CHANNEL, type TunnelHandle } from './tunnel-manager.js'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 
 /** Completion-coordination retention ceiling: one entry per session id ever
@@ -132,6 +132,8 @@ export class DeviceLifecycle {
   #stateExplicit: DeviceState
   #diagnostic = ''
   #endpoint: URL | undefined
+  #tunnel: TunnelHandle | undefined
+  #recoveringAggregation = false
   #stream: Pick<DeviceProtocolStream, 'on' | 'off' | 'open' | 'dispose'> | undefined
   #client: Pick<DeviceProtocolClient, 'probe' | 'listSessions' | 'listWorkspaces'> | undefined
   #protocolKind: 'rc2' | 'typert' = 'rc2'
@@ -447,6 +449,8 @@ export class DeviceLifecycle {
     this.#stream = undefined
     this.#client = undefined
     this.#endpoint = undefined
+    this.#tunnel = undefined
+    this.#recoveringAggregation = false
     this.#sessions.clear()
     this.#subagents.clear()
     this.#pendingBySession.clear()
@@ -480,6 +484,8 @@ export class DeviceLifecycle {
     this.#stream = undefined
     this.#client = undefined
     this.#endpoint = undefined
+    this.#tunnel = undefined
+    this.#recoveringAggregation = false
     this.#setState('CONNECTING', 'manual reconnect')
     this.#task = this.#run()
   }
@@ -505,7 +511,9 @@ export class DeviceLifecycle {
             // announcing a backoff the loop will not actually run would be a
             // diagnostic the connection layer cannot back up.
             if (!runAbort.signal.aborted && !this.#abort.signal.aborted) {
-              this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+              if (this.#stateExplicit !== 'DEGRADED' || !this.#recoveringAggregation) {
+                this.#setState('CONNECTING', `reconnecting in ${delay}ms`)
+              }
             }
             await this.#delay(delay, runAbort.signal)
             continue
@@ -513,6 +521,10 @@ export class DeviceLifecycle {
           attempt = 0
           // Stay connected until the stream drops; then reconnect with backoff.
           await this.#waitForDisconnect(runAbort.signal)
+          // Close both subscriptions before replacing them, without tearing
+          // down the forward shared with the independently operating workbench.
+          await this.#stream?.dispose()
+          this.#stream = undefined
         } catch (cause) {
           const message = cause instanceof Error ? cause.message : String(cause)
           if (!runAbort.signal.aborted && !this.#abort.signal.aborted) {
@@ -541,7 +553,8 @@ export class DeviceLifecycle {
       this.#endpoint = new URL(`http://127.0.0.1:${this.#record.remoteDshPort}`)
       return this.#connectRc2(this.#endpoint, undefined, connectionGeneration)
     }
-    const handle = await this.#tunnels.connect({
+    const attemptSignal = this.#runAbort?.signal ?? this.#abort.signal
+    const handle = this.#tunnel?.alive ? this.#tunnel : await this.#tunnels.connect({
       deviceId: this.deviceId,
       sshAlias: this.#record.sshAlias ?? '',
       remoteDshPort: this.#record.remoteDshPort,
@@ -549,10 +562,19 @@ export class DeviceLifecycle {
       // and the device's DSH web client keeps its origin-scoped storage.
       ...(this.#record.localPort === undefined ? {} : { preferredLocalPort: this.#record.localPort }),
     })
+    if (this.#superseded(connectionGeneration, attemptSignal)) {
+      await handle.dispose()
+      return false
+    }
+    this.#tunnel = handle
     this.#endpoint = handle.endpoint
     this.#workbenchPid = handle.pid
     if (handle.localPort !== this.#record.localPort) this.#onLocalPort?.(this.deviceId, handle.localPort)
-    return this.#connectRc2(handle.endpoint, async () => { await handle.dispose() }, connectionGeneration)
+    return this.#connectRc2(handle.endpoint, async () => {
+      // A failed RPC/subscription does not prove that SSH died. Keep the
+      // workbench forward until the owned process exits or device teardown.
+      if (!handle.alive || this.#superseded(connectionGeneration, attemptSignal)) await handle.dispose()
+    }, connectionGeneration)
   }
 
   /** Shared probe/baseline/stream wiring for local and remote endpoints.
@@ -629,7 +651,9 @@ export class DeviceLifecycle {
       await onFailure?.()
       this.#stream.dispose()
       this.#stream = undefined
-      this.#endpoint = undefined
+      if (this.#recoveringAggregation && (this.#record.kind === 'local' || this.#tunnel?.alive) && !this.#superseded(connectionGeneration, attemptSignal)) {
+        this.#setState('DEGRADED', 'event stream unavailable, reconnecting')
+      } else this.#endpoint = undefined
       return false
     }
     if (this.#superseded(connectionGeneration, attemptSignal)) {
@@ -652,10 +676,13 @@ export class DeviceLifecycle {
       await this.#stream.dispose()
       this.#stream = undefined
       await onFailure?.()
-      this.#endpoint = undefined
+      if (this.#recoveringAggregation && (this.#record.kind === 'local' || this.#tunnel?.alive) && !this.#superseded(connectionGeneration, attemptSignal)) {
+        this.#setState('DEGRADED', 'aggregation baseline unavailable, reconnecting')
+      } else this.#endpoint = undefined
       return false
     }
     this.#setState(probe.state === 'READY' ? 'READY' : 'DEGRADED', probe.diagnostic)
+    this.#recoveringAggregation = false
     return true
   }
 
@@ -881,11 +908,24 @@ export class DeviceLifecycle {
         signal.removeEventListener('abort', onAbort)
         resolve()
       }
+      let disconnected = false
       const onDisconnect = () => {
-        // The tunnel died: surface the transition immediately instead of
-        // pretending the device is still live while reconnect runs.
-        this.#setState('CONNECTING', 'event stream disconnected, reconnecting')
-        done()
+        if (disconnected) return
+        disconnected = true
+        this.#recoveringAggregation = true
+        void (async () => {
+          // A lost subscription is not evidence of a lost SSH connection. A
+          // fresh HTTP probe distinguishes aggregation recovery from an
+          // unavailable workbench, without using PID liveness as service health.
+          const probe = await this.#client?.probe().catch(() => undefined)
+          if (!signal.aborted && !this.#abort.signal.aborted) {
+            const forwardAlive = this.#record.kind === 'local' || this.#tunnel?.alive === true
+            this.#log.warn(`${this.deviceId}: event stream disconnected; forwardAlive=${forwardAlive}; serviceAvailable=${probe?.ok === true}`)
+            if (forwardAlive && probe?.ok) this.#setState('DEGRADED', 'event stream disconnected, reconnecting')
+            else this.#setState(probe?.ok === false ? probe.state : 'CONNECTING', probe?.ok === false ? probe.diagnostic : 'connection lost, reconnecting')
+          }
+          done()
+        })()
       }
       const onAbort = () => { done() }
       if (signal.aborted) return done()

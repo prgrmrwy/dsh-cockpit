@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream'
+import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
 import type { DeviceRecord } from '@dsh-cockpit/shared'
 import { DeviceLifecycle } from '../src/connectivity/device-lifecycle.js'
@@ -59,6 +60,103 @@ function device(
 }
 
 describe('device lifecycle', () => {
+  function reconnectHarness() {
+    class Process {
+      pid = 7
+      stderr = new Readable({ read() {} })
+      #exit!: (value: { code: number; signal: null }) => void
+      exited = new Promise<{ code: number; signal: null }>(resolve => { this.#exit = resolve })
+      kill(): boolean { this.exit(); return true }
+      exit(): void { this.#exit({ code: 0, signal: null }) }
+    }
+    const processes: Process[] = []
+    const streams: EventEmitter[] = []
+    const disposed: EventEmitter[] = []
+    let available = true
+    let failOpen = false
+    let failBaseline = false
+    const tunnel = new TunnelManager({
+      spawn: () => { const process = new Process(); processes.push(process); return process },
+      readinessProbe: async () => ({ ok: true, state: 'READY', diagnostic: 'ok' }),
+    })
+    const listSessions = vi.fn(async () => {
+      if (failBaseline) { failBaseline = false; throw new Error('baseline interrupted') }
+      return []
+    })
+    const lifecycle = new DeviceLifecycle({
+      record: record(), tunnels: tunnel, reconnectDelay: () => 30,
+      createClient: () => ({
+        probe: async () => available
+          ? { ok: true, state: 'READY', diagnostic: 'ok' }
+          : { ok: false, state: 'DSH_UNAVAILABLE', diagnostic: 'web unavailable' },
+        listSessions, listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+      }),
+      createStream: () => {
+        const stream = new EventEmitter()
+        streams.push(stream)
+        return Object.assign(stream, {
+          open: async () => { if (failOpen) { failOpen = false; throw new Error('stream interrupted') } },
+          dispose: () => { disposed.push(stream); stream.removeAllListeners() },
+        })
+      },
+      onFacts: () => {},
+    })
+    return { lifecycle, processes, streams, disposed, listSessions,
+      unavailable: () => { available = false }, available: () => { available = true },
+      failOpen: () => { failOpen = true }, failBaseline: () => { failBaseline = true },
+    }
+  }
+
+  it('recovers aggregation failures without replacing the workbench forward or blocking it', async () => {
+    const h = reconnectHarness()
+    h.lifecycle.start()
+    try {
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      const endpoint = h.lifecycle.current().endpoint
+      h.failOpen()
+      h.streams[0]!.emit('disconnect')
+      await vi.waitFor(() => expect(h.streams.length).toBeGreaterThanOrEqual(2))
+      expect(h.lifecycle.current().state).toBe('DEGRADED')
+      expect(h.lifecycle.current().endpoint).toBe(endpoint)
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      h.failBaseline()
+      h.streams.at(-1)!.emit('disconnect')
+      await vi.waitFor(() => expect(h.listSessions.mock.calls.length).toBeGreaterThanOrEqual(3))
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      expect(h.processes).toHaveLength(1)
+      expect(h.lifecycle.current().endpoint).toBe(endpoint)
+      expect(h.disposed).toContain(h.streams[0])
+    } finally { await h.lifecycle.stop() }
+  })
+
+  it('keeps service failures offline but retries over SSH that remains alive', async () => {
+    const h = reconnectHarness()
+    h.lifecycle.start()
+    try {
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      h.unavailable()
+      h.streams[0]!.emit('disconnect')
+      await vi.waitFor(() => expect(h.lifecycle.current().state).not.toBe('READY'))
+      expect(h.lifecycle.current().state).not.toBe('DEGRADED')
+      h.available()
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      expect(h.processes).toHaveLength(1)
+    } finally { await h.lifecycle.stop() }
+  })
+
+  it('replaces a forward after its SSH process exits', async () => {
+    const h = reconnectHarness()
+    h.lifecycle.start()
+    try {
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      h.processes[0]!.exit()
+      await Promise.resolve()
+      h.streams[0]!.emit('disconnect')
+      await vi.waitFor(() => expect(h.processes).toHaveLength(2))
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+    } finally { await h.lifecycle.stop() }
+  })
+
   it('bare instance reports CONNECTING until a connection runs', () => {
     const { lifecycle } = device()
     expect(lifecycle.current().state).toBe('CONNECTING')

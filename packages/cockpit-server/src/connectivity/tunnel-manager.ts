@@ -58,6 +58,8 @@ export interface TunnelHandle {
   /** Host pid of the owned ssh child backing this channel. */
   readonly pid: number
   readonly diagnostic: string
+  /** Process ownership/liveness only; remote service health is probed separately. */
+  readonly alive: boolean
   dispose(): Promise<void>
 }
 
@@ -120,7 +122,7 @@ export class TunnelManager {
   /** Keyed by device AND channel: one device may hold its workbench tunnel plus
    * additional channels at the same time, so a second channel must never evict
    * the first. */
-  readonly #active = new Map<string, { deviceId: string; channelId: string; generation: number; process: OwnedProcess; abort: AbortController; disposed: boolean }>()
+  readonly #active = new Map<string, { deviceId: string; channelId: string; generation: number; process: OwnedProcess; abort: AbortController; disposed: boolean; exited: boolean }>()
   readonly #generations = new Map<string, number>()
   #shutDown = false
 
@@ -165,8 +167,9 @@ export class TunnelManager {
       if (this.#shutDown) throw new Error('tunnel manager is shut down')
       const process = this.#options.spawn(this.#options.sshExecutable, tunnelArgs(request, localPort, this.#options))
       const abort = new AbortController()
-      const active = { deviceId: request.deviceId, channelId, generation, process, abort, disposed: false }
+      const active = { deviceId: request.deviceId, channelId, generation, process, abort, disposed: false, exited: false }
       this.#active.set(key, active)
+      void process.exited.then(() => { active.exited = true })
       const chunks: Buffer[] = []
       let bytes = 0
       process.stderr.on('data', (chunk: Buffer) => {
@@ -229,6 +232,7 @@ export class TunnelManager {
         localPort,
         pid: process.pid,
         diagnostic: outcome.result.diagnostic,
+        get alive() { return !active.disposed && !active.exited },
         dispose: () => this.#disposeExact(key, active),
       }
     }
