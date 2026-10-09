@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useMemo, useState } from 'react'
+import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from './api/client.js'
@@ -16,6 +16,7 @@ export function App() {
   const [currentId, setCurrentId] = useState<string | undefined>()
   const [panel, setPanel] = useState<PanelName | undefined>(undefined)
   const [error, setError] = useState<string | undefined>()
+  const autoOpenedOverview = useRef(false)
 
   const refresh = useCallback(async () => {
     try {
@@ -62,7 +63,13 @@ export function App() {
         ? previous
         : target
     ))
-    if (devices.length > 0 && lastUsed === undefined) setPanel('overview')
+    // 首次使用（无历史）显示总览：只在第一次拿到设备时开一次。设备状态流每次
+    // 推送都会换掉 `enabledDevices` 的引用，若不带这个闸门，用户关掉面板或打开
+    // 设备管理后会被下一次推送顶回总览。
+    if (!autoOpenedOverview.current && devices.length > 0 && lastUsed === undefined) {
+      autoOpenedOverview.current = true
+      setPanel('overview')
+    }
   }, [devices.length, enabledDevices, lastUsed])
 
   const select = useCallback((deviceId: string) => {

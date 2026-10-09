@@ -70,6 +70,34 @@ describe('app live status', () => {
     expect(container.querySelector('[data-federation-node="d1"]')?.getAttribute('data-state')).toBe('READY')
   })
 
+  it('keeps the panel the user opened when the next status push arrives', async () => {
+    const { container, getByRole } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    const vm = device()
+
+    // First visit (no history): the overview opens to guide the user.
+    act(() => { stream.emit({ device: [vm] }) })
+    await waitFor(() => expect(container.querySelector('[data-cockpit-panel="overview"]')).not.toBeNull())
+
+    // The user closes it and opens device management instead; the next status
+    // push must not steal the panel back (spec: 首次使用显示总览, not 每次推送).
+    fireEvent.click(container.querySelector('[data-cockpit-panel="overview"] .panel-header button')!)
+    expect(container.querySelector('[data-cockpit-panel]')).toBeNull()
+    fireEvent.click(getByRole('button', { name: '设备管理' }))
+    expect(container.querySelector('[data-cockpit-panel="devices"]')).not.toBeNull()
+
+    act(() => { stream.emit({ device: [{ ...vm, runningSessionCount: 1 }] }) })
+    await waitFor(() => expect(container.querySelector('[data-cockpit-panel="devices"]')).not.toBeNull())
+    expect(container.querySelector('[data-cockpit-panel="overview"]')).toBeNull()
+
+    // Closing a panel also stays closed across pushes.
+    fireEvent.click(container.querySelector('[data-cockpit-panel="devices"] .panel-close')!)
+    act(() => { stream.emit({ device: [{ ...vm, runningSessionCount: 2 }] }) })
+    await waitFor(() => expect(container.querySelector('.cockpit-main')).not.toBeNull())
+    expect(container.querySelector('[data-cockpit-panel]')).toBeNull()
+  })
+
   it('ignores a disabled last-used device and falls back when the current device is disabled live', async () => {
     window.localStorage.setItem('cockpit:last-device', 'disabled')
     const { container } = render(<App />)
