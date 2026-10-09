@@ -122,8 +122,12 @@
 **实例结束**
 
 - bridge SHALL 在 `pagehide` 以及自身 dispose 时，向驾驶舱父页面发送“实例结束”消息，消息携带实例标识，`targetOrigin` 为已握手的驾驶舱 origin。
-- 父页面 SHALL 按 `event.source` 判定消息归属：只接受 `event.source` 为某台设备工作台 iframe 窗口的消息，并将其归属到该设备。
-  - `event.origin` SHALL 属于该 iframe 当前或此前加载过的设备 origin。
+- 父页面 SHALL 按以下顺序判定消息归属，两条都不成立时拒绝该消息：
+  1. `event.source` 为某台设备工作台 iframe 的窗口：归属到该设备。
+  2. `event.source` 为 `null`：归属到**唯一**一台「已向该 `event.origin` 下发过 bridge 配置、且其 iframe 仍挂载」的设备。
+  - 第 2 条存在的理由：设备页在 `pagehide` 中发送本消息后完成跨文档导航（即重载），发送方窗口随之消失，父页面处理时 `event.source` 已为 `null`——只按 source 判定会让**重载永不释放**旧实例的持有者。
+  - 第 2 条 MUST NOT 放宽为「任意 source 不匹配即按 origin 兜底」：非 `null` 的外来窗口 MUST 继续被拒绝，否则一个页面可以结束另一台设备的实例。
+  - 无论走哪条，`event.origin` SHALL 属于该设备当前或此前加载过的 origin。
   - 父页面按设备记录已向该 iframe 下发过 bridge 配置的 origin 集合；该 iframe 卸载或设备被移除时，集合清空。
 - 接受后，父页面 SHALL 以驾驶舱 cookie 调用该设备的“释放实例”端点，携带实例标识和自身页面标识。驾驶舱 SHALL 移除该设备上属于该实例标识的全部持有者。
 - 驾驶舱 SHALL 把该实例标识记入该页面标识的“已结束实例”集合。
