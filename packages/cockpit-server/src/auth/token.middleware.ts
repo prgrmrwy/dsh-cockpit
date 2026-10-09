@@ -203,6 +203,7 @@ export const BRIDGE_CALLBACK_ROUTES: readonly string[] = [
   '/api/bridge/hello',
   '/api/bridge/session-opened',
   '/api/bridge/pending-snapshot',
+  '/api/bridge/status-snapshot',
   '/api/bridge/forwards/acquire',
   '/api/bridge/forwards/release',
 ]

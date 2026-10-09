@@ -18,6 +18,12 @@
 - [x] 2.6 Write failing test: `ignores subagent sessions in the official snapshot` —— 官方快照里的子代理会话不进入根会话计数
 - [x] 2.7 Refactor; `packages/cockpit-server` 全绿 —— 341 passed（含 HTTP 通道 `bridge/status-snapshot` 的校验/去重/裁剪/丢弃多余字段测试，与「官方模式下选择上报不清官方标记」「重连后回退」两条补充用例）
 
+## 2b. 路由白名单（真机暴露的遗漏）
+
+- [x] 2b.1 Write failing test: `bridge-route-list.test.ts` 把本 change 的 delta 加入来源，规格已含 `/api/bridge/status-snapshot` 而实现缺失 → 红（`expected [...6] to deeply equal [...5]`）
+- [x] 2b.2 Implement: `BRIDGE_CALLBACK_ROUTES` 补 `/api/bridge/status-snapshot`；`cockpit-api-auth` delta MODIFIED 同步 to pass 2b.1
+- [x] 2b.3 Write regression test: `app-same-origin.e2e.test.ts` `grants every listed bridge route the same credentialed preflight, not just hello`——遍历整张名单发真预检，去掉新路由会变红（已验证），还原后绿。**教训**：控制器单测看不到「预检被 403 → 浏览器根本不发请求」，只有真 HTTP 才抓得住
+
 ## 3. 前端与既有行为回归
 
 - [x] 3.1 确认 `packages/cockpit-web` 无需改动（`git status` 显示 web 零改动，107 passed）：`sessionStatuses` 口径不变，顶栏图标 / 清除按钮 / `completed ×N` 文本不变（如需改动则补测试）
@@ -25,14 +31,14 @@
 
 ## 4. 真机验证（design D5）
 
-- [ ] 4.1 本机：制造一条官方未读完成（跑一个会话后切走），重启驾驶舱，确认**重启后仍显示**该提醒（今天的行为是不显示）
-- [ ] 4.2 本机：点清除后确认不跳回；随后在 DSH 里打开该会话，确认呈现与设备侧一致
-- [ ] 4.3 回退路径：对一台未升级桥接的设备（lumevm/devbox 之一，保持旧版本）确认完成提醒仍按运行轮次模型出现
-- [ ] 4.4 记录真机证据（时间线 + SSE 事实流 + DSH 侧栏对照）到 change 的 verify 记录
+- [x] 4.1 本机：制造一条官方未读完成（跑一个会话后切走），重启驾驶舱，确认**重启后仍显示**该提醒 —— 重启 t+20s 起恢复 `completed×1` 并稳定到 t+70s（见 verify.md）
+- [x] 4.2 本机：清除后不跳回 —— `completed/ack` 201 后连续 30 秒采样均为 `running×1`，期间 bridge 持续重发含 `completionUnread:true` 的同一快照；「在 DSH 里打开该会话」由单测 `shows the official unread set…` 的标记翻转段覆盖
+- [ ] 4.3 回退路径：对一台未升级桥接的设备（lumevm/devbox 之一，保持旧版本）确认完成提醒仍按运行轮次模型出现 —— **未做真机**：两台当前均 `bridgeSeenAt: null`（没有打开其页面），按你的要求未动；单测覆盖（`keeps the run-round model for a device that never sent the official snapshot`、`falls back … after the device reconnects`）
+- [x] 4.4 记录真机证据（时间线 + SSE 事实流 + DSH 侧栏对照）到 change 的 verify 记录
 
 ## 5. 发布（design 风险节；按仓库正式流程）
 
-- [ ] 5.1 bridge 版本与协议递增，`pnpm build` + `npm pack`，记录字节数 / sha256 / integrity
-- [ ] 5.2 `gh release create`，下载物核对 HTTP 200 + 字节数 + `cmp` 与本地 artifact 一致
-- [ ] 5.3 ohmydsh `dsh.yaml` 更新 `spec` / `version` + 日期化注释（SHA256、字节数、要点、回滚行），提交并推送
-- [ ] 5.4 本机 `dsh build` 物化并核对：profile 内 `lib/client.js` 的 sha256 == 下载到的 release 产物内同路径文件；hello 报新版本；DSH 不重启
+- [x] 5.1 bridge 版本与协议递增 —— 0.6.4（52522 B，sha256 `877b1312…05f2`，integrity `sha512-yoVSDs5v…Zw==`），`pnpm build` + `npm pack`，记录字节数 / sha256 / integrity
+- [x] 5.2 `gh release create` —— `dsh-cockpit-bridge-v0.6.4`，下载 HTTP 200 / 52522 B / `cmp` 一致，下载物核对 HTTP 200 + 字节数 + `cmp` 与本地 artifact 一致
+- [x] 5.3 ohmydsh `dsh.yaml` —— `b22e60c` 已推送（含 SHA256 / 字节数 / 要点 / 回滚行） 更新 `spec` / `version` + 日期化注释（SHA256、字节数、要点、回滚行），提交并推送
+- [x] 5.4 本机 `dsh build` —— profile 内 `lib/client.js` sha256 `6cca32f6…4bcb` == release 产物同路径文件；hello `0.6.4`；DSH 未重启 物化并核对：profile 内 `lib/client.js` 的 sha256 == 下载到的 release 产物内同路径文件；hello 报新版本；DSH 不重启
