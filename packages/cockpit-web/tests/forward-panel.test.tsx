@@ -99,6 +99,27 @@ describe('device panel forwards list', () => {
     fetchSpy.mockRestore()
   })
 
+  it('puts the pid on the second line for every kind of row', () => {
+    panel([device()])
+    // The first line carries the identity of the forward (port / address /
+    // state / kind) and nothing else — pid belongs to the second line, for the
+    // system row exactly like for an additional row.
+    expect(row('system')!.querySelector('.forward-row-main')!.textContent).not.toContain('pid')
+    expect(row(5432)!.querySelector('.forward-row-main')!.textContent).not.toContain('pid')
+    expect(row('system')!.querySelector('.forward-row-meta')!.textContent).toContain('pid 7001')
+    expect(row(5432)!.querySelector('.forward-row-meta')!.textContent).toContain('pid 14432')
+  })
+
+  it('renders no second line when there is nothing to put on it', () => {
+    panel([device({ forwards: { rows: [{ kind: 'system', devicePort: 3080, state: 'retrying' }], additionalCount: 0, limit: 8 } })])
+    const system = row('system')!
+    // A retrying system row has no pid, no label and no holders: an empty
+    // second line would only double its height.
+    expect(system.querySelector('.forward-row-main')).not.toBeNull()
+    expect(system.querySelector('.forward-row-meta')).toBeNull()
+    expect(system.textContent).not.toContain('pid')
+  })
+
   it('keeps the forward rows in one labelled section instead of nested cards', () => {
     panel([device()])
     const section = forwards()

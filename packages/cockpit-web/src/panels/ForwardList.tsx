@@ -36,6 +36,11 @@ function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly o
   const address = row.state === 'ready' && row.localPort !== undefined ? `127.0.0.1:${row.localPort}` : '—'
   const key = row.kind === 'system' ? 'system' : String(row.devicePort)
   const kind = row.kind === 'system' ? 'system' : row.pinned ? 'pinned' : 'held'
+  const pid = row.state === 'ready' && row.pid !== undefined ? `pid ${row.pid}` : undefined
+  // Second line: pid, label and holder facts. The system row has no label or
+  // holders (SystemForwardRow carries no diagnostic either), so it shows a
+  // second line only while it has a pid.
+  const hasSecondLine = row.kind === 'additional' || pid !== undefined
   return (
     <li className="forward-row" data-forward={key} data-forward-state={row.state}>
       {/* The row action shares the summary line (right column), never the
@@ -48,7 +53,6 @@ function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly o
           <span className="forward-kind" data-forward-kind={kind}>
             {row.kind === 'system' ? '主通道' : row.pinned ? '常驻' : '随持有者'}
           </span>
-          {row.state === 'ready' && row.pid !== undefined && <span className="forward-pid">pid {row.pid}</span>}
         </div>
         {row.kind === 'additional' && (
           <button
@@ -60,12 +64,17 @@ function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly o
           >删除</button>
         )}
       </div>
-      {row.kind === 'additional' && (
+      {hasSecondLine && (
         <div className="forward-row-meta">
-          {row.label !== undefined && <span className="forward-label">{row.label}</span>}
-          <span className="forward-holders">持有者 {row.holderCount}</span>
-          {row.holders.length > 0 && <span className="forward-holder-labels">{row.holders.join(', ')}</span>}
-          {row.diagnostic !== undefined && row.diagnostic !== '' && <p className="forward-diagnostic">{row.diagnostic}</p>}
+          {pid !== undefined && <span className="forward-pid">{pid}</span>}
+          {row.kind === 'additional' && (
+            <>
+              {row.label !== undefined && <span className="forward-label">{row.label}</span>}
+              <span className="forward-holders">持有者 {row.holderCount}</span>
+              {row.holders.length > 0 && <span className="forward-holder-labels">{row.holders.join(', ')}</span>}
+              {row.diagnostic !== undefined && row.diagnostic !== '' && <p className="forward-diagnostic">{row.diagnostic}</p>}
+            </>
+          )}
         </div>
       )}
     </li>
