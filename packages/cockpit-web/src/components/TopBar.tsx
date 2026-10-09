@@ -161,8 +161,8 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
         })}
       </div>
       <div className="topbar-actions">
-        <button className="ghost" onClick={onRefresh} title={onRefreshLabel ?? '刷新状态'}>↻</button>
-        <button className="ghost" onClick={() => onOpenPanel('devices')} title="设备管理">☰</button>
+        <button className="ghost" onClick={onRefresh} title={onRefreshLabel ?? '刷新状态'} aria-label={onRefreshLabel ?? '刷新状态'}>↻</button>
+        <button className="ghost" onClick={() => onOpenPanel('devices')} title="设备管理" aria-label="设备管理">☰</button>
       </div>
 
       {menuFor !== undefined && menuAt !== undefined && (
