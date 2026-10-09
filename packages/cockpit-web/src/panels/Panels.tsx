@@ -271,7 +271,7 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
                         </div>
                       </div>
 
-                      <div className="device-card-actions" aria-label={`${device.displayName} 操作`}>
+                      <div className="device-card-actions" role="group" aria-label={`${device.displayName} 操作`}>
                         <span className="device-order-actions">
                           <button
                             className="ghost"

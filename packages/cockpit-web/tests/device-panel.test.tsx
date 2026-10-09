@@ -286,6 +286,13 @@ describe('DevicePanel', () => {
     expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('')
   })
 
+  it('names the device action group for assistive tech', () => {
+    renderPanel([device()])
+    // The group label is only an accessible name once the container has a role.
+    const actions = screen.getByRole('group', { name: '开发虚拟机 操作' })
+    expect(within(actions).getByRole('button', { name: '编辑开发虚拟机' })).toBeTruthy()
+  })
+
   it('enables and disables devices with accessible device-specific controls', async () => {
     const onChanged = vi.fn()
     renderPanel([device(), device({ deviceId: 'off', displayName: '已停用', enabled: false, order: 1 })], onChanged)
