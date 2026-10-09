@@ -440,8 +440,20 @@ export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onMa
     for (const facts of all) pushSnapshot(facts.deviceId, false)
   }, [devices, device])
 
-  // Instance-ended (design D4(a)): attributed by `event.source` to exactly one
-  // device iframe, and accepted from any origin that iframe was configured at.
+  // Instance-ended (design D4(a)). Attribution has two steps because the
+  // sending window may already be gone by the time the message is processed:
+  // a device page that RELOADS posts during `pagehide`, and after the
+  // cross-document navigation `event.source` is null — matching it against
+  // `iframe.contentWindow` can then never succeed, which used to leave the old
+  // instance's holders alive until the page grace (measured: they survived a
+  // reload and were only reclaimed 30 s after the cockpit page went away).
+  //
+  // 1. The mounted iframe that owns the sender, when the source still exists.
+  // 2. Otherwise the ONE device that was handed this origin — the same
+  //    "current or previously loaded origin" rule the spec already applies to
+  //    the origin check. Ownership is unique because the cockpit mints one
+  //    loopback origin per device, so an ambiguous message is dropped rather
+  //    than guessed, and a device without a mounted frame is refused.
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
       if (typeof event.data !== 'object' || event.data === null) return
@@ -453,6 +465,15 @@ export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onMa
           deviceId = id
           break
         }
+      }
+      // Only a GONE sender falls back to the origin: a live foreign window
+      // (non-null source that matches no frame) stays rejected, which is what
+      // keeps a page from ending another device's instances.
+      if (deviceId === undefined && event.source === null) {
+        const owners = [...configuredOriginsRef.current]
+          .filter(([id, origins]) => origins.has(event.origin) && iframeRefs.current.has(id))
+        if (owners.length !== 1) return
+        deviceId = owners[0]![0]
       }
       if (deviceId === undefined) return
       if (configuredOriginsRef.current.get(deviceId)?.has(event.origin) !== true) return

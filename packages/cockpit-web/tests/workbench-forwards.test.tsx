@@ -78,6 +78,35 @@ describe('workbench forwards', () => {
     expect(snapshots(postToA)).toHaveLength(2)
   })
 
+  it('releases the instance when a reloaded device page reports from a gone source', async () => {
+    const a = device({ forwards: projection(3939) })
+    const releaseForwardInstance = vi.fn().mockResolvedValue({ released: true })
+    const { container } = render(<Workbench device={a} devices={[a]} enabledDeviceIds={['d1']} requestBridgeCapability={capability()} releaseForwardInstance={releaseForwardInstance} />)
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+    await waitFor(() => expect(snapshots(postToA)).toHaveLength(1))
+
+    // A device page reload posts during `pagehide`; by the time the parent
+    // processes it the sending window is gone and `event.source` is null, so
+    // identity comes from the origin this device was configured at. Without
+    // that fallback the old instance's holders outlive the instance.
+    instanceEnded(null, 'http://127.0.0.1:51000')
+    expect(releaseForwardInstance).toHaveBeenCalledWith('d1', 'inst-1111111111111111')
+  })
+
+  it('ignores a gone-source message from an origin no mounted device was configured at', async () => {
+    const a = device({ forwards: projection(3939) })
+    const releaseForwardInstance = vi.fn().mockResolvedValue({ released: true })
+    const { container } = render(<Workbench device={a} devices={[a]} enabledDeviceIds={['d1']} requestBridgeCapability={capability()} releaseForwardInstance={releaseForwardInstance} />)
+    const frameA = container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const postToA = vi.spyOn(frameA.contentWindow!, 'postMessage')
+    await waitFor(() => expect(snapshots(postToA)).toHaveLength(1))
+
+    // An origin nobody was configured at cannot claim to be this page.
+    instanceEnded(null, 'http://127.0.0.1:59999')
+    expect(releaseForwardInstance).not.toHaveBeenCalled()
+  })
+
   it('forwards instance-ended from a device iframe to release-instance with the page id', async () => {
     const a = device({ forwards: projection(3939) })
     const releaseForwardInstance = vi.fn().mockResolvedValue({ released: true })
