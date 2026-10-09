@@ -140,8 +140,8 @@ Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调（含其 
 - `/api/bridge/hello`
 - `/api/bridge/session-opened`
 - `/api/bridge/pending-snapshot`
-- `/api/bridge/publishable-port`
-- `/api/bridge/publish-port`
+- `/api/bridge/forwards/acquire`
+- `/api/bridge/forwards/release`
 
 #### Scenario: 名单外的 bridge 路径不被豁免
 - **GIVEN** 浏览器持有驾驶舱有效 cookie
