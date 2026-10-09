@@ -140,6 +140,7 @@ Host 主机名校验同样适用于 `/api/bootstrap` 与 bridge 回调（含其 
 - `/api/bridge/hello`
 - `/api/bridge/session-opened`
 - `/api/bridge/pending-snapshot`
+- `/api/bridge/status-snapshot`
 - `/api/bridge/forwards/acquire`
 - `/api/bridge/forwards/release`
 
