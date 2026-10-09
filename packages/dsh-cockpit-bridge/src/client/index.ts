@@ -52,7 +52,7 @@ interface SlotsLike {
 export const inject = ['sessions', 'uiSession']
 
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.6.3'
+const PLUGIN_VERSION = '0.6.4'
 const PROTOCOL_VERSION = 2
 /** Official per-session status snapshot (running / completionUnread). */
 const STATUS_PROTOCOL_VERSION = 1
@@ -352,6 +352,11 @@ export function apply(ctx: BridgeContext): void {
     let pendingFingerprint = ''
     let statusDirty = status !== undefined
     let statusFingerprint = ''
+    // The status report is an optional enhancement: a cockpit built before the
+    // route existed answers 404. Remember that refusal for this activation so
+    // the report neither blocks the acknowledgements behind it nor retries
+    // forever; a real activation (or a new hello) tries again.
+    let statusUnsupported = false
     const outbox = new Map<string, OutboxEntry>()
 
 
@@ -495,6 +500,7 @@ export function apply(ctx: BridgeContext): void {
           helloReady = true
           pendingDirty = pending !== undefined
           statusDirty = status !== undefined
+          statusUnsupported = false
           failureCount = 0
           // A successful hello is a recovery point. Re-asserting the current
           // selection also recreates an ack that may have expired from outbox.
@@ -530,7 +536,7 @@ export function apply(ctx: BridgeContext): void {
           failureCount = 0
         }
 
-        if (statusDirty && status !== undefined) {
+        if (statusDirty && status !== undefined && !statusUnsupported) {
           const items = statusSnapshot()
           const fingerprint = JSON.stringify(items)
           let response: Response
@@ -544,16 +550,23 @@ export function apply(ctx: BridgeContext): void {
             fail(undefined, undefined, activeConfig)
             return
           }
-          if (!response.ok) {
+          if (response.status === 404 || response.status === 405) {
+            // Older cockpit: no such route. This is not a failure of the bridge
+            // link, so no retry backoff and no early return: the acknowledgements
+            // below must still go out.
+            statusUnsupported = true
+            statusDirty = false
+          } else if (!response.ok) {
             failed = true
             fail(response.status, await readErrorCode(response), activeConfig)
             return
+          } else {
+            if (disposed || config !== activeConfig) return
+            statusFingerprint = fingerprint
+            statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint
+            if (statusDirty) rerunRequested = true
+            failureCount = 0
           }
-          if (disposed || config !== activeConfig) return
-          statusFingerprint = fingerprint
-          statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint
-          if (statusDirty) rerunRequested = true
-          failureCount = 0
         }
 
         purgeExpired()

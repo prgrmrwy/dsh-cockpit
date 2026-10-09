@@ -627,7 +627,7 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.6.3";
+		const PLUGIN_VERSION = "0.6.4";
 		const PROTOCOL_VERSION = 2;
 		/** Official per-session status snapshot (running / completionUnread). */
 		const STATUS_PROTOCOL_VERSION = 1;
@@ -864,6 +864,7 @@ window.__ModuleLoader__.load({
 				let pendingFingerprint = "";
 				let statusDirty = status !== void 0;
 				let statusFingerprint = "";
+				let statusUnsupported = false;
 				const outbox = /* @__PURE__ */ new Map();
 				const pendingSnapshot = () => pending?.getSnapshot() ?? [];
 				const statusSnapshot = () => status?.getSnapshot() ?? [];
@@ -982,6 +983,7 @@ window.__ModuleLoader__.load({
 							helloReady = true;
 							pendingDirty = pending !== void 0;
 							statusDirty = status !== void 0;
+							statusUnsupported = false;
 							failureCount = 0;
 							const current = readSelection();
 							if (current !== void 0) enqueue(current);
@@ -1012,7 +1014,7 @@ window.__ModuleLoader__.load({
 							if (pendingDirty) rerunRequested = true;
 							failureCount = 0;
 						}
-						if (statusDirty && status !== void 0) {
+						if (statusDirty && status !== void 0 && !statusUnsupported) {
 							const items = statusSnapshot();
 							const fingerprint = JSON.stringify(items);
 							let response;
@@ -1026,16 +1028,20 @@ window.__ModuleLoader__.load({
 								fail(void 0, void 0, activeConfig);
 								return;
 							}
-							if (!response.ok) {
+							if (response.status === 404 || response.status === 405) {
+								statusUnsupported = true;
+								statusDirty = false;
+							} else if (!response.ok) {
 								failed = true;
 								fail(response.status, await readErrorCode(response), activeConfig);
 								return;
+							} else {
+								if (disposed || config !== activeConfig) return;
+								statusFingerprint = fingerprint;
+								statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint;
+								if (statusDirty) rerunRequested = true;
+								failureCount = 0;
 							}
-							if (disposed || config !== activeConfig) return;
-							statusFingerprint = fingerprint;
-							statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint;
-							if (statusDirty) rerunRequested = true;
-							failureCount = 0;
 						}
 						purgeExpired();
 						while (!disposed && config === activeConfig && outbox.size > 0) {

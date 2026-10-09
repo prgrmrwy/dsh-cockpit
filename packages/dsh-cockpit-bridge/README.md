@@ -114,6 +114,16 @@ DSH 设置页里那个只读区块（design D9）。它存在的理由是：读�
 设备的 DSH web 才能获得协议 v2 的可靠确认；重启前旧版本仍按尽力而为方式工作，
 不影响原生 DSH 工作台。
 
+## 0.6.4 发布说明（上报官方完成未读状态）
+
+新增一条只读上报通道，不动接缝 `cockpitBridge.forwards`、会话打开确认协议、待处理交互快照与端口转发。
+
+- 新增 `POST /api/bridge/status-snapshot`（`protocolVersion` 1）：把设备官方 `uiSession.sessionStatus`（DSH UI 渲染会话状态点所用的同一张 map）里每个**正在运行或持有未读完成**的会话，以 `{ sessionId, running, completionUnread }` 上报——**只有标识符和两个布尔值**，不含会话内容、工作区文件、settings、credentials 或 provider token。
+- 驾驶舱据此以设备自己的 `completionUnread` 为准显示「已完成」，因此**驾驶舱重启、离线或断连期间完成的会话**也能照实显示（此前只能靠观测到的 `running → idle` 边沿，错过就永远补不回）。
+- 沿用既有 capability 校验、按内容指纹去重、有界重试与「激活 / hello 成功」恢复机会；缺少官方状态来源（旧 DSH）时**静默不上报**，不伪造空快照，驾驶舱对该设备保持原有的运行轮次模型。
+- 需与驾驶舱服务端 `2f51565` 及之后配合使用；服务端旧版收到未知路由只会拒绝该上报，不影响其它通道。
+- 回滚：改回 0.6.3 pin 即可，无须迁移（该设备退回运行轮次模型）。
+
 ## 0.6.3 发布说明（当前会话改读官方绑定）
 
 只影响「会话打开确认」的上报来源：接缝 `cockpitBridge.forwards`、协议版本、端口转发与任何服务端行为均未变。
