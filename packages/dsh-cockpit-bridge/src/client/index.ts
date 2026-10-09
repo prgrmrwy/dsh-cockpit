@@ -120,10 +120,26 @@ interface SessionListSnapshot {
 }
 type BridgeContext = Context & {
   readonly sessions: { readonly list: Observable<SessionListSnapshot> }
-  readonly uiSession?: { readonly pendingInteractions?: unknown; readonly sessionStatus?: unknown }
+  readonly uiSession?: {
+    readonly pendingInteractions?: unknown
+    readonly sessionStatus?: unknown
+    /** 0.2.0 official binding: the session the DSH UI has open right now. */
+    readonly adapter?: { readonly current?: unknown }
+  }
 }
 
-/** 0.2.0 removed current. A present byId is authoritative even with no main view. */
+/** The DSH UI's open-session binding (0.2.0). `retainedBy.mainView` is a
+ * retention COUNT — several sessions can carry it, and the list is ordered by
+ * recency — so it cannot identify the session the user has open. The official
+ * UI publishes that binding as `uiSession.adapter.current`; its snapshot is the
+ * binding value whose `key` is the open session id (absent = nothing open). */
+function currentBinding(ui: BridgeContext['uiSession']): Observable<{ readonly key?: unknown }> | undefined {
+  const current = ui?.adapter?.current
+  return isObservable(current) ? current as Observable<{ readonly key?: unknown }> : undefined
+}
+
+/** Legacy/fallback selection: the old authoritative `current`, else the first
+ * session retained by the main view. */
 function currentSelection(snapshot: SessionListSnapshot): string | undefined {
   if (snapshot.byId !== undefined && !Object.hasOwn(snapshot, 'current')) {
     return Object.values(snapshot.byId).find(row => (row.retainedBy?.mainView ?? 0) > 0)?.id
@@ -282,7 +298,14 @@ export function apply(ctx: BridgeContext): void {
     let failureCount = 0
     let flushTimer: ReturnType<typeof setTimeout> | undefined
     let retryTimer: ReturnType<typeof setTimeout> | undefined
-    let lastSelection = currentSelection(ctx.sessions.list.getSnapshot())
+    const binding = currentBinding(ctx.uiSession)
+    const readSelection = (): string | undefined => {
+      if (binding === undefined) return currentSelection(ctx.sessions.list.getSnapshot())
+      const value = binding.getSnapshot()
+      const key = value?.key
+      return typeof key === 'string' ? key : undefined
+    }
+    let lastSelection = readSelection()
     const pending = pendingSource(ctx.uiSession)
     let pendingDirty = pending !== undefined
     let pendingFingerprint = ''
@@ -291,10 +314,7 @@ export function apply(ctx: BridgeContext): void {
 
     const pendingSnapshot = (): readonly PendingInteraction[] => pending?.getSnapshot() ?? []
 
-    const currentKey = (): string | undefined => {
-      const current = currentSelection(ctx.sessions.list.getSnapshot())
-      return current === undefined ? undefined : current
-    }
+    const currentKey = (): string | undefined => readSelection()
 
     const purgeExpired = (now = Date.now()): void => {
       for (const [key, entry] of outbox) {
@@ -407,7 +427,7 @@ export function apply(ctx: BridgeContext): void {
         if (!helloReady) {
           let response: Response
           try {
-            const current = currentSelection(ctx.sessions.list.getSnapshot())
+            const current = readSelection()
             response = await post('/api/bridge/hello', {
               version: PLUGIN_VERSION,
               protocolVersion: PROTOCOL_VERSION,
@@ -433,7 +453,7 @@ export function apply(ctx: BridgeContext): void {
           failureCount = 0
           // A successful hello is a recovery point. Re-asserting the current
           // selection also recreates an ack that may have expired from outbox.
-          const current = currentSelection(ctx.sessions.list.getSnapshot())
+          const current = readSelection()
           if (current !== undefined) enqueue(current)
         }
 
@@ -523,7 +543,7 @@ export function apply(ctx: BridgeContext): void {
     const onSelectionChange = (): void => {
       // Capture now. Never defer getSnapshot(): a subsequent archive can clear
       // current before the 250 ms network batching window expires.
-      const current = currentSelection(ctx.sessions.list.getSnapshot())
+      const current = readSelection()
       if (current === lastSelection) {
         // An ordinary store refresh stays deduplicated, but if this ID is still
         // pending after a failure it is an explicit recovery opportunity.
@@ -537,10 +557,15 @@ export function apply(ctx: BridgeContext): void {
     }
 
     let unsubscribe = (): void => {}
+    let unsubscribeBinding = (): void => {}
     let unsubscribePending: (() => void) | undefined
     try {
       // Validate the initial shape before registering any callbacks.
       pending?.getSnapshot()
+      // Selection changes arrive through whichever source owns them: the 0.2.0
+      // binding fires on open/close, the list fires on legacy surfaces and on
+      // the retention/archive changes the outbox retry path depends on.
+      unsubscribeBinding = binding?.subscribe(onSelectionChange) ?? (() => {})
       unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
       unsubscribePending = pending?.subscribe(() => {
         if (disposed) return
@@ -578,7 +603,7 @@ export function apply(ctx: BridgeContext): void {
         return
       }
       if (!isActivation(event, config)) return
-      const current = currentSelection(ctx.sessions.list.getSnapshot())
+      const current = readSelection()
       if (current !== undefined) enqueue(current)
       pendingDirty = pending !== undefined
       helloReady = false
@@ -591,6 +616,7 @@ export function apply(ctx: BridgeContext): void {
       clearFlushTimer()
       clearRetryTimer()
       unsubscribe()
+      unsubscribeBinding()
       unsubscribePending?.()
       window.removeEventListener('message', onMessage)
       outbox.clear()
