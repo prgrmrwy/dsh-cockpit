@@ -770,6 +770,14 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#recordBridgeSuccess(lifecycle.deviceId)
   }
 
+  /** Replace the device's official per-session status snapshot. */
+  bridgeStatusSnapshot(origin: string, items: readonly { sessionId: string; running: boolean; completionUnread: boolean }[], protocolVersion: number): void {
+    void protocolVersion
+    const lifecycle = this.#lifecycleByOrigin(origin)
+    lifecycle.setBridgeStatusSnapshot(items)
+    this.#recordBridgeSuccess(lifecycle.deviceId)
+  }
+
   /** Bridge plugin hello: records that the device's DSH web client runs the
    * plugin, and stamps the last-seen time (surfaces as bridgeSeenAt in the
    * status pushed to the browser). */

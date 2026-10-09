@@ -213,6 +213,36 @@ export class DevicesController {
   }
 
   /** Compatible bridge publishes a complete minimal pending snapshot. */
+  /** Official per-session status (`running` / `completionUnread`) as the device
+   * itself renders it. Only those two booleans and the session id are accepted:
+   * any other field a bridge sends is dropped here, never forwarded. */
+  @Post('bridge/status-snapshot')
+  async bridgeStatusSnapshot(
+    @Req() request: import('express').Request,
+    @Body() body: { protocolVersion?: unknown; items?: unknown },
+  ): Promise<{ accepted: boolean }> {
+    const origin = requireOrigin(request)
+    try {
+      const bridgeProtocol = protocolVersion(body?.protocolVersion)
+      this.authorizeBridge(request, origin, bridgeProtocol)
+      if (!Array.isArray(body?.items) || body.items.length > 512) throw new Error('status snapshot invalid')
+      const seen = new Set<string>()
+      const items = body.items.map((value): { sessionId: string; running: boolean; completionUnread: boolean } => {
+        if (typeof value !== 'object' || value === null) throw new Error('status snapshot item invalid')
+        const item = value as Record<string, unknown>
+        if (typeof item.sessionId !== 'string' || item.sessionId === '' || item.sessionId.length > 256
+          || typeof item.running !== 'boolean' || typeof item.completionUnread !== 'boolean') throw new Error('status snapshot item invalid')
+        if (seen.has(item.sessionId)) throw new Error('status snapshot duplicate session')
+        seen.add(item.sessionId)
+        return { sessionId: item.sessionId, running: item.running, completionUnread: item.completionUnread }
+      })
+      this.connectivity.bridgeStatusSnapshot(origin, items, bridgeProtocol)
+      return { accepted: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
   @Post('bridge/pending-snapshot')
   async bridgePendingSnapshot(
     @Req() request: import('express').Request,

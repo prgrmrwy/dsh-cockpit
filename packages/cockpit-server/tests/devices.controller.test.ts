@@ -165,6 +165,32 @@ describe('bridge session-opened / hello endpoints', () => {
     await expect(controller.bridgePendingSnapshot(req, { protocolVersion: 3, seamVersion: 1, items: [{ sessionId: 's1', kind: 'bad', key: 'x' }] })).rejects.toMatchObject({ status: 400 })
   })
 
+  it('validates status snapshots and forwards only the two official booleans', async () => {
+    const bridgeStatusSnapshot = vi.fn()
+    const validateBridgeCapability = vi.fn()
+    const controller = new DevicesController({ bridgeStatusSnapshot, validateBridgeCapability } as never, {} as never)
+    const req = request({ origin: 'http://127.0.0.1:4317', [BRIDGE_CAPABILITY_HEADER]: 'cap' })
+
+    // Extra fields (a content-bearing bridge, or a future one) are dropped, not forwarded.
+    await expect(controller.bridgeStatusSnapshot(req, {
+      protocolVersion: 1,
+      items: [{ sessionId: 's1', running: false, completionUnread: true, title: 'SECRET TITLE', body: 'x' }],
+    } as never)).resolves.toEqual({ accepted: true })
+    expect(validateBridgeCapability).toHaveBeenCalled()
+    expect(bridgeStatusSnapshot).toHaveBeenCalledWith('http://127.0.0.1:4317', [{ sessionId: 's1', running: false, completionUnread: true }], 1)
+
+    await expect(controller.bridgeStatusSnapshot(req, { protocolVersion: 1, items: 'nope' } as never)).rejects.toMatchObject({ status: 400 })
+    await expect(controller.bridgeStatusSnapshot(req, { protocolVersion: 1, items: [{ sessionId: 's1', running: 'yes', completionUnread: false }] } as never)).rejects.toMatchObject({ status: 400 })
+    await expect(controller.bridgeStatusSnapshot(req, { protocolVersion: 1, items: [{ sessionId: '', running: true, completionUnread: false }] } as never)).rejects.toMatchObject({ status: 400 })
+    // Duplicate ids would let a later row silently override an earlier one.
+    await expect(controller.bridgeStatusSnapshot(req, { protocolVersion: 1, items: [
+      { sessionId: 's1', running: true, completionUnread: false },
+      { sessionId: 's1', running: false, completionUnread: true },
+    ] } as never)).rejects.toMatchObject({ status: 400 })
+    // Bounded, like the pending snapshot.
+    await expect(controller.bridgeStatusSnapshot(req, { protocolVersion: 1, items: Array.from({ length: 513 }, (_, i) => ({ sessionId: 's' + String(i), running: true, completionUnread: false })) } as never)).rejects.toMatchObject({ status: 400 })
+  })
+
   it('hello rejects a forged capability but accepts a request with no header (legacy path)', async () => {
     const validateBridgeCapability = vi.fn(() => { throw new Error('invalid or expired bridge capability') })
     const bridgeHello = vi.fn()
