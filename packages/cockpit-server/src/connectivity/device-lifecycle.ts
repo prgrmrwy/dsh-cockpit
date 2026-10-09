@@ -112,6 +112,15 @@ export class DeviceLifecycle {
    * prior knowledge is what keeps subagents out of root-session counts. Live
    * detach (session-removed) KEEPS this knowledge. */
   #subagents = new Set<string>()
+  /** Official per-session status snapshot reported by the bridge (design D1:
+   * the device's own truth wins; the run-round model above is the fallback for
+   * devices that never reported one). `undefined` = never reported (or reset by
+   * a reconnect): the decision is made per DEVICE, never per session. */
+  #officialStatus: Map<string, { running: boolean; completionUnread: boolean }> | undefined
+  /** Sessions whose official unread mark the user cleared locally. The mark is
+   * not ours to write (operation plane stays zero-coupled), so the clear is
+   * remembered until the mark flips or the session runs again (design D3). */
+  #officialCleared = new Set<string>()
   /** Per-session pending interactions (official pendingInteractions: session →
    * key → status). A session's display status is a single value — pending
    * outranks running (official sessionStatuses). */
@@ -261,6 +270,12 @@ export class DeviceLifecycle {
 
   #runningSessionIds(): Set<string> {
     const ids = new Set<string>()
+    if (this.#officialStatus !== undefined) {
+      for (const [id, row] of this.#officialStatus) {
+        if (row.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+      }
+      return ids
+    }
     for (const [id, state] of this.#sessions) {
       if (state.observed && state.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
     }
@@ -269,6 +284,12 @@ export class DeviceLifecycle {
 
   #completedSessionIds(): Set<string> {
     const ids = new Set<string>()
+    if (this.#officialStatus !== undefined) {
+      for (const [id, row] of this.#officialStatus) {
+        if (row.completionUnread && !this.#officialCleared.has(id) && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+      }
+      return ids
+    }
     for (const [id, state] of this.#sessions) {
       if (state.completedGeneration === state.generation && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
     }
@@ -394,6 +415,10 @@ export class DeviceLifecycle {
    * selected snapshot. This is the per-session bridge ack API. */
   clearCompleted(sessionId: string): void {
     if (this.#subagents.has(sessionId)) return
+    if (this.#officialStatus?.get(sessionId)?.completionUnread === true && !this.#officialCleared.has(sessionId)) {
+      this.#officialCleared.add(sessionId)
+      this.#emitFacts()
+    }
     const state = this.#sessionState(sessionId)
     const hadCompleted = state.completedGeneration === state.generation
     const newlyAcknowledged = state.acknowledgedGeneration !== state.generation
@@ -406,6 +431,12 @@ export class DeviceLifecycle {
    * whose completion edge is still in flight. */
   clearAllCompleted(): void {
     let changed = false
+    for (const [sessionId, row] of this.#officialStatus ?? []) {
+      if (row.completionUnread && !this.#officialCleared.has(sessionId) && !this.#subagents.has(sessionId)) {
+        this.#officialCleared.add(sessionId)
+        changed = true
+      }
+    }
     for (const [sessionId, state] of this.#sessions) {
       if (this.#subagents.has(sessionId)) continue
       if (state.acknowledgedGeneration !== state.generation || state.completedGeneration !== undefined) changed = true
@@ -428,6 +459,27 @@ export class DeviceLifecycle {
       if (!this.#subagents.has(item.sessionId)) this.#trackInteraction(item.sessionId, item.key, item.kind, false)
     }
     this.#bridgePendingAvailable = true
+    this.#emitFacts()
+  }
+
+  /** Replace the device's official per-session status snapshot (bridge
+   * `status-snapshot`). Once reported, the device's own `completionUnread` is
+   * the truth for the completed group — including completions this cockpit
+   * never observed (it restarted, or was offline when the session finished).
+   * Subagent sessions never enter root-session counts. */
+  setBridgeStatusSnapshot(items: readonly { sessionId: string; running: boolean; completionUnread: boolean }[]): void {
+    const next = new Map<string, { running: boolean; completionUnread: boolean }>()
+    for (const item of items) {
+      if (this.#subagents.has(item.sessionId)) continue
+      next.set(item.sessionId, { running: item.running, completionUnread: item.completionUnread })
+    }
+    // Lift a local clear only when the official mark flipped off or the session
+    // runs again; the same mark arriving in another snapshot must not undo it.
+    for (const sessionId of [...this.#officialCleared]) {
+      const row = next.get(sessionId)
+      if (row === undefined || !row.completionUnread || row.running) this.#officialCleared.delete(sessionId)
+    }
+    this.#officialStatus = next
     this.#emitFacts()
   }
 
@@ -457,6 +509,8 @@ export class DeviceLifecycle {
     this.#subagents.clear()
     this.#pendingBySession.clear()
     this.#bridgePendingAvailable = false
+    this.#officialStatus = undefined
+    this.#officialCleared.clear()
     this.#protocolKind = 'rc2'
     this.#archivedSessions.clear()
     this.#bridgeSelection = undefined
@@ -628,6 +682,11 @@ export class DeviceLifecycle {
     this.#protocolKind = protocol.kind
     this.#bridgePendingAvailable = protocol.kind === 'rc2'
     this.#pendingBySession.clear()
+    // Per-connection reset, like pending: the device page (and its bridge
+    // version) may be different now, so the official snapshot is no longer
+    // trusted until the bridge reports again.
+    this.#officialStatus = undefined
+    this.#officialCleared.clear()
     this.#client = protocol.client
     const probe = await this.#client.probe()
     if (this.#superseded(connectionGeneration, attemptSignal)) {

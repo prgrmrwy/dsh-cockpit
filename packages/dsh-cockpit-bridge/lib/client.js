@@ -629,6 +629,8 @@ window.__ModuleLoader__.load({
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
 		const PLUGIN_VERSION = "0.6.3";
 		const PROTOCOL_VERSION = 2;
+		/** Official per-session status snapshot (running / completionUnread). */
+		const STATUS_PROTOCOL_VERSION = 1;
 		const PENDING_PROTOCOL_VERSION = 3;
 		const PENDING_SEAM_VERSION = 1;
 		const FLUSH_DELAY_MS = 250;
@@ -706,6 +708,39 @@ window.__ModuleLoader__.load({
 						});
 					}
 					return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key));
+				}
+			};
+		}
+		/** The official per-session status map (0.2.0 `uiSession.sessionStatus`: the
+		* same map the DSH UI renders its status dots from). Legacy surfaces only
+		* expose pendingInteractions; without this map the cockpit keeps its run-round
+		* model, so the bridge stays silent rather than sending a fabricated empty
+		* snapshot ("nothing is running or unread"). */
+		function statusSource(ui) {
+			const source = ui?.sessionStatus;
+			if (!isObservable(source)) return void 0;
+			return {
+				subscribe: (listener) => source.subscribe(listener),
+				getSnapshot: () => {
+					const snapshot = source.getSnapshot();
+					if (!(snapshot instanceof Map)) throw new Error("unknown status snapshot");
+					const result = [];
+					for (const [sessionId, row] of snapshot.entries()) {
+						if (typeof sessionId !== "string" || sessionId === "") throw new Error("invalid status identity");
+						if (typeof row !== "object" || row === null) throw new Error("unknown status row");
+						const { running, completionUnread } = row;
+						if (typeof running !== "boolean" || typeof completionUnread !== "boolean") {
+							if (running === void 0 && completionUnread === void 0) continue;
+							throw new Error("invalid status row");
+						}
+						if (!running && !completionUnread) continue;
+						result.push({
+							sessionId,
+							running,
+							completionUnread
+						});
+					}
+					return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId));
 				}
 			};
 		}
@@ -824,10 +859,14 @@ window.__ModuleLoader__.load({
 				};
 				let lastSelection = readSelection();
 				const pending = pendingSource(ctx.uiSession);
+				const status = statusSource(ctx.uiSession);
 				let pendingDirty = pending !== void 0;
 				let pendingFingerprint = "";
+				let statusDirty = status !== void 0;
+				let statusFingerprint = "";
 				const outbox = /* @__PURE__ */ new Map();
 				const pendingSnapshot = () => pending?.getSnapshot() ?? [];
+				const statusSnapshot = () => status?.getSnapshot() ?? [];
 				const currentKey = () => readSelection();
 				const purgeExpired = (now = Date.now()) => {
 					for (const [key, entry] of outbox) if (now - entry.updatedAt >= OUTBOX_TTL_MS) outbox.delete(key);
@@ -942,6 +981,7 @@ window.__ModuleLoader__.load({
 							if (disposed) return;
 							helloReady = true;
 							pendingDirty = pending !== void 0;
+							statusDirty = status !== void 0;
 							failureCount = 0;
 							const current = readSelection();
 							if (current !== void 0) enqueue(current);
@@ -970,6 +1010,31 @@ window.__ModuleLoader__.load({
 							pendingFingerprint = fingerprint;
 							pendingDirty = JSON.stringify(pendingSnapshot()) !== fingerprint;
 							if (pendingDirty) rerunRequested = true;
+							failureCount = 0;
+						}
+						if (statusDirty && status !== void 0) {
+							const items = statusSnapshot();
+							const fingerprint = JSON.stringify(items);
+							let response;
+							try {
+								response = await post("/api/bridge/status-snapshot", {
+									protocolVersion: STATUS_PROTOCOL_VERSION,
+									items
+								}, activeConfig);
+							} catch {
+								failed = true;
+								fail(void 0, void 0, activeConfig);
+								return;
+							}
+							if (!response.ok) {
+								failed = true;
+								fail(response.status, await readErrorCode(response), activeConfig);
+								return;
+							}
+							if (disposed || config !== activeConfig) return;
+							statusFingerprint = fingerprint;
+							statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint;
+							if (statusDirty) rerunRequested = true;
 							failureCount = 0;
 						}
 						purgeExpired();
@@ -1034,11 +1099,20 @@ window.__ModuleLoader__.load({
 				};
 				let unsubscribe = () => {};
 				let unsubscribeBinding = () => {};
+				let unsubscribeStatus;
 				let unsubscribePending;
 				try {
 					pending?.getSnapshot();
 					unsubscribeBinding = binding?.subscribe(onSelectionChange) ?? (() => {});
 					unsubscribe = ctx.sessions.list.subscribe(onSelectionChange);
+					unsubscribeStatus = status?.subscribe(() => {
+						if (disposed) return;
+						try {
+							if (JSON.stringify(statusSnapshot()) === statusFingerprint) return;
+							statusDirty = true;
+							requestRun(FLUSH_DELAY_MS, true);
+						} catch {}
+					});
 					unsubscribePending = pending?.subscribe(() => {
 						if (disposed) return;
 						try {
@@ -1068,6 +1142,7 @@ window.__ModuleLoader__.load({
 					const current = readSelection();
 					if (current !== void 0) enqueue(current);
 					pendingDirty = pending !== void 0;
+					statusDirty = status !== void 0;
 					helloReady = false;
 					requestRun(0, true);
 				};
@@ -1078,6 +1153,7 @@ window.__ModuleLoader__.load({
 					clearRetryTimer();
 					unsubscribe();
 					unsubscribeBinding();
+					unsubscribeStatus?.();
 					unsubscribePending?.();
 					window.removeEventListener("message", onMessage);
 					outbox.clear();

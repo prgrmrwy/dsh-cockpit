@@ -568,6 +568,126 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     await tunnel.disposeAll()
   })
 
+  describe('official status snapshot (authoritative-completion-unread)', () => {
+    type Official = { setBridgeStatusSnapshot(items: readonly { sessionId: string; running: boolean; completionUnread: boolean }[]): void }
+    const official = (lifecycle: unknown) => lifecycle as Official
+
+    async function started(sessions?: Parameters<typeof device>[0]) {
+      const ctx = device(sessions)
+      const task = (ctx.lifecycle as { start(): void }).start() as unknown as Promise<void>
+      for (let i = 0; i < 100 && ctx.lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+      return { ...ctx, task }
+    }
+    async function finish(ctx: Awaited<ReturnType<typeof started>>) {
+      await ctx.lifecycle.stop()
+      await ctx.task
+      await ctx.tunnel.disposeAll()
+    }
+
+    it('shows the official unread set even when the cockpit never observed the completion edge', async () => {
+      // The session is already idle in the baseline (the cockpit restarted after
+      // it finished): the run-round model has no edge to turn into a reminder.
+      const ctx = await started([{ sessionId: 's1', running: false, updatedAt: 1, blank: false }])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+
+      official(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: false, completionUnread: true }])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+
+      // The official flag flips (the user opened it on the device): cleared.
+      official(ctx.lifecycle).setBridgeStatusSnapshot([])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await finish(ctx)
+    })
+
+    it('takes running from the official snapshot as well, so both groups agree with the device', async () => {
+      const ctx = await started([{ sessionId: 's1', running: false, updatedAt: 1, blank: false }])
+      official(ctx.lifecycle).setBridgeStatusSnapshot([
+        { sessionId: 's1', running: true, completionUnread: false },
+        { sessionId: 's2', running: false, completionUnread: true },
+      ])
+      expect(ctx.lifecycle.current().runningSessionCount).toBe(1)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([
+        { state: 'ongoing', kind: 'running', count: 1 },
+        { state: 'done', kind: 'completed', count: 1 },
+      ])
+      await finish(ctx)
+    })
+
+    it('keeps the run-round model for a device that never sent the official snapshot', async () => {
+      const ctx = await started()
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+      await finish(ctx)
+    })
+
+    it('does not restore a manually cleared reminder until the official flag flips', async () => {
+      const ctx = await started([{ sessionId: 's1', running: false, updatedAt: 1, blank: false }])
+      const unread = [{ sessionId: 's1', running: false, completionUnread: true }]
+      official(ctx.lifecycle).setBridgeStatusSnapshot(unread)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+
+      ;(ctx.lifecycle as unknown as { clearAllCompleted(): void }).clearAllCompleted()
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      // The same official mark arrives again (an unrelated session changed):
+      // the cleared reminder must not jump back.
+      official(ctx.lifecycle).setBridgeStatusSnapshot(unread)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+
+      // The mark flips off, then a NEW completion marks it again: shown again.
+      official(ctx.lifecycle).setBridgeStatusSnapshot([])
+      official(ctx.lifecycle).setBridgeStatusSnapshot(unread)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+
+      // A re-run also ends the suppression for the next round.
+      ;(ctx.lifecycle as unknown as { clearCompleted(id: string): void }).clearCompleted('s1')
+      official(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: true, completionUnread: false }])
+      official(ctx.lifecycle).setBridgeStatusSnapshot(unread)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+      await finish(ctx)
+    })
+
+    it('lets the device decide: a bridge selection report does not clear an official unread mark', async () => {
+      // The official mark flips by itself when the user opens the session on the
+      // device. Until it does, the device still holds the session as unread, so
+      // a selection report must not make the cockpit disagree with the sidebar.
+      const ctx = await started([{ sessionId: 's1', running: false, updatedAt: 1, blank: false }])
+      official(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: false, completionUnread: true }])
+      ;(ctx.lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }).setBridgeSelection('s1')
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+      // The device's own flip is what clears it.
+      official(ctx.lifecycle).setBridgeStatusSnapshot([])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await finish(ctx)
+    })
+
+    it('ignores subagent sessions in the official snapshot', async () => {
+      const ctx = await started([
+        { sessionId: 's1', running: false, updatedAt: 1, blank: false },
+        { sessionId: 'sub', running: false, updatedAt: 1, blank: false, origin: 'subagent' },
+      ])
+      official(ctx.lifecycle).setBridgeStatusSnapshot([
+        { sessionId: 'sub', running: true, completionUnread: true },
+        { sessionId: 's1', running: false, completionUnread: true },
+      ])
+      expect(ctx.lifecycle.current().runningSessionCount).toBe(0)
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+      await finish(ctx)
+    })
+
+    it('falls back to the run-round model again after the device reconnects', async () => {
+      // A reconnect resets the volatile aggregation (the page may be a different
+      // bridge version): the official snapshot is no longer trusted until the
+      // bridge reports again.
+      const ctx = await started([{ sessionId: 's1', running: false, updatedAt: 1, blank: false }])
+      official(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: false, completionUnread: true }])
+      expect(ctx.lifecycle.current().sessionStatuses).toHaveLength(1)
+      await ctx.lifecycle.reconnect()
+      for (let i = 0; i < 100 && ctx.lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await finish(ctx)
+    })
+  })
+
   it('archiving a session clears its current reminder without affecting others', async () => {
     const { lifecycle, tunnel, emit } = device()
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>

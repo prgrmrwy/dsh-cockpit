@@ -54,6 +54,8 @@ export const inject = ['sessions', 'uiSession']
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
 const PLUGIN_VERSION = '0.6.3'
 const PROTOCOL_VERSION = 2
+/** Official per-session status snapshot (running / completionUnread). */
+const STATUS_PROTOCOL_VERSION = 1
 const PENDING_PROTOCOL_VERSION = 3
 const PENDING_SEAM_VERSION = 1
 
@@ -178,6 +180,44 @@ function pendingSource(ui: BridgeContext['uiSession']): Observable<readonly Pend
         result.push({ sessionId, kind, key })
       }
       return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId) || left.key.localeCompare(right.key))
+    },
+  }
+}
+
+/** One session's official status booleans, identifiers only. */
+interface SessionStatusEntry {
+  readonly sessionId: string
+  readonly running: boolean
+  readonly completionUnread: boolean
+}
+
+/** The official per-session status map (0.2.0 `uiSession.sessionStatus`: the
+ * same map the DSH UI renders its status dots from). Legacy surfaces only
+ * expose pendingInteractions; without this map the cockpit keeps its run-round
+ * model, so the bridge stays silent rather than sending a fabricated empty
+ * snapshot ("nothing is running or unread"). */
+function statusSource(ui: BridgeContext['uiSession']): Observable<readonly SessionStatusEntry[]> | undefined {
+  const source = ui?.sessionStatus
+  if (!isObservable(source)) return undefined
+  return {
+    subscribe: listener => source.subscribe(listener),
+    getSnapshot: () => {
+      const snapshot = source.getSnapshot()
+      if (!(snapshot instanceof Map)) throw new Error('unknown status snapshot')
+      const result: SessionStatusEntry[] = []
+      for (const [sessionId, row] of snapshot.entries()) {
+        if (typeof sessionId !== 'string' || sessionId === '') throw new Error('invalid status identity')
+        if (typeof row !== 'object' || row === null) throw new Error('unknown status row')
+        const { running, completionUnread } = row as { running?: unknown; completionUnread?: unknown }
+        if (typeof running !== 'boolean' || typeof completionUnread !== 'boolean') {
+          // A status map without both booleans is not the official 0.2.0 shape.
+          if (running === undefined && completionUnread === undefined) continue
+          throw new Error('invalid status row')
+        }
+        if (!running && !completionUnread) continue
+        result.push({ sessionId, running, completionUnread })
+      }
+      return result.sort((left, right) => left.sessionId.localeCompare(right.sessionId))
     },
   }
 }
@@ -307,12 +347,16 @@ export function apply(ctx: BridgeContext): void {
     }
     let lastSelection = readSelection()
     const pending = pendingSource(ctx.uiSession)
+    const status = statusSource(ctx.uiSession)
     let pendingDirty = pending !== undefined
     let pendingFingerprint = ''
+    let statusDirty = status !== undefined
+    let statusFingerprint = ''
     const outbox = new Map<string, OutboxEntry>()
 
 
     const pendingSnapshot = (): readonly PendingInteraction[] => pending?.getSnapshot() ?? []
+    const statusSnapshot = (): readonly SessionStatusEntry[] => status?.getSnapshot() ?? []
 
     const currentKey = (): string | undefined => readSelection()
 
@@ -450,6 +494,7 @@ export function apply(ctx: BridgeContext): void {
           if (disposed) return
           helloReady = true
           pendingDirty = pending !== undefined
+          statusDirty = status !== undefined
           failureCount = 0
           // A successful hello is a recovery point. Re-asserting the current
           // selection also recreates an ack that may have expired from outbox.
@@ -482,6 +527,32 @@ export function apply(ctx: BridgeContext): void {
           // A newer snapshot may have arrived while the accepted one was in flight.
           pendingDirty = JSON.stringify(pendingSnapshot()) !== fingerprint
           if (pendingDirty) rerunRequested = true
+          failureCount = 0
+        }
+
+        if (statusDirty && status !== undefined) {
+          const items = statusSnapshot()
+          const fingerprint = JSON.stringify(items)
+          let response: Response
+          try {
+            response = await post('/api/bridge/status-snapshot', {
+              protocolVersion: STATUS_PROTOCOL_VERSION,
+              items,
+            }, activeConfig)
+          } catch {
+            failed = true
+            fail(undefined, undefined, activeConfig)
+            return
+          }
+          if (!response.ok) {
+            failed = true
+            fail(response.status, await readErrorCode(response), activeConfig)
+            return
+          }
+          if (disposed || config !== activeConfig) return
+          statusFingerprint = fingerprint
+          statusDirty = JSON.stringify(statusSnapshot()) !== fingerprint
+          if (statusDirty) rerunRequested = true
           failureCount = 0
         }
 
@@ -558,6 +629,7 @@ export function apply(ctx: BridgeContext): void {
 
     let unsubscribe = (): void => {}
     let unsubscribeBinding = (): void => {}
+    let unsubscribeStatus: (() => void) | undefined
     let unsubscribePending: (() => void) | undefined
     try {
       // Validate the initial shape before registering any callbacks.
@@ -567,6 +639,17 @@ export function apply(ctx: BridgeContext): void {
       // the retention/archive changes the outbox retry path depends on.
       unsubscribeBinding = binding?.subscribe(onSelectionChange) ?? (() => {})
       unsubscribe = ctx.sessions.list.subscribe(onSelectionChange)
+      unsubscribeStatus = status?.subscribe(() => {
+        if (disposed) return
+        try {
+          const fingerprint = JSON.stringify(statusSnapshot())
+          if (fingerprint === statusFingerprint) return
+          statusDirty = true
+          requestRun(FLUSH_DELAY_MS, true)
+        } catch {
+          // Unknown status shape: stay silent, never leak into the DSH page.
+        }
+      })
       unsubscribePending = pending?.subscribe(() => {
         if (disposed) return
         try {
@@ -606,6 +689,7 @@ export function apply(ctx: BridgeContext): void {
       const current = readSelection()
       if (current !== undefined) enqueue(current)
       pendingDirty = pending !== undefined
+      statusDirty = status !== undefined
       helloReady = false
       requestRun(0, true)
     }
@@ -617,6 +701,7 @@ export function apply(ctx: BridgeContext): void {
       clearRetryTimer()
       unsubscribe()
       unsubscribeBinding()
+      unsubscribeStatus?.()
       unsubscribePending?.()
       window.removeEventListener('message', onMessage)
       outbox.clear()

@@ -150,6 +150,65 @@ describe('cockpit bridge client', () => {
     fixture.cleanup()
   })
 
+  it('reports the official per-session running and completionUnread booleans', async () => {
+    // 0.2.0 publishes the per-session status map the DSH UI itself renders
+    // (running / pendingInteraction / completionUnread). The cockpit must be
+    // able to trust it instead of re-deriving completions from edges, so the
+    // bridge forwards the two booleans for every session that is running or
+    // holds an unread completion.
+    const fixture = fakeCtx({ current: 'A' }, new Map())
+    const statusListeners = new Set<() => void>()
+    let status = new Map<string, { running: boolean; completionUnread: boolean }>([
+      ['A', { running: true, completionUnread: false }],
+      ['B', { running: false, completionUnread: true }],
+      ['C', { running: false, completionUnread: false }],
+    ])
+    Object.assign(fixture.ctx, { uiSession: { sessionStatus: {
+      getSnapshot: () => status,
+      subscribe: (fn: () => void) => { statusListeners.add(fn); return () => { statusListeners.delete(fn) } },
+    } } })
+
+    const apply = await loadApply()
+    apply(fixture.ctx)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/status-snapshot').at(-1)).toEqual({
+      protocolVersion: 1,
+      items: [
+        { sessionId: 'A', running: true, completionUnread: false },
+        { sessionId: 'B', running: false, completionUnread: true },
+      ],
+    })
+
+    // The official flag flips (the user opened B, A stopped): the next
+    // snapshot carries only what still matters, in stable order.
+    status = new Map([
+      ['A', { running: false, completionUnread: false }],
+      ['B', { running: false, completionUnread: false }],
+      ['D', { running: true, completionUnread: false }],
+    ])
+    for (const fn of [...statusListeners]) fn()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/status-snapshot').at(-1)).toEqual({
+      protocolVersion: 1,
+      items: [{ sessionId: 'D', running: true, completionUnread: false }],
+    })
+    fixture.cleanup()
+  })
+
+  it('stays silent when the official status observable is absent', async () => {
+    // Legacy surfaces only expose pendingInteractions. Without the official
+    // map the cockpit keeps its run-round model, so the bridge must not invent
+    // a snapshot (an empty one would claim "nothing is running or unread").
+    const fixture = fakeCtx({ current: 'A' })
+    const apply = await loadApply()
+    expect(() => apply(fixture.ctx)).not.toThrow()
+    configure()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(callsFor('/api/bridge/status-snapshot')).toHaveLength(0)
+    fixture.cleanup()
+  })
+
   it('supports 0.2.0 retained mainView and sessionStatus without leaking interaction content', async () => {
     const fixture = fakeCtx({ current: 'A' }, new Map())
     const snapshot = fixture.ctx.sessions.list.getSnapshot
