@@ -23,6 +23,7 @@
 
 - `cockpit-workbench`: 新增桥接只读上报官方每会话状态（`running` / `completionUnread`）的要求；既有「可选桥接无损上报会话打开事实」不动。
 - `cockpit-device-shell`: 「完成提醒按运行轮次可靠收敛」改为「有官方快照以官方标记为准，否则回退到运行轮次模型」，并补手动清除在权威源下的抑制语义。
+- `cockpit-api-auth`: 「bridge 回调路由名单」新增 `/api/bridge/status-snapshot`（该名单是唯一权威来源，新增 bridge 回调路由必须以 MODIFIED 更新它；初稿遗漏了这条，由真机预检 403 暴露）。
 
 ## Impact
 

@@ -17,6 +17,7 @@ const SOURCES = [
   // An active change that MODIFIES the list is ahead of the current spec
   // until it is archived; after archive the file is gone and the current
   // spec takes over.
+  'openspec/changes/authoritative-completion-unread/specs/cockpit-api-auth/spec.md',
   'openspec/changes/device-forward-registry/specs/cockpit-api-auth/spec.md',
   'openspec/specs/cockpit-api-auth/spec.md',
 ]

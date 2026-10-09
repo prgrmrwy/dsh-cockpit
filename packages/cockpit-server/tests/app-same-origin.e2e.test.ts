@@ -185,6 +185,20 @@ describe('cockpit API same-origin guard (real NestJS + Express, via createCockpi
     expect(String(reply.headers['access-control-allow-headers'])).toContain(CAPABILITY_HEADER)
   })
 
+  it('grants every listed bridge route the same credentialed preflight, not just hello', async () => {
+    // A route missing from the allowlist is invisible to unit tests of its
+    // controller: the browser's preflight is refused (403) before the request
+    // is ever sent, so the bridge's report silently never arrives. Walk the
+    // whole list so a new route cannot ship without its CORS grant.
+    const { BRIDGE_CALLBACK_ROUTES } = await import('../src/auth/token.middleware.js')
+    for (const route of BRIDGE_CALLBACK_ROUTES) {
+      const reply = await send('OPTIONS', route, { origin: deviceOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': `content-type, ${CAPABILITY_HEADER}` })
+      expect(reply.status, route).toBeLessThan(300)
+      expect(reply.headers['access-control-allow-origin'], route).toBe(deviceOrigin)
+    }
+    expect(BRIDGE_CALLBACK_ROUTES).toContain('/api/bridge/status-snapshot')
+  })
+
   it('applies the Host check to bridge preflights and grants them no CORS', async () => {
     const preflight = await send('OPTIONS', '/api/bridge/hello', { host: 'evil.example:3090', origin: deviceOrigin, 'access-control-request-method': 'POST', 'access-control-request-headers': CAPABILITY_HEADER })
     expect([preflight.status, code(preflight)]).toEqual([403, 'cross-origin-rejected'])
