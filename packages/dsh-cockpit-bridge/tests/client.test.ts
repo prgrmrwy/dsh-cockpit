@@ -196,6 +196,30 @@ describe('cockpit bridge client', () => {
     fixture.cleanup()
   })
 
+  it('does not let an older cockpit that lacks the status route block the open acknowledgements', async () => {
+    // A cockpit built before this route answers 404. The status report is an
+    // optional enhancement: its refusal must neither stall the session-opened
+    // outbox behind it nor retry forever against a route that does not exist.
+    const fixture = fakeCtx({ current: 'A' }, new Map())
+    Object.assign(fixture.ctx, { uiSession: { ...fixture.ctx.uiSession, sessionStatus: {
+      getSnapshot: () => new Map([['A', { running: true, completionUnread: false }]]),
+      subscribe: () => () => {},
+    } } })
+    fetchMock.mockImplementation(async (url: string) => String(url).endsWith('/api/bridge/status-snapshot') ? failResponse(404) : ok())
+
+    const apply = await loadApply()
+    apply(fixture.ctx)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(bodiesFor('/api/bridge/session-opened').map(row => row.current)).toEqual(['A'])
+
+    // Not hammered: a refused optional route is attempted once per activation,
+    // not on every retry tick.
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(callsFor('/api/bridge/status-snapshot').length).toBeLessThanOrEqual(1)
+    fixture.cleanup()
+  })
+
   it('stays silent when the official status observable is absent', async () => {
     // Legacy surfaces only expose pendingInteractions. Without the official
     // map the cockpit keeps its run-round model, so the bridge must not invent
@@ -350,7 +374,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.6.3',
+      version: '0.6.4',
       protocolVersion: 2,
       current: 'already-open',
     })
