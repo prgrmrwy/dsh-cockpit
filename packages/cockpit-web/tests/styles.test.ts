@@ -84,6 +84,29 @@ describe('cockpit visual contracts', () => {
     expect(css).toMatch(/\.device-card-actions\s*\{[^}]*align-items:\s*center/s)
   })
 
+  it('dresses the forward kind badge and the create button like the rest of the card', () => {
+    // The kind badge is the same pill as the card's own chips (11px / 650 /
+    // accent on accent-soft), not a 12px tinted span inherited from the row.
+    const kind = css.match(/\.forward-kind\s*\{([^}]*)\}/s)
+    expect(kind).not.toBeNull()
+    expect(kind![1]).toMatch(/min-height:\s*22px/)
+    expect(kind![1]).toMatch(/font-size:\s*11px/)
+    expect(kind![1]).toMatch(/font-weight:\s*650/)
+    expect(kind![1]).toMatch(/color:\s*var\(--accent\)/)
+    // Held-only rows are the transient kind: same pill, dimmer tone.
+    expect(css).toMatch(/\.forward-kind\[data-forward-kind="held"\]\s*\{[^}]*color:\s*var\(--fg-dim\)/s)
+    // The create button keeps the panel's primary colors but the card's rhythm.
+    expect(css).toMatch(/\.forward-form\s+\.primary-action\s*\{[^}]*min-height:\s*30px/s)
+    expect(css).toMatch(/\.forward-form\s+\.primary-action\s*\{[^}]*font-size:\s*12px/s)
+    // Nothing stretches it into a full-width slab.
+    expect(css).not.toMatch(/\.primary-action\s*\{[^}]*width:\s*100%/s)
+    // The delete button sits in the row's second column, not in the meta line.
+    expect(css).toMatch(/\.forward-row-line\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/s)
+    for (const rule of css.match(/\.forward-(?:kind|delete|row-line)[^{]*\{[^}]*\}/gs) ?? []) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+    }
+  })
+
   it('keeps the forward rows folded as whole fields instead of a fixed column template', () => {
     // A fixed template was measured to shred the address and the pid: the
     // card's content column is ~320px wide even at a 1440px viewport.
@@ -97,12 +120,14 @@ describe('cockpit visual contracts', () => {
     // Rows read as one list: hairline separators, no card per row.
     expect(css).toMatch(/\.forward-row\s*\{[^}]*border-top:\s*1px\s+solid\s+var\(--border\)/s)
     expect(css).toMatch(/\.forward-row:first-child\s*\{\s*border-top:\s*0/s)
-    // Delete is a row action, not a grid column that can collapse to zero.
-    expect(css).toMatch(/\.forward-delete\s*\{[^}]*margin-left:\s*auto/s)
+    // Delete is placed by the row line's second column, not by a collapsing
+    // grid column of its own, and it shares the line's top edge.
+    expect(css).toMatch(/\.forward-delete\s*\{[^}]*align-self:\s*start/s)
     expect(css).not.toMatch(/\.forward-delete\s*\{[^}]*grid-column/s)
-    // On a narrow screen the primary action takes the full width.
-    const narrow = css.slice(css.search(/@media \(max-width: 520px\)/).index)
-    expect(narrow).toMatch(/\.forward-form-row\s+\.primary-action\s*\{[^}]*width:\s*100%/s)
+    // Folding needs no narrow-screen override: it is a base-rule property.
+    const narrow = css.slice(css.indexOf('@media (max-width: 520px)'))
+    expect(narrow).not.toMatch(/\.forward-row\s*\{/)
+    expect(narrow).not.toMatch(/\.forward-form/)
   })
 
   it('styles the forwards list with theme tokens only and a narrow single-column fallback', () => {

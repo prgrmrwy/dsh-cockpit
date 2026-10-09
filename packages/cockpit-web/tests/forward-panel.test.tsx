@@ -136,6 +136,21 @@ describe('device panel forwards list', () => {
     expect((within(create).getByLabelText('设备端口') as HTMLInputElement).value).toBe('6379')
   })
 
+  it('keeps the row delete action on the row line, out of the label and holder line', () => {
+    panel([device()])
+    const held = row(3939)!
+    const meta = held.querySelector('.forward-row-meta')!
+    const del = within(held).getByRole('button', { name: '删除转发 3939' })
+    // Sharing a line with 「标签 / 持有者」 crowded both; the row action belongs
+    // to the row's first line, where it reads as that row's action.
+    expect(meta.contains(del)).toBe(false)
+    expect(held.querySelector('.forward-row-line')!.contains(del)).toBe(true)
+    // The kind badge says which kind it is, so CSS can tone it.
+    expect(held.querySelector('.forward-kind')!.getAttribute('data-forward-kind')).toBe('held')
+    expect(row(5432)!.querySelector('.forward-kind')!.getAttribute('data-forward-kind')).toBe('pinned')
+    expect(row('system')!.querySelector('.forward-kind')!.getAttribute('data-forward-kind')).toBe('system')
+  })
+
   it('creates a pinned 6379 redis entry and shows 3 / 8', async () => {
     apiMock.createForward.mockResolvedValue({ devicePort: 6379, state: 'starting' })
     const { rerender } = panel([device()])
