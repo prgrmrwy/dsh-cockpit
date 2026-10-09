@@ -60,6 +60,7 @@
 
 - **发布**：bridge 0.6.2 已发布为 GitHub release（tag `dsh-cockpit-bridge-v0.6.2`，资产 48718 B，`sha256 99c24ff2…46a4`，下载物与本地字节一致，URL 实测 200）。本机与 lumevm 的 ohmydsh manifest pin 均已指向该 URL 并完成 `dsh build`（两边部署物 `version=0.6.2`，`lib/client.js` 含 `dsh-cockpit-forwards-nav` 与 `dshcf-meter`）。
 - **12.4 实测 PASS**：`PASS  offline-watch=60s background=360s reclaim=30.2s`（lumevm，`additional:3939 ready, 1 holder, pid 69907`）。
+- **发现一条与规范不符的回收路径（未修，待决定）**：**设备页面重载不会释放旧实例的持有者**。owner 真机核对：重载后条目未消失；数据佐证 —— 同一设备端口上有两个不同 bindingId 的持有者（shim 每次页面加载生成一次 bindingId，两个绑定 = 两次页面加载，若重载释放旧实例则只应剩一个）。`pagehide` → 父页面 `release-instance` 这一段没有产生效果，根因未定位。影响有界：持有者最终由驾驶舱页面宽限兜底（12.4 第③步实测 30.2 秒回收），条目始终可见可删，隧道不会变成死缓存。**归档前置：先决定修还是显式记为已知限制；决定前不得归档**（否则会把已知为假的场景并入主 spec）。
 - **12.5 三项中两项已真机核对**（详见 tasks 12.5 的逐项记录）：面板建/删常驻与区块同步、区块只读与新呈现、本机设备态、导航字形；**唯一未完成**的是「设备页重载释放持有」，原因是本次的浏览器驱动无法在跨源 frame 内发起 reload，已给出人工复核步骤。
 - **不需要重启本机 DSH**（修正早先的判断）：DSH 的客户端插件由宿主**按请求从磁盘提供**，`dsh build` 后本机 3080 的页面刷新即可加载 0.6.2 —— 已由「本机设备区块显示新版 `本机设备无需转发` + 新说明」实测证明；本 change 又只改客户端半区（host 半区 `lib/index.js` 未变），故无需重启。原计划里「重启会终结会话」的顾虑随之消失。
 - **环境陷阱（运维）**：lumevm 的 SSH 别名走 `lume-ssh-proxy`，它调用裸 `lume`；若驾驶舱从 PATH 不含 `~/.local/bin` 的 shell 启动，lumevm 会静默降级为 `SSH_UNREACHABLE`（devbox 不受影响）。用带 `~/.local/bin` 的 PATH 重启驾驶舱后即 READY。
