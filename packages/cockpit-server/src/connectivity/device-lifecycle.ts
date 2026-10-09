@@ -370,10 +370,13 @@ export class DeviceLifecycle {
     return total
   }
 
-  /** Record the bridge's selected-session snapshot. Selecting a session also
-   * acknowledges its current generation, allowing ack-before-edge and
-   * edge-before-ack to converge. Passing undefined clears only the selected
-   * snapshot; it does not revoke an acknowledgement already made. */
+  /** Record the bridge's selected-session snapshot. Selecting a session clears
+   * the reminder it is currently showing, which is what makes 「完成后打开」
+   * converge; it MUST NOT pre-acknowledge the open round, because a device page
+   * keeps the running session selected (and the capability renewal re-asserts
+   * it) — acknowledging that would swallow the completion the user switches
+   * away to miss. 「完成时已经打开」is evaluated at the edge against the live
+   * selection instead. Passing undefined clears only the snapshot. */
   setBridgeSelection(sessionId: string | undefined): void {
     const selectionChanged = this.#bridgeSelection !== sessionId
     this.#bridgeSelection = sessionId
@@ -383,7 +386,6 @@ export class DeviceLifecycle {
     }
     const state = this.#sessionState(sessionId)
     const hadCompleted = state.completedGeneration === state.generation
-    state.acknowledgedGeneration = state.generation
     state.completedGeneration = undefined
     if (selectionChanged || hadCompleted) this.#emitFacts()
   }

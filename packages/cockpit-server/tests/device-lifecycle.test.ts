@@ -537,6 +537,37 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     await tunnel.disposeAll()
   })
 
+  it('a report that the session was open during its run does not pre-acknowledge the round', async () => {
+    // The device page keeps the session open while it runs (so the bridge
+    // reports it as selected, and the capability renewal re-asserts it), then
+    // the user switches away BEFORE the completion edge. DSH marks such a run
+    // 「已完成」, so the cockpit must still arm a reminder: 「打开」 counts at
+    // completion time, not at any moment during the round.
+    const { lifecycle, tunnel, emit } = device()
+    const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
+      await new Promise(r => setTimeout(r, 5))
+    }
+    const selection = lifecycle as unknown as { setBridgeSelection(id: string | undefined): void }
+    selection.setBridgeSelection('s1')
+    // Capability renewal re-asserts the same selection mid-run.
+    selection.setBridgeSelection('s1')
+    // The user switches away; the completion edge then arrives.
+    selection.setBridgeSelection('s2')
+    emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(lifecycle.current().sessionStatuses).toEqual([
+      { state: 'done', kind: 'completed', count: 1 },
+    ])
+
+    // Opening the completed session afterwards still clears it.
+    selection.setBridgeSelection('s1')
+    expect(lifecycle.current().sessionStatuses).toEqual([])
+
+    await lifecycle.stop()
+    await task
+    await tunnel.disposeAll()
+  })
+
   it('archiving a session clears its current reminder without affecting others', async () => {
     const { lifecycle, tunnel, emit } = device()
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
