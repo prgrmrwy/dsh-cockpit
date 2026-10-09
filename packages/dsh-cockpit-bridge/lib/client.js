@@ -661,7 +661,17 @@ window.__ModuleLoader__.load({
 		function isActivation(event, config) {
 			return config !== void 0 && event.source === window.parent && event.origin === config.cockpitOrigin && typeof event.data === "object" && event.data !== null && event.data.type === "dsh-cockpit:device-activated";
 		}
-		/** 0.2.0 removed current. A present byId is authoritative even with no main view. */
+		/** The DSH UI's open-session binding (0.2.0). `retainedBy.mainView` is a
+		* retention COUNT — several sessions can carry it, and the list is ordered by
+		* recency — so it cannot identify the session the user has open. The official
+		* UI publishes that binding as `uiSession.adapter.current`; its snapshot is the
+		* binding value whose `key` is the open session id (absent = nothing open). */
+		function currentBinding(ui) {
+			const current = ui?.adapter?.current;
+			return isObservable(current) ? current : void 0;
+		}
+		/** Legacy/fallback selection: the old authoritative `current`, else the first
+		* session retained by the main view. */
 		function currentSelection(snapshot) {
 			if (snapshot.byId !== void 0 && !Object.hasOwn(snapshot, "current")) return Object.values(snapshot.byId).find((row) => (row.retainedBy?.mainView ?? 0) > 0)?.id;
 			if (snapshot.byId !== void 0 && Object.values(snapshot.byId).some((row) => row.retainedBy !== void 0)) return Object.values(snapshot.byId).find((row) => (row.retainedBy?.mainView ?? 0) > 0)?.id;
@@ -806,16 +816,19 @@ window.__ModuleLoader__.load({
 				let failureCount = 0;
 				let flushTimer;
 				let retryTimer;
-				let lastSelection = currentSelection(ctx.sessions.list.getSnapshot());
+				const binding = currentBinding(ctx.uiSession);
+				const readSelection = () => {
+					if (binding === void 0) return currentSelection(ctx.sessions.list.getSnapshot());
+					const key = binding.getSnapshot()?.key;
+					return typeof key === "string" ? key : void 0;
+				};
+				let lastSelection = readSelection();
 				const pending = pendingSource(ctx.uiSession);
 				let pendingDirty = pending !== void 0;
 				let pendingFingerprint = "";
 				const outbox = /* @__PURE__ */ new Map();
 				const pendingSnapshot = () => pending?.getSnapshot() ?? [];
-				const currentKey = () => {
-					const current = currentSelection(ctx.sessions.list.getSnapshot());
-					return current === void 0 ? void 0 : current;
-				};
+				const currentKey = () => readSelection();
 				const purgeExpired = (now = Date.now()) => {
 					for (const [key, entry] of outbox) if (now - entry.updatedAt >= OUTBOX_TTL_MS) outbox.delete(key);
 				};
@@ -906,7 +919,7 @@ window.__ModuleLoader__.load({
 						if (!helloReady) {
 							let response;
 							try {
-								const current = currentSelection(ctx.sessions.list.getSnapshot());
+								const current = readSelection();
 								response = await post("/api/bridge/hello", {
 									version: PLUGIN_VERSION,
 									protocolVersion: PROTOCOL_VERSION,
@@ -930,7 +943,7 @@ window.__ModuleLoader__.load({
 							helloReady = true;
 							pendingDirty = pending !== void 0;
 							failureCount = 0;
-							const current = currentSelection(ctx.sessions.list.getSnapshot());
+							const current = readSelection();
 							if (current !== void 0) enqueue(current);
 						}
 						if (pendingDirty && pending !== void 0) {
@@ -1009,7 +1022,7 @@ window.__ModuleLoader__.load({
 					}, delay);
 				};
 				const onSelectionChange = () => {
-					const current = currentSelection(ctx.sessions.list.getSnapshot());
+					const current = readSelection();
 					if (current === lastSelection) {
 						const key = current ?? CLEARED_KEY;
 						if (outbox.has(key)) requestRun(FLUSH_DELAY_MS, true);
@@ -1020,9 +1033,11 @@ window.__ModuleLoader__.load({
 					requestRun(FLUSH_DELAY_MS, true);
 				};
 				let unsubscribe = () => {};
+				let unsubscribeBinding = () => {};
 				let unsubscribePending;
 				try {
 					pending?.getSnapshot();
+					unsubscribeBinding = binding?.subscribe(onSelectionChange) ?? (() => {});
 					unsubscribe = ctx.sessions.list.subscribe(onSelectionChange);
 					unsubscribePending = pending?.subscribe(() => {
 						if (disposed) return;
@@ -1050,7 +1065,7 @@ window.__ModuleLoader__.load({
 						return;
 					}
 					if (!isActivation(event, config)) return;
-					const current = currentSelection(ctx.sessions.list.getSnapshot());
+					const current = readSelection();
 					if (current !== void 0) enqueue(current);
 					pendingDirty = pending !== void 0;
 					helloReady = false;
@@ -1062,6 +1077,7 @@ window.__ModuleLoader__.load({
 					clearFlushTimer();
 					clearRetryTimer();
 					unsubscribe();
+					unsubscribeBinding();
 					unsubscribePending?.();
 					window.removeEventListener("message", onMessage);
 					outbox.clear();

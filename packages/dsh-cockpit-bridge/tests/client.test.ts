@@ -109,6 +109,47 @@ describe('cockpit bridge client', () => {
     vi.unstubAllGlobals()
   })
 
+  it('reports the session the DSH UI has open, not the first retained one', async () => {
+    // 0.2.0 keeps `retainedBy.mainView` as a retention COUNT, so several
+    // sessions can carry it and list order cannot identify the open session.
+    // The official UI exposes that binding as `uiSession.adapter.current`; a
+    // wrong guess acknowledges a completion the user never saw, which is
+    // exactly how the cockpit loses its 「已完成」 reminder.
+    const fixture = fakeCtx({ current: 'A' }, new Map())
+    const retained = Object.fromEntries(['A', 'B'].map(id => [id, { id, retainedBy: { mainView: 1 } }]))
+    Object.assign(fixture.ctx.sessions.list, { getSnapshot: () => ({ byId: retained }) })
+    const bindingListeners = new Set<() => void>()
+    let binding: string | undefined = 'B'
+    const pending = fixture.ctx.uiSession!.pendingInteractions
+    Object.assign(fixture.ctx, { uiSession: { pendingInteractions: pending, adapter: { current: {
+      getSnapshot: () => ({ key: binding }),
+      subscribe: (fn: () => void) => { bindingListeners.add(fn); return () => { bindingListeners.delete(fn) } },
+    } } } })
+
+    const apply = await loadApply()
+    apply(fixture.ctx)
+    configure()
+    await vi.advanceTimersByTimeAsync(0)
+    // Both the hello and the acknowledgement must name the open session (B),
+    // never the first retained row (A).
+    expect(bodiesFor('/api/bridge/hello')[0]?.current).toBe('B')
+    expect(bodiesFor('/api/bridge/session-opened').map(row => row.current)).toEqual(['B'])
+
+    // Switching the open session in the DSH UI is reported even when the
+    // retention set and the list order do not change at all.
+    binding = 'A'
+    for (const fn of [...bindingListeners]) fn()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/session-opened').map(row => row.current)).toEqual(['B', 'A'])
+
+    // Closing the session reports "no selection" instead of a stale id.
+    binding = undefined
+    for (const fn of [...bindingListeners]) fn()
+    await vi.advanceTimersByTimeAsync(250)
+    expect(bodiesFor('/api/bridge/session-opened').map(row => row.current)).toEqual(['B', 'A', null])
+    fixture.cleanup()
+  })
+
   it('supports 0.2.0 retained mainView and sessionStatus without leaking interaction content', async () => {
     const fixture = fakeCtx({ current: 'A' }, new Map())
     const snapshot = fixture.ctx.sessions.list.getSnapshot
