@@ -24,6 +24,13 @@
 - [x] 4.2 Implement: 窄屏回退规则（沿用 860/520 断点），并确认所有控件保留可访问名（`添加常驻转发`、`删除转发 <port>`、`<displayName> 操作`、`<displayName> 转发`）to pass 4.1
 - [x] 4.3 Refactor; full suite stays green
 
+## 6. 复核反馈：徽标、按钮与行内动作（design D7）
+
+- [x] 6.1 Write failing test: `dresses the forward kind badge and the create button like the rest of the card`（`styles.test.ts`）+ `keeps the row delete action on the row line, out of the label and holder line`（`forward-panel.test.tsx`）—— 先确认两条都因正确原因失败
+- [x] 6.2 Implement: 徽标对齐 `.device-kind` 盒子 + `data-forward-kind`（`held` 降档 `--fg-dim`）；提交按钮改用卡片节奏（30px / 12px，窄屏不再满宽）；`删除` 移到 `.forward-row-line` 第二列（与「标签 / 持有者」分行）
+- [x] 6.3 Refactor; full suite stays green —— 105 passed；顺带修掉 `styles.test.ts` 里 `css.search(...).index`（`search` 返回数字，`.index` 为 `undefined`，切片退化成整份 CSS，使 520 断点断言被削弱），改为 `css.indexOf(...)`
+- [x] 6.4 真机复核（1440 深/浅 + 390 窄，`/tmp/cockpit-shots/forward-*.png`）：徽标与卡片药丸同族、提交按钮不再满宽、删除键独占摘要行右侧、窄屏 `scrollWidth === innerWidth === 390`
+
 ## 5. 收尾验证
 
 - [x] 5.1 `pnpm build && pnpm typecheck && pnpm lint && pnpm test`；确认三个包全绿 —— 复跑 exit=0：shared 8+12 / bridge 50 / web 102 / server 332

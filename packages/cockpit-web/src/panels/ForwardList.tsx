@@ -35,23 +35,22 @@ function defaultConfirm(message: string): boolean {
 function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly onDelete: (row: ForwardRow) => void; readonly busy: boolean }) {
   const address = row.state === 'ready' && row.localPort !== undefined ? `127.0.0.1:${row.localPort}` : '—'
   const key = row.kind === 'system' ? 'system' : String(row.devicePort)
+  const kind = row.kind === 'system' ? 'system' : row.pinned ? 'pinned' : 'held'
   return (
     <li className="forward-row" data-forward={key} data-forward-state={row.state}>
-      <div className="forward-row-main">
-        <strong>{row.devicePort}</strong>
-        <span className="forward-address">{address}</span>
-        <span className="forward-state" data-forward-state={row.state}>{STATE_TEXT[row.state]}</span>
-        {row.kind === 'system'
-          ? <span className="forward-kind">主通道</span>
-          : <span className="forward-kind">{row.pinned ? '常驻' : '随持有者'}</span>}
-        {row.state === 'ready' && row.pid !== undefined && <span className="forward-pid">pid {row.pid}</span>}
-      </div>
-      {row.kind === 'additional' && (
-        <div className="forward-row-meta">
-          {row.label !== undefined && <span className="forward-label">{row.label}</span>}
-          <span className="forward-holders">持有者 {row.holderCount}</span>
-          {row.holders.length > 0 && <span className="forward-holder-labels">{row.holders.join(', ')}</span>}
-          {row.diagnostic !== undefined && row.diagnostic !== '' && <p className="forward-diagnostic">{row.diagnostic}</p>}
+      {/* The row action shares the summary line (right column), never the
+          label/holder line where it crowded the text. */}
+      <div className="forward-row-line">
+        <div className="forward-row-main">
+          <strong>{row.devicePort}</strong>
+          <span className="forward-address">{address}</span>
+          <span className="forward-state" data-forward-state={row.state}>{STATE_TEXT[row.state]}</span>
+          <span className="forward-kind" data-forward-kind={kind}>
+            {row.kind === 'system' ? '主通道' : row.pinned ? '常驻' : '随持有者'}
+          </span>
+          {row.state === 'ready' && row.pid !== undefined && <span className="forward-pid">pid {row.pid}</span>}
+        </div>
+        {row.kind === 'additional' && (
           <button
             className="danger forward-delete"
             type="button"
@@ -59,6 +58,14 @@ function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly o
             disabled={busy}
             onClick={() => { onDelete(row) }}
           >删除</button>
+        )}
+      </div>
+      {row.kind === 'additional' && (
+        <div className="forward-row-meta">
+          {row.label !== undefined && <span className="forward-label">{row.label}</span>}
+          <span className="forward-holders">持有者 {row.holderCount}</span>
+          {row.holders.length > 0 && <span className="forward-holder-labels">{row.holders.join(', ')}</span>}
+          {row.diagnostic !== undefined && row.diagnostic !== '' && <p className="forward-diagnostic">{row.diagnostic}</p>}
         </div>
       )}
     </li>

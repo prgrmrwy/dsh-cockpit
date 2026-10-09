@@ -60,6 +60,12 @@ DSH 设置区块的占用计是为了在**看不见面板的地方**让上限可
 
 只用既有令牌：`--border` / `--surface-raised`（仅用于仍需要底色的元素，如类型徽标与主按钮）/ `--fg` / `--fg-dim` / `--accent-soft` / `--danger-soft` / `--ok` / `--warn` / `--error` / `--focus-ring`。窄屏沿用现有断点：`860px` 时卡片单列、`520px` 时操作组两列换行、主按钮撑满一行。转发行的折行不依赖断点——字段 `nowrap` + 容器 `flex-wrap` + `min-width: 0` 让它在任何宽度下都整体折行、不横向溢出，因此没有「窄屏专用列模板」需要维护。
 
+### D7 徽标、按钮与行内动作跟随卡片既有语汇
+
+- 类型徽标（`主通道` / `常驻` / `随持有者`）此前是继承 12px 行字号的浅色药丸（`padding: 0 6px`、`color: var(--fg)`），比卡片自己的 `SSH 远端` / `已连接` 徽标更大更暗；本次对齐到 `.device-kind` 的盒子（`min-height: 22px`、`padding: 2px 8px`、11px、`font-weight: 650`、`color: var(--accent)`），并用 `data-forward-kind="held"` 把「随持有者」降一档到 `--fg-dim`——同一种药丸，语气不同。
+- 提交按钮保留主按钮的令牌配色，但改用卡片的节奏（`min-height: 30px`、12px、`padding: 0 14px`），窄屏不再拉满宽度：42px 的满宽色块落在一张全是 ghost 按钮的卡片里过重（复核反馈「常驻 btn 太丑」）。
+- 行内动作 `删除` 从「标签 / 持有者」那一行移到摘要行右侧的网格列（`.forward-row-line { grid-template-columns: minmax(0,1fr) auto }`），不再与持有者文本挤在一行；代价是附加行放不下 `pid` 时它会换到下一行（system 行仍是单行）。
+
 ## Risks / Trade-offs
 
 - **测试选择器**：`forward-panel.test.tsx` 现有断言以文本/角色为主，但可能引用 `.forward-row` 的网格行为；`styles.test.ts` 直接断言 CSS 规则，本次会命中若干条既有断言（需要同步更新，不能靠删断言过关）。
