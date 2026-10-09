@@ -99,6 +99,43 @@ describe('device panel forwards list', () => {
     fetchSpy.mockRestore()
   })
 
+  it('keeps the forward rows in one labelled section instead of nested cards', () => {
+    panel([device()])
+    const section = forwards()
+    // One visible heading names the read group; the occupancy sits inside it.
+    expect(within(section).getByRole('heading', { name: '转发' })).toBeTruthy()
+    expect(within(section).getByText('2 / 8')).toBeTruthy()
+    // Every entry is a list item of that one list, not a card of its own.
+    expect(section.querySelectorAll('ul')).toHaveLength(1)
+    const items = within(section).getAllByRole('listitem')
+    expect(items).toHaveLength(3)
+    for (const item of items) expect(item.getAttribute('data-forward')).not.toBeNull()
+    // The write group is a separate group, not a fourth row of the list.
+    expect(within(within(section).getByRole('list')).queryByRole('textbox')).toBeNull()
+  })
+
+  it('keeps the create controls and their failure text in one labelled group', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    apiMock.createForward.mockRejectedValue(new ApiRequestError('forward-limit', 'forward-limit', 409))
+    panel([device()])
+    // The write group carries its own name and its own explanation.
+    const create = within(forwards()).getByRole('form', { name: '添加常驻转发' })
+    expect(within(create).getByRole('heading', { name: '添加常驻转发' })).toBeTruthy()
+    const copy = create.textContent ?? ''
+    expect(copy).toContain('常驻条目在驾驶舱重启后仍保留')
+    expect(copy).toContain('随持有者')
+    // The controls belong to that group, not loose under the region.
+    expect(within(create).getByLabelText('设备端口')).toBeTruthy()
+    expect(within(create).getByLabelText('标签（可选）')).toBeTruthy()
+    expect(within(create).getByRole('button', { name: '添加常驻转发' })).toBeTruthy()
+
+    fireEvent.change(within(create).getByLabelText('设备端口'), { target: { value: '6379' } })
+    fireEvent.click(within(create).getByRole('button', { name: '添加常驻转发' }))
+    // The failure is explained inside the group the user was typing in.
+    expect(await within(create).findByRole('alert')).toHaveProperty('textContent', '已达到附加转发上限（8 条）。')
+    expect((within(create).getByLabelText('设备端口') as HTMLInputElement).value).toBe('6379')
+  })
+
   it('creates a pinned 6379 redis entry and shows 3 / 8', async () => {
     apiMock.createForward.mockResolvedValue({ devicePort: 6379, state: 'starting' })
     const { rerender } = panel([device()])
@@ -123,7 +160,8 @@ describe('device panel forwards list', () => {
     expect(within(forwards()).getByText('8 / 8')).toBeTruthy()
     fireEvent.change(within(forwards()).getByLabelText('设备端口'), { target: { value: '6379' } })
     fireEvent.click(within(forwards()).getByRole('button', { name: '添加常驻转发' }))
-    expect(await within(forwards()).findByRole('alert')).toHaveProperty('textContent', '已达到附加转发上限（8 条）。')
+    const create = within(forwards()).getByRole('form', { name: '添加常驻转发' })
+    expect(await within(create).findByRole('alert')).toHaveProperty('textContent', '已达到附加转发上限（8 条）。')
     expect((within(forwards()).getByLabelText('设备端口') as HTMLInputElement).value).toBe('6379')
     expect(forwards().querySelectorAll('[data-forward]')).toHaveLength(9)
   })

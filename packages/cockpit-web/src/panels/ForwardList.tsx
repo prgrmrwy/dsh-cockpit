@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import type { DeviceStatusFacts, ForwardEntryState, ForwardRow } from '@dsh-cockpit/shared'
 import { api, ApiRequestError } from '../api/client.js'
 
@@ -52,16 +52,14 @@ function RowView({ row, onDelete, busy }: { readonly row: ForwardRow; readonly o
           <span className="forward-holders">持有者 {row.holderCount}</span>
           {row.holders.length > 0 && <span className="forward-holder-labels">{row.holders.join(', ')}</span>}
           {row.diagnostic !== undefined && row.diagnostic !== '' && <p className="forward-diagnostic">{row.diagnostic}</p>}
+          <button
+            className="danger forward-delete"
+            type="button"
+            aria-label={`删除转发 ${row.devicePort}`}
+            disabled={busy}
+            onClick={() => { onDelete(row) }}
+          >删除</button>
         </div>
-      )}
-      {row.kind === 'additional' && (
-        <button
-          className="danger forward-delete"
-          type="button"
-          aria-label={`删除转发 ${row.devicePort}`}
-          disabled={busy}
-          onClick={() => { onDelete(row) }}
-        >删除</button>
       )}
     </li>
   )
@@ -75,6 +73,7 @@ export function ForwardList({ device, confirm = defaultConfirm }: {
   const [label, setLabel] = useState('')
   const [error, setError] = useState<string | undefined>()
   const [busy, setBusy] = useState(false)
+  const createHeadingId = useId()
   const title = `${device.displayName} 转发`
 
   if (device.kind === 'local') {
@@ -127,7 +126,7 @@ export function ForwardList({ device, confirm = defaultConfirm }: {
   return (
     <section className="forward-list" aria-label={title}>
       <div className="forward-list-header">
-        <span>转发</span>
+        <h4 className="forward-heading">转发</h4>
         <span className="forward-usage">{projection === undefined ? '—' : `${projection.additionalCount} / ${projection.limit}`}</span>
       </div>
       <ul className="forward-rows">
@@ -135,16 +134,22 @@ export function ForwardList({ device, confirm = defaultConfirm }: {
           <RowView key={row.kind === 'system' ? 'system' : row.devicePort} row={row} busy={busy} onDelete={row => { void remove(row) }} />
         ))}
       </ul>
-      <form className="forward-form" onSubmit={event => { void create(event) }}>
-        <label>
-          <span>设备端口</span>
-          <input inputMode="numeric" value={port} onChange={event => { setPort(event.target.value) }} disabled={busy} />
-        </label>
-        <label>
-          <span>标签（可选）</span>
-          <input value={label} maxLength={64} onChange={event => { setLabel(event.target.value) }} disabled={busy} />
-        </label>
-        <button type="submit" disabled={busy}>添加常驻转发</button>
+      <form className="forward-form" aria-labelledby={createHeadingId} onSubmit={event => { void create(event) }}>
+        <div className="forward-form-head">
+          <h4 className="forward-heading" id={createHeadingId}>添加常驻转发</h4>
+          <p className="forward-form-hint">常驻条目在驾驶舱重启后仍保留；设备上的组件申请的是「随持有者」条目，随持有者释放即回收。</p>
+        </div>
+        <div className="forward-form-row">
+          <label className="forward-form-port">
+            <span>设备端口</span>
+            <input inputMode="numeric" value={port} onChange={event => { setPort(event.target.value) }} disabled={busy} />
+          </label>
+          <label className="forward-form-label">
+            <span>标签（可选）</span>
+            <input value={label} maxLength={64} onChange={event => { setLabel(event.target.value) }} disabled={busy} />
+          </label>
+          <button className="primary-action" type="submit" disabled={busy}>添加常驻转发</button>
+        </div>
         {error !== undefined && <p className="panel-error" role="alert">{error}</p>}
       </form>
     </section>

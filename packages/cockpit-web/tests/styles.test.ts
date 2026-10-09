@@ -76,12 +76,43 @@ describe('cockpit visual contracts', () => {
     }
   })
 
+  it('aligns the device action group with the card title', () => {
+    // The card grew a forward list, so a stretched action column would centre
+    // the buttons against the whole card: they must sit on the title line.
+    expect(css).toMatch(/\.device-card\s*\{[^}]*align-items:\s*start/s)
+    // Within that top-aligned column the buttons still read as one row.
+    expect(css).toMatch(/\.device-card-actions\s*\{[^}]*align-items:\s*center/s)
+  })
+
+  it('keeps the forward rows folded as whole fields instead of a fixed column template', () => {
+    // A fixed template was measured to shred the address and the pid: the
+    // card's content column is ~320px wide even at a 1440px viewport.
+    const row = css.match(/\.forward-row\s*\{([^}]*)\}/s)
+    expect(row).not.toBeNull()
+    expect(row![1]).not.toMatch(/grid-template-columns/)
+    expect(row![1]).not.toMatch(/background:/)
+    expect(css).toMatch(/\.forward-row-main\s*\{[^}]*flex-wrap:\s*wrap/s)
+    // Values never break mid-token; a field that does not fit wraps as a whole.
+    expect(css).toMatch(/\.forward-row-main\s*>\s*\*\s*\{[^}]*white-space:\s*nowrap/s)
+    // Rows read as one list: hairline separators, no card per row.
+    expect(css).toMatch(/\.forward-row\s*\{[^}]*border-top:\s*1px\s+solid\s+var\(--border\)/s)
+    expect(css).toMatch(/\.forward-row:first-child\s*\{\s*border-top:\s*0/s)
+    // Delete is a row action, not a grid column that can collapse to zero.
+    expect(css).toMatch(/\.forward-delete\s*\{[^}]*margin-left:\s*auto/s)
+    expect(css).not.toMatch(/\.forward-delete\s*\{[^}]*grid-column/s)
+    // On a narrow screen the primary action takes the full width.
+    const narrow = css.slice(css.search(/@media \(max-width: 520px\)/).index)
+    expect(narrow).toMatch(/\.forward-form-row\s+\.primary-action\s*\{[^}]*width:\s*100%/s)
+  })
+
   it('styles the forwards list with theme tokens only and a narrow single-column fallback', () => {
     for (const rule of css.match(/\.forward-[^{]*\{[^}]*\}/gs) ?? []) {
       expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
     }
     expect(css).toMatch(/\.forward-row\s*\{[^}]*min-width:\s*0/s)
     expect(css).toMatch(/\.forward-diagnostic\s*\{[^}]*overflow-wrap:\s*anywhere/s)
-    expect(css).toMatch(/@media\s*\(max-width:\s*520px\)[\s\S]*?\.forward-row\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s)
+    // The create fields stack with their names in one aligned column.
+    expect(css).toMatch(/\.forward-form-row\s*\{[^}]*flex-direction:\s*column/s)
+    expect(css).toMatch(/\.forward-form-row\s+label\s*>\s*span\s*\{[^}]*min-width:\s*6\.5em/s)
   })
 })

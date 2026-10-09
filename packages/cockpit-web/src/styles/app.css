@@ -257,6 +257,7 @@ body {
 .device-list, .device-list.panel-list { gap: 10px; }
 .device-card {
   min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 12px;
   background: var(--surface-raised);
 }
@@ -337,13 +338,21 @@ body {
 
 /* ---- device panel: forwards list (device-forward-registry) ---- */
 .forward-list { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); min-width: 0; }
-.forward-list-header { display: flex; justify-content: space-between; align-items: center; color: var(--fg-dim); font-size: 12px; font-weight: 600; }
-.forward-usage { color: var(--fg); font-variant-numeric: tabular-nums; }
-.forward-rows { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.forward-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); min-width: 0; }
-.forward-row-main, .forward-row-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; min-width: 0; font-size: 12px; }
-.forward-row-meta { grid-column: 1; color: var(--fg-dim); }
-.forward-address, .forward-pid { font-variant-numeric: tabular-nums; color: var(--fg-dim); overflow-wrap: anywhere; }
+.forward-list-header { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.forward-heading { margin: 0; color: var(--fg-dim); font-size: 12px; font-weight: 600; }
+.forward-usage { color: var(--fg); font-size: 12px; font-variant-numeric: tabular-nums; }
+/* One list, not one card per row: hairline separators carry the grouping, and
+   each row is a summary line plus an action line. The fields are nowrap units
+   that wrap as whole fields — a fixed column template shreds the address and
+   the pid here, because the card's content column is only ~320px wide even at
+   a 1440px viewport (the device action group takes the other ~264px). */
+.forward-rows { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; min-width: 0; }
+.forward-row { display: flex; flex-direction: column; gap: 3px; padding: 7px 0; border-top: 1px solid var(--border); min-width: 0; font-size: 12px; }
+.forward-row:first-child { border-top: 0; }
+.forward-row-main { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; min-width: 0; }
+.forward-row-main > * { white-space: nowrap; }
+.forward-row-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 10px; min-width: 0; color: var(--fg-dim); }
+.forward-address, .forward-pid { font-variant-numeric: tabular-nums; color: var(--fg-dim); }
 .forward-state { color: var(--fg); }
 .forward-state[data-forward-state="ready"] { color: var(--ok); }
 .forward-state[data-forward-state="retrying"] { color: var(--warn); }
@@ -351,12 +360,20 @@ body {
 .forward-kind { padding: 0 6px; border-radius: 999px; background: var(--accent-soft); color: var(--fg); }
 .forward-label, .forward-holder-labels { overflow-wrap: anywhere; }
 .forward-diagnostic { flex-basis: 100%; margin: 2px 0 0; color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
-.forward-delete { grid-column: 2; grid-row: 1 / span 2; align-self: center; min-height: 28px; }
+.forward-delete { margin-left: auto; min-height: 28px; }
 .forward-empty { margin: 0; color: var(--fg-dim); font-size: 12px; }
-.forward-form { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; min-width: 0; }
-.forward-form label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: 12px; color: var(--fg-dim); }
-.forward-form input { width: 9em; max-width: 100%; }
-.forward-form .panel-error { flex-basis: 100%; margin: 0; }
+/* The write group: its own heading, its own explanation, its own failure text. */
+.forward-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); min-width: 0; }
+.forward-form-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.forward-form-hint { margin: 0; color: var(--fg-dim); font-size: 12px; }
+.forward-form-row { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
+.forward-form-row label { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--fg-dim); }
+.forward-form-row label > span { flex: none; min-width: 6.5em; }
+.forward-form-row input { min-width: 0; max-width: 100%; }
+.forward-form-port input { flex: 0 1 6.5em; }
+.forward-form-label input { flex: 1 1 auto; }
+.forward-form-row .primary-action { align-self: flex-start; }
+.forward-form .panel-error { margin: 0; }
 
 @media (max-width: 860px) {
   .device-panel-shell { padding: 20px 14px 36px; }
@@ -376,7 +393,7 @@ body {
   .device-card-actions > button { width: 100%; }
   .device-order-actions { grid-column: 1 / -1; }
   .device-order-actions button { flex: 1; }
-  .forward-row { grid-template-columns: minmax(0, 1fr); }
-  .forward-delete { grid-column: 1; grid-row: auto; justify-self: start; }
-  .forward-form label, .forward-form input { width: 100%; }
+  /* The rows already fold as whole fields; only the action needs the width. */
+  .forward-form-row .primary-action { width: 100%; }
+  .forward-delete { margin-left: 0; }
 }
