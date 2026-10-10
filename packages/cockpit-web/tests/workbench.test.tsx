@@ -81,8 +81,11 @@ describe('workbench', () => {
     expect(src.assignments).toEqual(['http://127.0.0.1:51688/'])
     expect(launch).toHaveBeenCalledTimes(1)
     // Chrome 136+ tightened the default allowlist of clipboard-read/write to
-    // `self`; the cross-origin workbench iframe must declare them explicitly.
-    expect(frame.getAttribute('allow')).toBe('clipboard-read; clipboard-write')
+    // `self`, and `microphone` likewise defaults to `self`: the cross-origin
+    // workbench iframe must declare both explicitly, or the embedded DSH page
+    // cannot use the clipboard or its voice input (getUserMedia rejects with
+    // NotAllowedError before any permission prompt can appear).
+    expect(frame.getAttribute('allow')).toBe('clipboard-read; clipboard-write; microphone')
     src.disconnect()
   })
 
