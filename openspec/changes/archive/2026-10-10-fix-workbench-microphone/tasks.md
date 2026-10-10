@@ -13,4 +13,4 @@
 - [x] 3.1 `pnpm typecheck` 与 `pnpm lint` 通过；验证：`pnpm install --frozen-lockfile` 后先 `pnpm build`（shared 产物是 bridge typecheck 的前置），再 `pnpm typecheck`（shared / server / web / bridge 四个包 Done）与 `pnpm lint`（四个包 Done）均退出码 0
 - [x] 3.2 `pnpm test` 通过；验证：根 `node --test` 12 + shared 8 + bridge 54 + server 342（25 文件）+ web 107（10 文件），全部 pass、0 fail
 - [x] 3.3 `pnpm build` 产出新前端产物并被运行中的 3090 静态托管按请求读盘提供；验证：构建成功，`dist/assets/index-CBaoJs1v.js` 内含 `clipboard-read; clipboard-write; microphone`。（本机没有 3090 监听实例，`curl` 无响应：部署驾驶舱的那台机器刷新页面即取到新 bundle，无需重启服务）
-- [ ] 3.4 人工浏览器验证：Chrome 打开 `http://127.0.0.1:3090/` → 进入设备工作台 → DSH 语音输入可弹出麦克风授权并成功录音；明确拒绝授权时设备页面仍显示真实失败提示；直接访问 `http://127.0.0.1:3080` 行为不变；工作台懒加载/设备切换/离线遮罩无回归（需用户确认后勾选）
+- [x] 3.4 人工浏览器验证（用户已确认通过）：Chrome 打开 `http://127.0.0.1:3090/` → 进入设备工作台 → DSH 语音输入可弹出麦克风授权并成功录音；明确拒绝授权时设备页面仍显示真实失败提示；直接访问 `http://127.0.0.1:3080` 行为不变；工作台懒加载/设备切换/离线遮罩无回归
