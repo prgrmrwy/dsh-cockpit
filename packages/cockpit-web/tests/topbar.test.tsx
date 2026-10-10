@@ -69,9 +69,11 @@ describe('top bar', () => {
     const chips = container.querySelectorAll('[data-cockpit-session-statuses="d1"] .session-chip')
     expect(chips).toHaveLength(4)
 
-    // ongoing → the official chase pixel matrix (SVG), no text inside the chip.
+    // ongoing → the official stroked spinner (SVG: track + arc), no text
+    // inside the chip.
     const running = container.querySelector('[data-session-kind="running"]')!
-    expect(running.querySelector('svg.dsh-state-dot-matrix')).not.toBeNull()
+    expect(running.querySelector('svg.dsh-state-dot-spinner')).not.toBeNull()
+    expect(running.querySelectorAll('svg.dsh-state-dot-spinner circle')).toHaveLength(2)
     expect(running.textContent).toBe('×2') // count only, no label text
     expect(running.getAttribute('title')).toBe('进行中 ×2')
 
@@ -101,10 +103,15 @@ describe('top bar', () => {
     // from there (import.meta.url has an http scheme under vitest).
     const css = await readFile(resolve('src/components/state-dot.css'), 'utf8')
     // Official theme tokens (dsh-client-ui-theme): warn=amber-500 #f59e0b,
-    // done=green-500 #22c55e, ongoing=deepseek-450 #5686fe.
+    // done=green-500 #22c55e; the ongoing spinner takes the official neutral
+    // --dsw-alias-label-tertiary through the cockpit's --state-ongoing token.
     expect(css).toContain("[data-state='warning'] { color: #f59e0b; }")
     expect(css).toContain("[data-state='done'] { color: #22c55e; }")
-    expect(css).toContain('color: #5686fe;')
+    expect(css).toContain('color: var(--state-ongoing);')
+    const appCss = await readFile(resolve('src/styles/app.css'), 'utf8')
+    // dark = neutral-bluish-400, light = neutral-bluish-600.
+    expect(appCss).toContain('--state-ongoing: #adb2b8;')
+    expect(appCss).toContain('--state-ongoing: #81858c;')
 
     const devices = [
       device({

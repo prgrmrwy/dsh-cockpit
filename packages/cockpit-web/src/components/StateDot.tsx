@@ -1,53 +1,43 @@
 import type { SessionActivityState } from '@dsh-cockpit/shared'
 import './state-dot.css'
 
-/** Outer 3x3 matrix cells (2px pixels on a 10px grid), clockwise from
- * top-left — copied verbatim from @deepseek-ai/dsh-client-ui-primitives
- * StateDot (official session-row status dot). */
-const MATRIX_CELLS: readonly (readonly [number, number])[] = [
-  [0, 0],
-  [4, 0],
-  [8, 0],
-  [8, 4],
-  [8, 8],
-  [4, 8],
-  [0, 8],
-  [0, 4],
-]
-
 /**
- * Official DSH session-row status dot (StateDot): ongoing renders the running
- * "chase" pixel matrix (loading-like animation, brand blue); done renders a
- * static green dot; warning an amber dot; error a red dot. Colors and the
- * chase keyframes are taken from the official theme —
- * --dsw-static-deepseek-450 / --dsw-alias-state-{success,warn,error}-primary.
+ * Official DSH session-row status glyph (StateDot), shadowed from
+ * `@deepseek-ai/dsh-client-ui-primitives` 0.2.0-rc.2 (`StateDot` +
+ * `StateDot.module.css`): ongoing renders the official stroked spinner
+ * (low-opacity track + breathing arc, 1.5s period), the solid states a single
+ * currentColor core. Colors keep the official theme semantics —
+ * `--dsw-alias-state-{success,warn,error}-primary`, and the neutral
+ * `--dsw-alias-label-tertiary` for the spinner, which the cockpit carries as
+ * the `--state-ongoing` token in app.css.
  *
- * aria-hidden: the element is decorative; pair with an accessible label
+ * Two deliberate differences from the official copy:
+ * - every state renders at the same 10px size (official grows ongoing to
+ *   14px); the chip strip stays one height, and the small spinner gains its
+ *   legibility from a slightly thicker stroke instead of a bigger box;
+ * - the official `syncSpinner` phase-pinning is not replicated — the spinner
+ *   is a single 10px glyph per device chip, so phase alignment buys nothing.
+ *
+ * The cockpit keeps this shadow copy instead of importing the DSH client
+ * package, so a DSH upgrade that changes this glyph needs a re-sync here.
+ * `aria-hidden`: the element is decorative; pair with an accessible label
  * (title / screen-reader text) at the call site.
  */
 export function StateDot({ state, size = 10 }: { state: SessionActivityState; size?: number }) {
   if (state === 'ongoing') {
     return (
       <svg
-        className="dsh-state-dot-matrix"
+        className="dsh-state-dot-spinner"
         data-state="ongoing"
         width={size}
         height={size}
-        viewBox="0 0 10 10"
-        shapeRendering="crispEdges"
+        viewBox="0 0 24 24"
         aria-hidden="true"
       >
-        {MATRIX_CELLS.map(([x, y], index) => (
-          <rect
-            key={`${x}-${y}`}
-            className="dsh-state-dot-cell"
-            x={x}
-            y={y}
-            width="2"
-            height="2"
-            style={{ animationDelay: `${(index - MATRIX_CELLS.length) * 125}ms` }}
-          />
-        ))}
+        <g className="dsh-state-dot-spinner-motion">
+          <circle className="dsh-state-dot-spinner-track" cx="12" cy="12" r="9.5" />
+          <circle className="dsh-state-dot-spinner-arc" cx="12" cy="12" r="9.5" />
+        </g>
       </svg>
     )
   }

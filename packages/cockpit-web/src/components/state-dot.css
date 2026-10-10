@@ -1,6 +1,7 @@
 /* Official DSH session-row StateDot, shadowed from
- * @deepseek-ai/dsh-client-ui-primitives + dsh-client-ui-theme:
- * - --dsw-static-deepseek-450: #5686fe (chase matrix, brand blue)
+ * @deepseek-ai/dsh-client-ui-primitives 0.2.0-rc.2 + dsh-client-ui-theme:
+ * - ongoing: stroked spinner colored with --state-ongoing (official
+ *   --dsw-alias-label-tertiary → dark neutral-bluish-400, light neutral-bluish-600)
  * - --dsw-alias-state-success-primary: var(--dsw-static-green-500) #22c55e
  * - --dsw-alias-state-warn-primary: var(--dsw-static-amber-500) #f59e0b
  * - --dsw-alias-state-error-primary: var(--dsw-static-red-400) #f25a5a
@@ -24,20 +25,43 @@
   background: currentColor;
 }
 
-/* ongoing: 8-pixel chase matrix — every cell starts at the dim state and
- * the animation phases through opacity rises in clockwise order. */
-.dsh-state-dot-matrix {
+/* ongoing: the official stroked spinner — a quiet full ring behind a centered
+ * breathing arc, the whole glyph rotating on one shared 1.5s period. It stays
+ * in the chip's 10px slot (no 14px growth), so the official 2-unit stroke is
+ * thickened slightly to survive the smaller raster. */
+.dsh-state-dot-spinner {
   flex: none;
-  color: #5686fe;
+  color: var(--state-ongoing);
 }
-.dsh-state-dot-cell {
-  fill: currentColor;
-  opacity: 0.15;
-  animation: dsh-state-dot-chase 1s infinite;
+.dsh-state-dot-spinner-motion {
+  transform-origin: center;
+  animation: dsh-state-dot-spin 1.5s linear infinite;
 }
-@keyframes dsh-state-dot-chase {
-  0%, 12.4% { opacity: 1; }
-  12.5%, 24.9% { opacity: 0.6; }
-  25%, 37.4% { opacity: 0.35; }
-  37.5%, to { opacity: 0.15; }
+.dsh-state-dot-spinner-track,
+.dsh-state-dot-spinner-arc {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+.dsh-state-dot-spinner-track { opacity: 0.25; }
+.dsh-state-dot-spinner-arc {
+  stroke-dasharray: 12 150;
+  animation: dsh-state-dot-dash 1.5s ease-in-out infinite;
+}
+@keyframes dsh-state-dot-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes dsh-state-dot-dash {
+  0% { stroke-dasharray: 12 150; stroke-dashoffset: 0; }
+  50% { stroke-dasharray: 24 150; stroke-dashoffset: -6; }
+  100% { stroke-dasharray: 12 150; stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dsh-state-dot-spinner-motion,
+  .dsh-state-dot-spinner-arc { animation: none; }
+  .dsh-state-dot-spinner-arc {
+    stroke-dasharray: 18 150;
+    stroke-dashoffset: -3;
+  }
 }

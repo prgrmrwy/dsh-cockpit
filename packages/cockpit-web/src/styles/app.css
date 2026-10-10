@@ -10,6 +10,10 @@
   --error: #ea4335;
   --busy: #fbbc04;
   --border: #2a2e33;
+  /* ongoing session-state glyph (official StateDot spinner): the official
+     theme token is --dsw-alias-label-tertiary = --dsw-static-neutral-bluish-400
+     in the dark theme and neutral-bluish-600 in the light theme. */
+  --state-ongoing: #adb2b8;
   --bg-hover: #22262b;
   --bg-active: #23282e;
   --overlay: rgba(16, 18, 20, 0.85);
@@ -35,6 +39,7 @@
     --error: #cf222e;
     --busy: #9a6700;
     --border: #d0d7de;
+    --state-ongoing: #81858c;
     --bg-hover: #eef1f4;
     --bg-active: #e6ebf0;
     --overlay: rgba(246, 248, 250, 0.85);
@@ -91,7 +96,7 @@ body {
 /* bridge hint: the device's DSH web client does NOT run dsh-cockpit-bridge.
    Deliberately faint — a weak reminder, not an alert; hover explains the fix. */
 .bridge-hint { color: var(--fg-dim); opacity: 0.55; }
-/* session-row status chips: official StateDot icons (chase matrix / amber /
+/* session-row status chips: official StateDot icons (ongoing spinner / amber /
    green) + count; no text labels on the tab, status name lives in the title */
 .topbar-sessions { display: inline-flex; gap: 4px; margin-left: 6px; flex: none; }
 .session-chip {
@@ -106,7 +111,7 @@ body {
      an interactive control — no pointer affordance of its own. */
   cursor: default;
 }
-.session-chip .dsh-state-dot-matrix,
+.session-chip .dsh-state-dot-spinner,
 .session-chip .dsh-state-dot { vertical-align: middle; }
 .session-chip-count { font-weight: 600; color: var(--fg); font-variant-numeric: tabular-nums; }
 /* completed chip is the one interactive status: a real <button> so mouse,
