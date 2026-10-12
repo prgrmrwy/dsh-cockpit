@@ -15,4 +15,4 @@
 
 - [x] 3.1 更新现有 `excludes subagent sessions from running...` 等测试以反映新口径，并保证完成提醒、待决策排除断言仍然成立
 - [x] 3.2 运行 `pnpm build && pnpm typecheck && pnpm test && pnpm lint` 全部通过
-- [ ] 3.3 用本机 DSH 做一次实机核对：根会话结束、子代理仍运行时设备项显示进行中，结束后消失；完成后 `openspec archive`
+- [x] 3.3 用本机 DSH 做一次实机核对：根会话结束、子代理仍运行时设备项显示进行中，结束后消失；完成后 `openspec archive`
