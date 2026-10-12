@@ -519,7 +519,7 @@ function mapTypertEvent(deviceId: string, event: string, args: readonly unknown[
     return { type: 'session-status', deviceId, sessionId: args[0], running: args[1] }
   }
   if (event === 'api-session/added' && isRecord(args[0]) && typeof args[0].sessionId === 'string') {
-    return { type: 'session-added', deviceId, sessionId: args[0].sessionId, ...(args[0].origin === 'subagent' ? { origin: 'subagent' as const } : {}) }
+    return { type: 'session-added', deviceId, sessionId: args[0].sessionId, ...(args[0].origin === 'subagent' ? { origin: 'subagent' as const } : {}), ...(typeof args[0].parentSessionId === 'string' ? { parentSessionId: args[0].parentSessionId } : {}) }
   }
   if (event === 'api-session/removed' && typeof args[0] === 'string') {
     return { type: 'session-removed', deviceId, sessionId: args[0] }

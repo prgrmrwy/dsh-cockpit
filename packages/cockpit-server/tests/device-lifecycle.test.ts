@@ -28,7 +28,7 @@ const record = (overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
 })
 
 function device(
-  sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string }[],
+  sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string; parentSessionId?: string }[],
   overrides: Partial<DeviceRecord> = {},
 ) {
   const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
@@ -354,46 +354,160 @@ describe('device lifecycle', () => {
     await tunnel.disposeAll()
   })
 
-  it('excludes subagent sessions from running, completed and pending counts', async () => {
-    // Baseline: one running root (s1), one running subagent (sub-a) and one
-    // idle subagent (sub-b) — like a real host with 100+ subagent sessions.
+  it('excludes subagent sessions from completed and pending counts', async () => {
+    // Root s1 runs itself; its subagents (sub-a running, sub-b idle) are owned
+    // by it, so they never add a second running entry.
     const { lifecycle, tunnel, emit } = device([
       { sessionId: 's1', running: true, updatedAt: 1, blank: false },
-      { sessionId: 'sub-a', running: true, updatedAt: 1, blank: false, origin: 'subagent' },
-      { sessionId: 'sub-b', running: false, updatedAt: 1, blank: false, origin: 'subagent' },
+      { sessionId: 'sub-a', running: true, updatedAt: 1, blank: false, origin: 'subagent', parentSessionId: 's1' },
+      { sessionId: 'sub-b', running: false, updatedAt: 1, blank: false, origin: 'subagent', parentSessionId: 's1' },
     ])
     const task = (lifecycle as { start(): void }).start() as unknown as Promise<void>
     for (let i = 0; i < 100 && lifecycle.current().runningSessionCount !== 1; i++) {
       await new Promise(r => setTimeout(r, 5))
     }
-    // Only the root running session counts; the running subagent does not.
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'ongoing', kind: 'running', count: 1 },
-    ])
+    expect(lifecycle.current().sessionStatuses).toEqual([{ state: 'ongoing', kind: 'running', count: 1 }])
 
     // A subagent running→idle edge must NOT arm the completed reminder.
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sub-a', running: false })
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'ongoing', kind: 'running', count: 1 },
-    ])
+    expect(lifecycle.current().sessionStatuses).toEqual([{ state: 'ongoing', kind: 'running', count: 1 }])
 
     // A subagent pending interaction must not count either.
     emit({ type: 'interaction', deviceId: 'd1', sessionId: 'sub-a', kind: 'approval', rpcId: 'sub-a-1', resolved: false })
     expect(lifecycle.current().pendingInteractionCount).toBe(0)
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'ongoing', kind: 'running', count: 1 },
-    ])
+    expect(lifecycle.current().sessionStatuses).toEqual([{ state: 'ongoing', kind: 'running', count: 1 }])
 
-    // session-added origin=subagent then a status edge on it stays excluded.
-    emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-c', origin: 'subagent' })
+    // session-added origin=subagent then an idle edge on it stays excluded.
+    emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-c', origin: 'subagent', parentSessionId: 's1' })
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sub-c', running: false })
-    expect(lifecycle.current().sessionStatuses).toEqual([
-      { state: 'ongoing', kind: 'running', count: 1 },
-    ])
+    expect(lifecycle.current().sessionStatuses).toEqual([{ state: 'ongoing', kind: 'running', count: 1 }])
 
     await lifecycle.stop()
     await task
     await tunnel.disposeAll()
+  })
+
+  describe('running subagents keep their root session running', () => {
+    async function begin(sessions: Parameters<typeof device>[0]) {
+      const ctx = device(sessions)
+      const task = (ctx.lifecycle as { start(): void }).start() as unknown as Promise<void>
+      for (let i = 0; i < 100 && ctx.lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+      return { ...ctx, task }
+    }
+    async function end(ctx: Awaited<ReturnType<typeof begin>>) {
+      await ctx.lifecycle.stop()
+      await ctx.task
+      await ctx.tunnel.disposeAll()
+    }
+    const running = (count: number) => [{ state: 'ongoing', kind: 'running', count }]
+    const sub = (id: string, parent: string | undefined, isRunning: boolean) =>
+      ({ sessionId: id, running: isRunning, updatedAt: 1, blank: false, origin: 'subagent', ...(parent === undefined ? {} : { parentSessionId: parent }) })
+
+    it('counts an idle root once while several of its subagents run, then clears without a completion', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', true), sub('b', 'root', true), sub('c', 'root', false),
+      ])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      expect(ctx.lifecycle.current().runningSessionCount).toBe(1)
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'a', running: false })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'b', running: false })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await end(ctx)
+    })
+
+    it('attributes a subagent announced by session-added with parentSessionId, then running frames', async () => {
+      const ctx = await begin([
+        { sessionId: 'r1', running: false, updatedAt: 1, blank: false },
+        { sessionId: 'r2', running: true, updatedAt: 1, blank: false },
+      ])
+      ctx.emit({ type: 'session-added', deviceId: 'd1', sessionId: 'n1', origin: 'subagent', parentSessionId: 'r1' })
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'n1', running: true })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(2))
+      // A subagent under an already-running root does not add another entry.
+      ctx.emit({ type: 'session-added', deviceId: 'd1', sessionId: 'n2', origin: 'subagent', parentSessionId: 'r2' })
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'n2', running: true })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(2))
+      await end(ctx)
+    })
+
+    it('resolves nested subagents to the first non-subagent ancestor', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('mid', 'root', false), sub('leaf', 'mid', true),
+      ])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      await end(ctx)
+    })
+
+    it('counts an orphan running subagent on its own and merges it once its parent is known', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: true, updatedAt: 1, blank: false },
+        sub('orphan', undefined, true),
+      ])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(2))
+      ctx.emit({ type: 'session-added', deviceId: 'd1', sessionId: 'orphan', origin: 'subagent', parentSessionId: 'root' })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      await end(ctx)
+    })
+
+    it('shows a pending root as waiting only, not additionally running', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', true),
+      ])
+      ctx.emit({ type: 'interaction', deviceId: 'd1', sessionId: 'root', kind: 'approval', rpcId: 'p1', resolved: false })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'warning', kind: 'approval', count: 1 }])
+      await end(ctx)
+    })
+
+    it('does not count subagents of an archived root', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', true),
+      ])
+      ctx.emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['root'] })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await end(ctx)
+    })
+
+    it('a detached subagent stops counting but keeps its classification', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', true),
+      ])
+      ctx.emit({ type: 'session-removed', deviceId: 'd1', sessionId: 'a' })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'a', running: true })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      await end(ctx)
+    })
+
+    it('takes running subagents from the official snapshot and ignores their completionUnread', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', false),
+      ])
+      const lc = ctx.lifecycle as unknown as { setBridgeStatusSnapshot(items: { sessionId: string; running: boolean; completionUnread: boolean }[]): void }
+      lc.setBridgeStatusSnapshot([{ sessionId: 'a', running: true, completionUnread: true }])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      lc.setBridgeStatusSnapshot([{ sessionId: 'a', running: false, completionUnread: true }])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await end(ctx)
+    })
+
+    it('stop() clears subagent run state', async () => {
+      const ctx = await begin([
+        { sessionId: 'root', running: false, updatedAt: 1, blank: false },
+        sub('a', 'root', true),
+      ])
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(running(1))
+      await ctx.lifecycle.stop()
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+      await ctx.task
+      await ctx.tunnel.disposeAll()
+    })
   })
 
   it('coalesces concurrent manual reconnects into one replacement loop and tunnel', async () => {
@@ -669,8 +783,12 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
         { sessionId: 'sub', running: true, completionUnread: true },
         { sessionId: 's1', running: false, completionUnread: true },
       ])
-      expect(ctx.lifecycle.current().runningSessionCount).toBe(0)
-      expect(ctx.lifecycle.current().sessionStatuses).toEqual([{ state: 'done', kind: 'completed', count: 1 }])
+      // The running subagent keeps its (orphan) entry; its completionUnread is
+      // never used and it adds no completed reminder.
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual([
+        { state: 'ongoing', kind: 'running', count: 1 },
+        { state: 'done', kind: 'completed', count: 1 },
+      ])
       await finish(ctx)
     })
 
@@ -888,8 +1006,10 @@ describe('reliable completion reminders: ack/edge ordering, archive, and manual 
     }
     emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sa', origin: 'subagent' })
     emit({ type: 'session-removed', deviceId: 'd1', sessionId: 'sa' })
-    // Even after the subagent detached, its status frames must not enter root
-    // running/completed counts.
+    // Even after the subagent detached, its status frames stay classified as a
+    // subagent: they never enter root completed counts (a running one is shown
+    // only through its root, here s1 which is already running).
+    emit({ type: 'session-added', deviceId: 'd1', sessionId: 'sa', origin: 'subagent', parentSessionId: 's1' })
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sa', running: true })
     emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sa', running: false })
     expect(lifecycle.current().sessionStatuses).toEqual([

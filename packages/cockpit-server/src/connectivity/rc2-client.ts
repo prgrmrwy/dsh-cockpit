@@ -158,6 +158,7 @@ export class DualEventStream extends EventEmitter {
           type: 'session-added', deviceId: this.#deviceId,
           ...(sessionId === undefined ? {} : { sessionId }),
           ...(payload.origin === 'subagent' ? { origin: 'subagent' as const } : {}),
+          ...(typeof payload.parentSessionId === 'string' ? { parentSessionId: payload.parentSessionId } : {}),
         }
       case 'host/archived-sessions-changed':
         return !Array.isArray(payload.archivedSessionIds) || payload.archivedSessionIds.some(id => typeof id !== 'string')

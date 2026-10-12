@@ -44,8 +44,8 @@ describe('dual event stream conversion', () => {
 
     // session-added must surface the subagent origin marker (baseline priors
     // keep origin-less host/session-status frames correctly filtered).
-    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r8', method: 'host/session-added', payload: { sessionId: 'sub-1', blank: false, origin: 'subagent' } }))
-    expect(events).toContainEqual({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-1', origin: 'subagent' })
+    sockets[0]!.emit('message', JSON.stringify({ type: 'server-request', rpcId: 'r8', method: 'host/session-added', payload: { sessionId: 'sub-1', blank: false, origin: 'subagent', parentSessionId: 'root-1' } }))
+    expect(events).toContainEqual({ type: 'session-added', deviceId: 'd1', sessionId: 'sub-1', origin: 'subagent', parentSessionId: 'root-1' })
 
     // host/archived-sessions-changed carries the full authoritative set, and
     // is distinct from host/session-removed (permanent deletion).

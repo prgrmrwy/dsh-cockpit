@@ -112,11 +112,20 @@ export class DeviceLifecycle {
    * prior knowledge is what keeps subagents out of root-session counts. Live
    * detach (session-removed) KEEPS this knowledge. */
   #subagents = new Set<string>()
+  /** Run state and parent lineage of known subagent sessions. Kept apart from
+   * #sessions (the completion-round model) so a subagent can make its root
+   * session count as running (official `runningSubagentCount`) without ever
+   * producing a completion reminder or a pending interaction. Detach keeps
+   * entries, like #subagents. */
+  #subagentInfo = new Map<string, { running: boolean; parent: string | undefined }>()
   /** Official per-session status snapshot reported by the bridge (design D1:
    * the device's own truth wins; the run-round model above is the fallback for
    * devices that never reported one). `undefined` = never reported (or reset by
    * a reconnect): the decision is made per DEVICE, never per session. */
   #officialStatus: Map<string, { running: boolean; completionUnread: boolean }> | undefined
+  /** Running subagent rows of the same official snapshot (completionUnread of
+   * a subagent is never used). */
+  #officialSubagentRunning = new Map<string, boolean>()
   /** Sessions whose official unread mark the user cleared locally. The mark is
    * not ours to write (operation plane stays zero-coupled), so the clear is
    * remembered until the mark flips or the session runs again (design D3). */
@@ -268,18 +277,54 @@ export class DeviceLifecycle {
     return groups
   }
 
+  /** Root sessions that count as running: running themselves, or owning a
+   * running subagent (official session row: 「运行中」/「N 个子代理运行中」).
+   * Keyed by root id so several running subagents of one root count once. */
   #runningSessionIds(): Set<string> {
     const ids = new Set<string>()
     if (this.#officialStatus !== undefined) {
       for (const [id, row] of this.#officialStatus) {
         if (row.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
       }
-      return ids
+    } else {
+      for (const [id, state] of this.#sessions) {
+        if (state.observed && state.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+      }
     }
-    for (const [id, state] of this.#sessions) {
-      if (state.observed && state.running && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+    for (const [id, info] of this.#subagentInfo) {
+      // The device's official snapshot and the event-tracked state are both
+      // facts about the same run; either one saying "running" is enough, so a
+      // snapshot that omits subagent rows can never hide a running subagent.
+      if (!info.running && this.#officialSubagentRunning.get(id) !== true) continue
+      const root = this.#rootOf(id)
+      if (!this.#archivedSessions.has(root)) ids.add(root)
+    }
+    for (const id of this.#officialSubagentRunning.keys()) {
+      if (this.#subagentInfo.has(id)) continue
+      const root = this.#rootOf(id)
+      if (!this.#archivedSessions.has(root)) ids.add(root)
     }
     return ids
+  }
+
+  /** First non-subagent ancestor of a subagent; the subagent itself when no
+   * parent is known (an orphan is shown rather than missed). Cycle/depth safe. */
+  #rootOf(subagentId: string): string {
+    let current = subagentId
+    for (let depth = 0; depth < 32; depth++) {
+      const parent = this.#subagentInfo.get(current)?.parent
+      if (parent === undefined || parent === current) return current
+      if (!this.#subagents.has(parent)) return parent
+      current = parent
+    }
+    return current
+  }
+
+  #noteSubagent(sessionId: string, update: { running?: boolean; parent?: string | undefined }): void {
+    const info = this.#subagentInfo.get(sessionId) ?? { running: false, parent: undefined }
+    if (update.running !== undefined) info.running = update.running
+    if (update.parent !== undefined) info.parent = update.parent
+    this.#subagentInfo.set(sessionId, info)
   }
 
   #completedSessionIds(): Set<string> {
@@ -313,11 +358,12 @@ export class DeviceLifecycle {
 
   /** Apply a full baseline without treating absence as removal. Only an
    * authoritative session-removed frame may erase generation/ack state. */
-  #syncSessions(sessions: readonly { sessionId: string; running: boolean; origin?: string }[]): void {
+  #syncSessions(sessions: readonly { sessionId: string; running: boolean; origin?: string; parentSessionId?: string }[]): void {
     for (const s of sessions) {
       if (s.origin === 'subagent') {
         this.#subagents.add(s.sessionId)
         this.#pruneSubagent(s.sessionId)
+        this.#noteSubagent(s.sessionId, { running: s.running, parent: s.parentSessionId })
         continue
       }
       this.#observeRunning(s.sessionId, s.running)
@@ -469,8 +515,12 @@ export class DeviceLifecycle {
    * Subagent sessions never enter root-session counts. */
   setBridgeStatusSnapshot(items: readonly { sessionId: string; running: boolean; completionUnread: boolean }[]): void {
     const next = new Map<string, { running: boolean; completionUnread: boolean }>()
+    const nextSubagents = new Map<string, boolean>()
     for (const item of items) {
-      if (this.#subagents.has(item.sessionId)) continue
+      if (this.#subagents.has(item.sessionId)) {
+        if (item.running) nextSubagents.set(item.sessionId, true)
+        continue
+      }
       next.set(item.sessionId, { running: item.running, completionUnread: item.completionUnread })
     }
     // Lift a local clear only when the official mark flipped off or the session
@@ -480,6 +530,7 @@ export class DeviceLifecycle {
       if (row === undefined || !row.completionUnread || row.running) this.#officialCleared.delete(sessionId)
     }
     this.#officialStatus = next
+    this.#officialSubagentRunning = nextSubagents
     this.#emitFacts()
   }
 
@@ -507,9 +558,12 @@ export class DeviceLifecycle {
     this.#recoveringAggregation = false
     this.#sessions.clear()
     this.#subagents.clear()
+    this.#subagentInfo.clear()
+    this.#officialSubagentRunning.clear()
     this.#pendingBySession.clear()
     this.#bridgePendingAvailable = false
     this.#officialStatus = undefined
+    this.#officialSubagentRunning.clear()
     this.#officialCleared.clear()
     this.#protocolKind = 'rc2'
     this.#archivedSessions.clear()
@@ -768,7 +822,10 @@ export class DeviceLifecycle {
         // host/session-status carries no origin; a session known as a
         // subagent (baseline origin or session-added) must not contribute to
         // root-session counts.
-        if (this.#subagents.has(event.sessionId)) break
+        if (this.#subagents.has(event.sessionId)) {
+          this.#noteSubagent(event.sessionId, { running: event.running })
+          break
+        }
         this.#observeRunning(event.sessionId, event.running)
         break
       case 'interaction': {
@@ -782,6 +839,7 @@ export class DeviceLifecycle {
         if (event.origin === 'subagent' && event.sessionId !== undefined) {
           this.#subagents.add(event.sessionId)
           this.#pruneSubagent(event.sessionId)
+          this.#noteSubagent(event.sessionId, { parent: event.parentSessionId })
         }
         break
       case 'archived-sessions-changed': {
@@ -818,6 +876,8 @@ export class DeviceLifecycle {
           state.running = false
           state.completedGeneration = undefined
         }
+        if (this.#subagentInfo.has(event.sessionId)) this.#noteSubagent(event.sessionId, { running: false })
+        this.#officialSubagentRunning.delete(event.sessionId)
         this.#pendingBySession.delete(event.sessionId)
         this.#archivedSessions.delete(event.sessionId)
         break

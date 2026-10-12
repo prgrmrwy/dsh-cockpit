@@ -142,7 +142,7 @@ export interface DeviceBaseline {
 export type CockpitEvent =
   | { readonly type: 'session-status'; readonly deviceId: string; readonly sessionId: string; readonly running: boolean }
   | { readonly type: 'interaction'; readonly deviceId: string; readonly sessionId: string; readonly kind: 'approval' | 'question'; readonly rpcId: string; readonly resolved: boolean }
-  | { readonly type: 'session-added'; readonly deviceId: string; readonly sessionId?: string; readonly origin?: 'subagent' }
+  | { readonly type: 'session-added'; readonly deviceId: string; readonly sessionId?: string; readonly origin?: 'subagent'; readonly parentSessionId?: string }
   /** Full authoritative archive set after a durable archive/restore change. */
   | { readonly type: 'archived-sessions-changed'; readonly deviceId: string; readonly archivedSessionIds: readonly string[] }
   /** Authoritative permanent removal, distinct from archive visibility. */

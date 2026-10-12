@@ -250,12 +250,16 @@ describe('typert unary and Remote mux', () => {
     socket.emit('message', JSON.stringify({ type: 'item', streamId: 'workspace', value: { type: 'baseline', value: { items: [], archivedSessionIds: [] } } }))
     await opened
     socket.emit('message', JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'emit', event: 'api-session/status', args: ['s1', true] } }))
+    socket.emit('message', JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'emit', event: 'api-session/added', args: [{ sessionId: 'sub-1', origin: 'subagent', parentSessionId: 's1' }] } }))
     const waterfall = JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'waterfall', event: 'ui/approval', eventId: 'e1', agentId: 's1', request: {} } })
     socket.emit('message', waterfall)
     socket.emit('message', waterfall)
     socket.emit('message', JSON.stringify({ type: 'item', streamId: 'events', value: { type: 'cancel', eventId: 'e1' } }))
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1))
-    expect(events).toEqual([{ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true }])
+    expect(events).toEqual([
+      { type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true },
+      { type: 'session-added', deviceId: 'd1', sessionId: 'sub-1', origin: 'subagent', parentSessionId: 's1' },
+    ])
     const init = fetcher.mock.calls[0]?.[1] as RequestInit
     expect(JSON.parse(String(init.body))).toEqual({
       type: 'client-request', rpcId: 'cockpit-event-e1', method: '$events/result', payload: { args: { clientId: 'c1', eventId: 'e1', outcome: { kind: 'next' } } },
