@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "dsh-cockpit — two independent channels",
+    "locale": "en",
+    "output": "docs/assets/dsh-cockpit-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:prgrmrwy/dsh-cockpit.git",
+      "link_mode": "local-only",
+      "revision": "94fa01332691e911f0890c0ccd13fd63ee0ae1f5"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "You",
+      "sublabel": "browser · PWA",
+      "pos": [
+        60,
+        60
+      ],
+      "size": [
+        120,
+        56
+      ]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "cockpit-web shell",
+      "sublabel": "top bar · panels",
+      "pos": [
+        340,
+        60
+      ],
+      "size": [
+        170,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-web/src/components/TopBar.tsx",
+          "line": 54,
+          "label": "TopBar"
+        }
+      ]
+    },
+    {
+      "id": "iframe",
+      "type": "frontend",
+      "label": "Workbench iframe",
+      "sublabel": "device's native DSH Web",
+      "pos": [
+        660,
+        60
+      ],
+      "size": [
+        180,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-web/src/workbench/Workbench.tsx",
+          "line": 753,
+          "end_line": 770,
+          "label": "iframe"
+        }
+      ]
+    },
+    {
+      "id": "registry",
+      "type": "database",
+      "label": "~/.dsh-cockpit",
+      "sublabel": "devices.json · token · 0600",
+      "pos": [
+        60,
+        260
+      ],
+      "size": [
+        160,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/storage/registry.ts",
+          "line": 134,
+          "label": "DeviceRegistry"
+        }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "cockpit-server",
+      "sublabel": "NestJS · 127.0.0.1:3090",
+      "pos": [
+        340,
+        260
+      ],
+      "size": [
+        170,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/main.ts",
+          "line": 23,
+          "label": "listen loopback"
+        }
+      ]
+    },
+    {
+      "id": "tunnel",
+      "type": "security",
+      "label": "SSH tunnel",
+      "sublabel": "BatchMode · loopback -L",
+      "pos": [
+        670,
+        260
+      ],
+      "size": [
+        160,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/tunnel-manager.ts",
+          "line": 103,
+          "end_line": 117,
+          "label": "tunnelArgs"
+        }
+      ]
+    },
+    {
+      "id": "remote",
+      "type": "cloud",
+      "label": "Remote DSH",
+      "sublabel": "VM / devbox · dsh web",
+      "pos": [
+        960,
+        260
+      ],
+      "size": [
+        170,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/rc2-client.ts",
+          "line": 43,
+          "label": "host.describe"
+        }
+      ]
+    },
+    {
+      "id": "local",
+      "type": "cloud",
+      "label": "Local DSH",
+      "sublabel": "dsh web · no tunnel",
+      "pos": [
+        340,
+        440
+      ],
+      "size": [
+        170,
+        56
+      ],
+      "sources": [
+        {
+          "path": "packages/shared/src/index.ts",
+          "line": 2,
+          "end_line": 4,
+          "label": "DeviceKind"
+        }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "This machine",
+      "wraps": [
+        "user",
+        "web",
+        "iframe",
+        "registry",
+        "server",
+        "tunnel",
+        "local"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "Remote devices · zero changes",
+      "wraps": [
+        "remote"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-web",
+      "from": "user",
+      "to": "web",
+      "label": "open :3090",
+      "variant": "emphasis"
+    },
+    {
+      "id": "web-iframe",
+      "from": "web",
+      "to": "iframe",
+      "label": "host per device",
+      "variant": "emphasis"
+    },
+    {
+      "id": "iframe-tunnel",
+      "from": "iframe",
+      "to": "tunnel",
+      "label": "127.0.0.1:<local>",
+      "variant": "emphasis"
+    },
+    {
+      "id": "tunnel-remote",
+      "from": "tunnel",
+      "to": "remote",
+      "label": "ssh -L",
+      "variant": "security"
+    },
+    {
+      "id": "web-server",
+      "from": "web",
+      "to": "server",
+      "label": "SSE status"
+    },
+    {
+      "id": "server-registry",
+      "from": "server",
+      "to": "registry",
+      "label": "atomic write"
+    },
+    {
+      "id": "server-tunnel",
+      "from": "server",
+      "to": "tunnel",
+      "label": "spawn ssh · read-only streams"
+    },
+    {
+      "id": "server-local",
+      "from": "server",
+      "to": "local",
+      "label": "events.mux · events.host"
+    },
+    {
+      "id": "iframe-server",
+      "from": "iframe",
+      "to": "server",
+      "label": "bridge reports (optional)",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "right"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Workbench channel",
+      "items": [
+        "Selecting a device loads its own DSH Web in an iframe",
+        "Settings, usage and plugins are inherited, not proxied"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Status channel",
+      "items": [
+        "Read-only official streams plus one session.list baseline",
+        "Fails independently of the workbench; offline keeps last known state"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "Boundaries",
+      "items": [
+        "Never reads ~/.dsh or provider tokens",
+        "Remote needs only a standard dsh web"
+      ]
+    }
+  ]
+}

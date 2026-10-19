@@ -55,7 +55,10 @@
 - `packages/cockpit-web/`：Vite/React 前端 —— 壳 UI（顶栏 / 全屏面板）、工作台 iframe、PWA（`public/manifest.webmanifest`、`public/sw.js`、`src/pwa.ts`）。
 - `packages/dsh-cockpit-bridge/`：注入各设备 DSH web 客户端的桥接插件（跨源上报，与驾驶舱的耦合面见 README 与源码）。
 - `bin/cockpit`：bootstrap / install / start / restart / stop / status / build 命令族（`start --dev` 前台开发模式）。
-- `.github/workflows/ci.yml`：CI（build / typecheck / test / lint）。
+- `.github/workflows/ci.yml`：CI（build / typecheck / test / lint）；`.github/dependabot.yml` 管 npm 与 Actions 更新（major 与 `@deepseek-ai/*` 不自动开 PR）。
+- `docs/assets/`：README 引用的图（`*.dual.svg` 深浅双主题）与其 archify JSON 源，二者成对提交；改架构或连接状态机后同步更新图。草稿目录 `.archify/` 不入库。
+- `CHANGELOG.md`：仓库级显著变更；完整动机与验收仍以 `openspec/changes/archive/` 为准。
+- `packages/dsh-cockpit-bridge/lib/`：**刻意入库**的构建产物（设备侧按包路径安装），改桥接源码后必须重新构建并一起提交；`.gitattributes` 将其标记为 generated。
 
 ## 工作约定
 

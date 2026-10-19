@@ -1,15 +1,21 @@
+<div align="center">
+
 # dsh-cockpit
 
-**简体中文** · [English](README.en.md)
-
-> 一个页面管理多台机器上的 DeepSeek Harness——选中设备，直接用它**原生**的
-> DSH 工作台。
+**一个页面管理多台机器上的 DeepSeek Harness——选中设备，直接用它原生的 DSH 工作台。**
 
 [![CI](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml/badge.svg)](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-3c873a.svg)](package.json)
-[![pnpm](https://img.shields.io/badge/pnpm-10.23-f69220.svg)](pnpm-workspace.yaml)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
+[![pnpm](https://img.shields.io/badge/pnpm-10.23-f69220.svg)](package.json)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196.svg)](https://www.conventionalcommits.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+简体中文 · [English](README.en.md) · [运行](#运行) · [桥接插件](#桥接插件可选与-dsh-的通信) · [贡献](CONTRIBUTING.md) · [安全](SECURITY.md) · [更新日志](CHANGELOG.md)
+
+</div>
+
+---
 
 多设备 DeepSeek Harness 驾驶舱：在一个页面里管理多台机器上的 DSH，选中设备后
 直接使用**该设备自己的 DSH 工作台**。
@@ -36,6 +42,8 @@
    分级诊断。
 2. **只读状态聚合** —— 常驻消费各设备的**官方**事件流，聚合"几个在跑 / 有无
    等待人决策"，让你不进设备也能感知。
+
+![dsh-cockpit 架构：壳 UI 承载设备原生工作台 iframe，cockpit-server 经 SSH 回环隧道只读聚合各设备状态](docs/assets/dsh-cockpit-architecture.dual.svg)
 
 ## 远端要求
 
@@ -77,6 +85,8 @@ rc.2 的 pending 继续来自 Host 事件；typert pending 只有兼容桥接插
 - **不假装实时** —— 设备离线时保留最后已知状态，但明确标注离线与最后更新
   时间；连接层知道的具体原因（SSH 不通 / 隧道失败 / DSH 未运行 / 非 DSH 服务 /
   版本不兼容）直接呈现，因为远端页面自己说不出来。
+
+![设备连接状态：CONNECTING → 探测 → READY；事件流断开进入 DEGRADED 并保住工作台；SSH / DSH 类故障按诊断原因展示并退避重试](docs/assets/dsh-cockpit-device-states.dual.svg)
 
 ## 完成提醒：生成、已读确认与人工兜底
 
@@ -126,6 +136,9 @@ iframe DOM，也拿不到它。有了插件后：
 
 ### 可靠确认协议（v2）
 
+<details>
+<summary>展开：信号表、转发服务与边界细节</summary>
+
 | 信号 | 插件侧（设备 DSH 页面内） | 驾驶舱侧 |
 | --- | --- | --- |
 | **父页面握手** | iframe `load`、设备被激活、能力刷新时，父页面通过精确 `targetOrigin` 向 iframe `postMessage({ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability, sshAlias? })` | 父页面先以同源 Cookie 认证向 `POST /api/devices/:id/bridge/capability` 换取绑定该设备 Origin、短 TTL 的一次性能力 |
@@ -160,6 +173,8 @@ iframe DOM，也拿不到它。有了插件后：
   无界增长。
 - **旧版插件兼容**：仍运行旧版（协议 1）插件的设备继续按尽力而为方式上报，
   顶栏图标会标注为「已连接但非可靠协议」，并提示可用人工清除兜底。
+
+</details>
 
 ### 安装（设备侧，可选）
 
@@ -250,6 +265,9 @@ fail-closed 拒绝停止或覆盖该进程。
 
 ## 验证（当前实现已通过的实测）
 
+<details>
+<summary>展开：测试覆盖、真实浏览器与 E2E 验收记录</summary>
+
 - server vitest 141/141（注册表原子性/损坏 fail-closed、SSH 身份、隧道终结性、事件转换含归档集合、设备生命周期含 generation 状态机/ack-edge 收敛/归档恢复、**基线-事件盲窗与缓冲回放、workspace.list 归档基线、live detach 软语义**、bridge capability 生命周期与鉴权、删除确认门禁、排序归一化、**真实 NestJS+Express 集成测试确认鉴权中间件对每个 `/api/*` 路由实际生效**）
 - web vitest 63/63（含 Device Tab 完成清除控件的鼠标/键盘/不冒泡、桥接已装/未装两态图标形状区分、Workbench 桥接握手与失败降级、**capability 到期前自动续签与失效自愈、切换设备清理续签定时器**）
 - bridge vitest 19/19（快速多选无损、archive-before-flush、失败重试、outbox 容量/TTL、activation 重申、**capability 失效识别与父页面续签请求**、DSH 页面不受失败影响）
@@ -258,6 +276,8 @@ fail-closed 拒绝停止或覆盖该进程。
 - 真实 E2E（隔离 home + 真实 lumevm）：add → 自建隧道 → READY → 工作台 HTTP 200 → 真实状态计数
 - 故障注入：kill 驾驶舱 ssh → 立即 CONNECTING → 自动重连 READY；启动窗口与活跃隧道下 SIGTERM 均无孤儿
 - 5 台 iframe 常驻内存基准：JS heap 增量 ≈ 13KB/台（浏览器原生隔离，驾驶舱机制开销可忽略）
+
+</details>
 
 ## PWA
 
@@ -288,7 +308,8 @@ Pet 一期由 ohmydsh 的 `add-dsh-pet` change 负责，当前仓不实现。
 
 欢迎 issue 与 PR。开发环境、验证命令与规范驱动流程见
 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题请按
-[SECURITY.md](SECURITY.md) 私密上报，不要开公开 issue。
+[SECURITY.md](SECURITY.md) 私密上报，不要开公开 issue。参与社区请遵守
+[行为准则](CODE_OF_CONDUCT.md)；显著变更记录在 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 背景
 
@@ -299,7 +320,7 @@ Pet 一期由 ohmydsh 的 `add-dsh-pet` change 负责，当前仓不实现。
 规范上禁止代理远端设置与订阅，因而拿不到 settings/usage/插件继承。
 
 决策记录与实测证据见 `ohmydsh` 仓库的
-`docs/adr/ADR-0003-adopt-cockpit-over-semantic-federation.md`。其中一条关键
+[ADR-0003](https://github.com/prgrmrwy/ohmydsh/blob/main/docs/adr/ADR-0003-adopt-cockpit-over-semantic-federation.md)。其中一条关键
 实测结论是本项目成立的基础：**rc.2 的单消费者语义不抢占服务端事件流**——
 真实浏览器打开某台 GUI 期间，外部订阅者的两条流全程未被踢出。
 

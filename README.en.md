@@ -1,15 +1,21 @@
+<div align="center">
+
 # dsh-cockpit
 
-[简体中文](README.md) · **English**
-
-> Manage DeepSeek Harness across every machine from one page — pick a device
-> and use its **native** DSH workbench directly.
+**Manage DeepSeek Harness across every machine from one page — pick a device and use its native DSH workbench directly.**
 
 [![CI](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml/badge.svg)](https://github.com/prgrmrwy/dsh-cockpit/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-3c873a.svg)](package.json)
-[![pnpm](https://img.shields.io/badge/pnpm-10.23-f69220.svg)](pnpm-workspace.yaml)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](.nvmrc)
+[![pnpm](https://img.shields.io/badge/pnpm-10.23-f69220.svg)](package.json)
+[![Conventional Commits](https://img.shields.io/badge/commits-conventional-fe5196.svg)](https://www.conventionalcommits.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+[简体中文](README.md) · English · [Running it](#running-it) · [Bridge plugin](#bridge-plugin-optional-talking-to-dsh) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+
+</div>
+
+---
 
 A multi-device cockpit for DeepSeek Harness: manage DSH running on several
 machines from a single page, and once you select a device, work in **that
@@ -39,6 +45,8 @@ The cockpit does exactly two things:
 2. **Read-only status aggregation** — continuously consume each device's
    **official** event streams and aggregate "how many are running / is anything
    waiting on a human", so you can sense state without entering a device.
+
+![dsh-cockpit architecture: the shell hosts each device's native workbench iframe while cockpit-server aggregates read-only status over SSH loopback tunnels](docs/assets/dsh-cockpit-architecture.dual.svg)
 
 ## Remote requirements
 
@@ -75,6 +83,8 @@ There are only two prerequisites:
   specific reason the connectivity layer knows about (SSH unreachable / tunnel
   failure / DSH not running / non-DSH service / incompatible version) is
   surfaced directly, because the remote page cannot say it itself.
+
+![Device connection states: CONNECTING → probe → READY; a dropped event stream enters DEGRADED while keeping the workbench; SSH / DSH failures are shown with their diagnosis and retried with backoff](docs/assets/dsh-cockpit-device-states.dual.svg)
 
 ## Completion reminders: generations, acknowledgement, and manual fallback
 
@@ -149,6 +159,9 @@ With the plugin installed:
 
 ### The reliable acknowledgement protocol (v2)
 
+<details>
+<summary>Expand: signal table, forward service and boundary details</summary>
+
 | Signal | Plugin side (inside the device's DSH page) | Cockpit side |
 | --- | --- | --- |
 | **Parent handshake** | On iframe `load`, device activation, or a capability refresh, the parent `postMessage`s `{ type: 'dsh-cockpit:bridge-config', cockpitOrigin, capability, sshAlias? }` to the iframe using a precise `targetOrigin` | The parent first authenticates via its own same-origin cookie session and calls `POST /api/devices/:id/bridge/capability` to obtain a one-shot, short-TTL capability bound to that device's Origin |
@@ -186,6 +199,8 @@ With the plugin installed:
   1) plugin continues to report best-effort; the top bar marks it as
   "connected but not on the reliable protocol" and points at the manual clear
   fallback.
+
+</details>
 
 ### Installation (device side, optional)
 
@@ -304,6 +319,9 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## Verification (measured against the current implementation)
 
+<details>
+<summary>Expand: test coverage, real-browser and E2E acceptance records</summary>
+
 - server vitest 141/141 (registry atomicity / fail-closed corruption, SSH
   identity, conclusive tunnel teardown, event conversion including the archive
   set, device lifecycle including the generation state machine / ack-edge
@@ -336,6 +354,8 @@ For how to report a vulnerability, see [SECURITY.md](SECURITY.md).
   tunnel leaves no orphans
 - Five resident iframes memory baseline: JS heap delta ≈ 13 KB per device
   (browser-native isolation; the cockpit's own overhead is negligible)
+
+</details>
 
 ## PWA
 
@@ -371,7 +391,8 @@ it is, read the spec before the code.
 Issues and PRs are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the dev
 environment, verification commands and the spec-driven workflow. Please report
 security problems privately per [SECURITY.md](SECURITY.md) rather than opening a
-public issue.
+public issue. Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md);
+notable changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## Background
 
@@ -385,7 +406,7 @@ remote settings and subscriptions, which meant settings/usage/plugin
 inheritance was out of reach.
 
 The decision record and measured evidence live in the `ohmydsh` repository at
-`docs/adr/ADR-0003-adopt-cockpit-over-semantic-federation.md`. One measured
+[ADR-0003](https://github.com/prgrmrwy/ohmydsh/blob/main/docs/adr/ADR-0003-adopt-cockpit-over-semantic-federation.md). One measured
 conclusion is the foundation of this project: **rc.2's single-consumer
 semantics do not preempt server-side event streams** — while a real browser had
 a given GUI open, an external subscriber's two streams were never kicked out.

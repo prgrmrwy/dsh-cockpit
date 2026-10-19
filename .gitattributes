@@ -1,0 +1,11 @@
+# 统一换行为 LF（Windows 原生启动走 Node CLI，不依赖 CRLF 脚本）。
+* text=auto eol=lf
+
+# 二进制资源：不做换行转换、不做文本 diff。
+*.png binary
+*.ico binary
+
+# dsh-cockpit-bridge 的 lib/ 是 tsdown 构建产物，刻意入库：设备侧 ohmydsh manifest
+# 直接以本仓库包路径作为 profile dependency 安装，需要现成产物。
+# 标记为 generated，让 GitHub PR diff 默认折叠、语言统计不计入。
+packages/dsh-cockpit-bridge/lib/** linguist-generated=true

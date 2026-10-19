@@ -1,0 +1,48 @@
+# Dependabot 依赖更新配置
+#
+# 作用域：pnpm workspace（根 + packages/*）的 npm 依赖与 GitHub Actions。
+# 远端设备上的 DSH 运行体不归本仓库管理；驾驶舱只消费其官方只读接口。
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+      time: '09:00'
+      timezone: Asia/Shanghai
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      # 补丁/次要升级合并成一个 PR，减少噪音。
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # bridge 的 cordis/react 必须与设备侧 DSH 运行体对齐，由 bridge 发版流程单独评估。
+      - dependency-name: '@deepseek-ai/*'
+      # 大版本升级需要单独做运行时、类型和 API 兼容性审查，不自动开 PR。
+      - dependency-name: '*'
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      github-actions:
+        patterns:
+          - '*'

@@ -1,0 +1,185 @@
+{
+  "schema_version": 2,
+  "diagram_type": "lifecycle",
+  "meta": {
+    "title": "dsh-cockpit — device connection states",
+    "locale": "en",
+    "output": "docs/assets/dsh-cockpit-device-states.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "git@github.com:prgrmrwy/dsh-cockpit.git",
+      "link_mode": "local-only",
+      "revision": "94fa01332691e911f0890c0ccd13fd63ee0ae1f5"
+    }
+  },
+  "lanes": [
+    {
+      "id": "main",
+      "label": "Connect path"
+    },
+    {
+      "id": "recovery",
+      "label": "Recovering"
+    },
+    {
+      "id": "diagnosed",
+      "label": "Diagnosed failures · auto retry"
+    }
+  ],
+  "states": [
+    {
+      "id": "connecting",
+      "type": "start",
+      "label": "CONNECTING",
+      "sublabel": "ssh -L · probe",
+      "lane": "main",
+      "col": 0,
+      "step": "01",
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 599,
+          "label": "reconnect"
+        }
+      ]
+    },
+    {
+      "id": "probe",
+      "type": "decision",
+      "label": "Probe DSH",
+      "sublabel": "handshake · baseline",
+      "lane": "main",
+      "col": 1,
+      "step": "02",
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 656,
+          "label": "connectOnce"
+        }
+      ]
+    },
+    {
+      "id": "ready",
+      "type": "success",
+      "label": "READY",
+      "sublabel": "mux + host streams",
+      "lane": "main",
+      "col": 2,
+      "step": "03",
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 799,
+          "label": "READY"
+        }
+      ]
+    },
+    {
+      "id": "degraded",
+      "type": "waiting",
+      "label": "DEGRADED",
+      "sublabel": "workbench up · stream lost",
+      "lane": "recovery",
+      "col": 2,
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 1045,
+          "label": "DEGRADED"
+        }
+      ]
+    },
+    {
+      "id": "ssh",
+      "type": "failure",
+      "label": "SSH_UNREACHABLE",
+      "sublabel": "or TUNNEL_ERROR",
+      "lane": "diagnosed",
+      "col": 0,
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 641,
+          "label": "ssh failure"
+        }
+      ]
+    },
+    {
+      "id": "dsh",
+      "type": "failure",
+      "label": "DSH_UNAVAILABLE",
+      "sublabel": "or NON_DSH_SERVICE",
+      "lane": "diagnosed",
+      "col": 1,
+      "sources": [
+        {
+          "path": "packages/cockpit-server/src/connectivity/device-lifecycle.ts",
+          "line": 709,
+          "label": "protocol failure"
+        }
+      ]
+    }
+  ],
+  "transitions": [
+    {
+      "from": "connecting",
+      "to": "probe"
+    },
+    {
+      "from": "probe",
+      "to": "ready",
+      "label": "ok"
+    },
+    {
+      "from": "ready",
+      "to": "degraded",
+      "label": "stream drops",
+      "variant": "dashed"
+    },
+    {
+      "from": "degraded",
+      "to": "probe",
+      "label": "retry"
+    },
+    {
+      "from": "connecting",
+      "to": "ssh",
+      "variant": "security"
+    },
+    {
+      "from": "probe",
+      "to": "dsh",
+      "variant": "security"
+    },
+    {
+      "from": "ssh",
+      "to": "connecting",
+      "label": "backoff"
+    },
+    {
+      "from": "dsh",
+      "to": "connecting",
+      "label": "backoff"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "amber",
+      "title": "Never pretend real-time",
+      "items": [
+        "Offline keeps the last known status, clearly marked with its update time",
+        "The diagnosed reason is shown as-is, because the remote page cannot say it"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Channels stay independent",
+      "items": [
+        "DEGRADED keeps the workbench tunnel while aggregation recovers",
+        "No periodic polling: reconnect re-queries the snapshot",
+        "DISABLED: switching a device off stops it from any state"
+      ]
+    }
+  ]
+}

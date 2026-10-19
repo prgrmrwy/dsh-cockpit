@@ -4,9 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支的新 push 取消尚未完成的旧运行，节省 Actions 额度。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   check:
+    name: Check (ubuntu)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +26,7 @@ jobs:
           version: 10.23.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       # server/web 通过 dist 引用 @dsh-cockpit/shared（types 指向 dist/index.d.ts，
@@ -45,6 +56,7 @@ jobs:
         run: node bin/cockpit stop
 
   windows-lifecycle:
+    name: Lifecycle (windows)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,7 +65,7 @@ jobs:
           version: 10.23.0
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: node bin/cockpit build

@@ -5,7 +5,7 @@
 
 ## 环境要求
 
-- Node.js **≥ 22**
+- Node.js **≥ 22**（`.nvmrc` 给出推荐主版本，`nvm use` 即可）
 - pnpm **10.23.0**（仓库已通过 `packageManager` 锁定，建议用 `corepack enable`）
 - 要连远端设备时：本机到该设备的 **SSH 免密**，且该设备上跑着 `dsh web`
 
@@ -88,6 +88,9 @@ CI 跑的是同一组命令。有几点值得先知道，能省掉一轮排查�
 - **零运行时依赖倾向**：新增依赖前请先在 issue 中讨论。
 - **测试断言用户可观察语义**，不要绑定实现细节（例如 SVG 的具体路径坐标、
   完整 DOM 快照）。
+- 编辑器风格由 `.editorconfig` 统一（UTF-8、LF、2 空格缩进）；换行由
+  `.gitattributes` 强制为 LF。
+- 显著的用户可见变更请在 [CHANGELOG.md](CHANGELOG.md) 的 `Unreleased` 下补一行。
 - 提交信息推荐 [Conventional Commits](https://www.conventionalcommits.org/)
   风格，例如 `feat(web): ...`、`fix(server): ...`、`docs(openspec): ...`。
 - **README 是中英双语的**：`README.md`（简体中文，默认首页）与
@@ -103,6 +106,10 @@ CI 跑的是同一组命令。有几点值得先知道，能省掉一轮排查�
 - 向远端设备安装插件作为核心功能的前提（`dsh-cockpit-bridge` 是**可选**增强）；
 - 关闭 SSH host-key 校验，或把密钥/口令写进日志；
 - 缓存 SSE 事件流（缓存死流会静默杀死状态聚合）。
+
+## 行为准则
+
+参与本项目即表示你同意遵守 [行为准则](CODE_OF_CONDUCT.md)。
 
 ## 提 Issue
 

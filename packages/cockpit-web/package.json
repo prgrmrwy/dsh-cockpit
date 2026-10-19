@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Cockpit shell UI: top bar, panels, workbench iframe",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "build": "tsc -b && vite build",

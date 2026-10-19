@@ -3,6 +3,25 @@
   "version": "0.1.0",
   "private": true,
   "description": "Multi-device cockpit for DeepSeek Harness: manage devices, aggregate status, and open each device's own DSH workbench",
+  "license": "MIT",
+  "author": "prgrmrwy",
+  "homepage": "https://github.com/prgrmrwy/dsh-cockpit#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prgrmrwy/dsh-cockpit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/prgrmrwy/dsh-cockpit/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "ai-agent",
+    "multi-device",
+    "cockpit",
+    "ssh-tunnel",
+    "pwa"
+  ],
   "type": "module",
   "bin": {
     "cockpit": "bin/cockpit"

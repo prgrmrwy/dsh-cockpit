@@ -3,6 +3,21 @@
   "version": "0.6.4",
   "description": "Cockpit bridge: reliable DSH session-state reporting plus stable same-page capabilities for consumer plugins",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prgrmrwy/dsh-cockpit.git",
+    "directory": "packages/dsh-cockpit-bridge"
+  },
+  "homepage": "https://github.com/prgrmrwy/dsh-cockpit/tree/main/packages/dsh-cockpit-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/prgrmrwy/dsh-cockpit/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh-cockpit"
+  ],
   "type": "module",
   "main": "./lib/index.js",
   "types": "./lib/index.d.ts",

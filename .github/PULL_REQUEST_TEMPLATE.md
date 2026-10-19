@@ -36,6 +36,13 @@
 
 - [ ] 中英两版已同步（`README.md` 与 `README.en.md`）
 
+## 检查清单
+
+- [ ] 已阅读 [CONTRIBUTING.md](https://github.com/prgrmrwy/dsh-cockpit/blob/main/CONTRIBUTING.md)
+- [ ] 提交信息遵循 Conventional Commits
+- [ ] 显著的用户可见变更已更新 `CHANGELOG.md`
+- [ ] 改动桥接插件时已 bump `packages/dsh-cockpit-bridge/package.json` 的 `version` 并重新构建 `lib/`
+
 ## 边界自查
 
 - [ ] 未代理远端操作 API、未接管其事件流
