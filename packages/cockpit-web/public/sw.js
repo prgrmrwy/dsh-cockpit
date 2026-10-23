@@ -22,13 +22,16 @@
  * When behavior changes, bump CACHE_VERSION so the old cache is purged on
  * activation (skipWaiting + clientsClaim take over without a prompt).
  */
-const CACHE_VERSION = 'cockpit-shell-v2'
+const CACHE_VERSION = 'cockpit-shell-v3'
 const SHELL = [
   '/',
   '/index.html',
   '/manifest.webmanifest',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
+  '/icons/apple-touch-icon.png',
+  '/icons/icon-maskable-512.png',
+  '/favicon.svg',
 ]
 
 self.addEventListener('install', (event) => {
@@ -55,6 +58,7 @@ const isImmutableAsset = (request) => {
   const { pathname } = new URL(request.url)
   return pathname.startsWith('/assets/')
     || pathname === '/manifest.webmanifest'
+    || pathname === '/favicon.svg'
     || pathname.startsWith('/icons/')
 }
 

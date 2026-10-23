@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs><filter id="g" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="7" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<radialGradient id="core"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".35" stop-color="#26E8FF"/><stop offset="1" stop-color="#26E8FF" stop-opacity="0"/></radialGradient></defs>
+<rect width="512" height="512" rx="112" fill="#170A2E"/>
+<g stroke="#7A4BD6" stroke-opacity=".55" stroke-width="3"><line x1="66" y1="66" x2="240" y2="240"/><line x1="446" y1="66" x2="272" y2="240"/><line x1="66" y1="446" x2="240" y2="272"/><line x1="446" y1="446" x2="272" y2="272"/></g>
+<g filter="url(#g)"><rect x="49.0" y="49.0" width="414.0" height="414.0" rx="91.1" fill="none" stroke="#26E8FF" stroke-opacity="1.00" stroke-width="10.0"/><rect x="97.1" y="97.1" width="317.9" height="317.9" rx="69.9" fill="none" stroke="#FF2E97" stroke-opacity="0.91" stroke-width="9.0"/><rect x="139.7" y="139.7" width="232.6" height="232.6" rx="51.2" fill="none" stroke="#26E8FF" stroke-opacity="0.82" stroke-width="8.0"/><rect x="176.3" y="176.3" width="159.4" height="159.4" rx="35.1" fill="none" stroke="#FF2E97" stroke-opacity="0.72" stroke-width="7.0"/><rect x="206.2" y="206.2" width="99.5" height="99.5" rx="21.9" fill="none" stroke="#26E8FF" stroke-opacity="0.63" stroke-width="6.0"/><rect x="228.2" y="228.2" width="55.6" height="55.6" rx="12.2" fill="none" stroke="#FF2E97" stroke-opacity="0.54" stroke-width="5.0"/><rect x="239.0" y="239.0" width="34.0" height="34.0" rx="7.5" fill="none" stroke="#26E8FF" stroke-opacity="0.45" stroke-width="4.0"/></g>
+<circle cx="256" cy="256" r="40" fill="url(#core)"/>
+</svg>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" fill="#F0A92E"/><g transform="translate(256 256) scale(0.8) translate(-256 -256)">
+<g transform="rotate(-7 256 256)">
+  <rect x="118" y="128" width="300" height="270" rx="34" fill="#2A8C82"/>
+  <rect x="96" y="106" width="300" height="270" rx="34" fill="#16130F"/>
+  <rect x="124" y="134" width="244" height="214" rx="14" fill="#1C3A63"/>
+  <clipPath id="w"><rect x="124" y="134" width="244" height="214" rx="14"/></clipPath>
+  <g clip-path="url(#w)">
+
+  <circle cx="350" cy="350" r="110" fill="#3FB6A8"/>
+  <g fill="none" stroke="#2A8C82" stroke-width="12"><path d="M240 330 Q350 300 460 330"/><path d="M240 370 Q350 340 460 370"/></g>
+  <ellipse cx="350" cy="350" rx="150" ry="26" transform="rotate(-18 350 350)" fill="none" stroke="#F4EBD9" stroke-width="8"/>
+    <g fill="#F4EBD9"><circle cx="170" cy="180" r="4"/><circle cx="300" cy="166" r="3"/><circle cx="214" cy="290" r="3"/><circle cx="330" cy="222" r="2.5"/><circle cx="152" cy="244" r="2.5"/></g>
+    <path d="M196 252 L276 214 L262 236 L300 232 L262 246 L270 268 Z" fill="#F4EBD9"/>
+  </g>
+  <g fill="#F0A92E"><circle cx="116" cy="126" r="7"/><circle cx="376" cy="126" r="7"/><circle cx="116" cy="356" r="7"/><circle cx="376" cy="356" r="7"/></g>
+</g></g></svg>

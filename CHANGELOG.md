@@ -25,6 +25,7 @@
 
 ### Changed
 
+- PWA 图标更换为复古舷窗与青绿星球，新增 SVG favicon、maskable 图标及可重复出图的矢量源与脚本。
 - 完成未读以设备官方 `completionUnread` 为准（bridge 0.6.4）。
 - 运行中的子代理使其根会话计为进行中。
 - 驾驶舱 API 只接受同源请求。

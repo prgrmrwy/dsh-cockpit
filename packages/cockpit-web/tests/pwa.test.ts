@@ -15,8 +15,12 @@ describe('PWA assets', () => {
     expect(manifest.start_url).toBe('/')
     expect(manifest.scope).toBe('/')
     expect(manifest.display).toBe('standalone')
-    const icons = manifest.icons as Array<{ src: string; sizes: string }>
-    expect(icons.map(i => i.sizes).sort()).toEqual(['192x192', '512x512'])
+    const icons = manifest.icons as Array<{ src: string; sizes: string; purpose: string }>
+    expect(icons.map(({ sizes, purpose }) => [sizes, purpose])).toEqual([
+      ['192x192', 'any'],
+      ['512x512', 'any'],
+      ['512x512', 'maskable'],
+    ])
   })
 
   it('manifest-referenced icons exist on disk', () => {
