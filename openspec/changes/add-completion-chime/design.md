@@ -25,7 +25,7 @@
    - 无静态资源，不涉及 SW 缓存清单，不 bump `CACHE_VERSION`。`resume()` 失败静默吞掉；首次 `pointerdown`/`keydown` 时尝试 `resume()` 解锁。
 3. **合并窗口**：每类声音各自记录上次播放时间，1000ms 内同类重复调用忽略（节流，首声即时）。同一帧既有 knock 又有 ding 时先敲门、~400ms 后叮，避免叠音含糊。
 4. **接入点**：`main.tsx` 用 `useRef` 保存上一帧计数，SSE 回调与 `refresh()` 结果都经 `detectChimes`，再按结果调用播放。
-5. **偏好**：`localStorage['cockpit:chime']`，值 `'off'` 表示关闭，其余（含缺省）开启。设置面板加 checkbox 读写该键；播放函数每次读取，避免跨组件状态同步。
+5. **偏好**：`localStorage['cockpit:chime']`，值 `'off'` 表示关闭，其余（含缺省）开启。开关放在设备管理面板摘要行（顶栏 ☰ 的入口；独立设置面板当前无顶栏入口），读写该键；播放函数每次读取，避免跨组件状态同步。
 
 ## Risks / Trade-offs
 

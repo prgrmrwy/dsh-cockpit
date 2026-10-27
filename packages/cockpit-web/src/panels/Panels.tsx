@@ -209,6 +209,7 @@ export function DevicePanel({ devices, onClose, onChanged, confirmDelete = confi
           <span data-summary="ready">已连接 <strong>{readyCount}</strong></span>
           <span data-summary="attention">需处理 <strong>{attentionCount}</strong></span>
           <span data-summary="disabled">已禁用 <strong>{disabledCount}</strong></span>
+          <ChimeToggle />
         </div>
 
         <div className="device-console">
@@ -444,8 +445,24 @@ export function OverviewPanel({ devices, onClose, onSelect }: PanelProps & {
   )
 }
 
-export function SettingsPanel({ onClose }: PanelProps) {
+/** Local-only status chime preference (knock on pending decision, ding on
+ * unread completion). Lives in the device panel because that is the panel the
+ * top bar ☰ opens. */
+function ChimeToggle() {
   const [chime, setChime] = useState(isChimeEnabled)
+  return (
+    <label className="settings-toggle" title="等待决策时敲门，完成未读时叮一声；仅保存在本浏览器">
+      <input
+        type="checkbox"
+        checked={chime}
+        onChange={event => { setChimeEnabled(event.target.checked); setChime(event.target.checked) }}
+      />
+      提示音
+    </label>
+  )
+}
+
+export function SettingsPanel({ onClose }: PanelProps) {
   return (
     <div className="panel" role="dialog" aria-modal="true" data-cockpit-panel="settings">
       <header className="panel-header">
@@ -453,14 +470,7 @@ export function SettingsPanel({ onClose }: PanelProps) {
         <button className="ghost" onClick={onClose}>✕</button>
       </header>
       <p>驾驶舱数据目录：<code>~/.dsh-cockpit/</code></p>
-      <label className="settings-toggle">
-        <input
-          type="checkbox"
-          checked={chime}
-          onChange={event => { setChimeEnabled(event.target.checked); setChime(event.target.checked) }}
-        />
-        提示音（等待决策时敲门，完成未读时叮一声；仅保存在本浏览器）
-      </label>
+      <ChimeToggle />
     </div>
   )
 }
