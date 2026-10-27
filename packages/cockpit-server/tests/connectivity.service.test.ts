@@ -208,7 +208,7 @@ async function serviceFor(records: readonly DeviceRecord[]) {
     await new Promise(resolve => setTimeout(resolve, 0))
   }
   expect(service.statuses()).toHaveLength(records.length)
-  return { service, registry, published }
+  return { service, registry, published, events }
 }
 
 /**
@@ -1101,6 +1101,59 @@ describe('bridge capability and protocol', () => {
 
     await service.updateDevice('local', { enabled: false })
     expect(() => service.ackCompleted('local')).toThrow('is disabled')
+    await service.onApplicationShutdown()
+  })
+
+  it('wires foreground: a completion while unshown is reminded, showing the device clears it, unknown devices are rejected', async () => {
+    const records = [remote('local', 0, { kind: 'local', sshAlias: undefined, enabled: true, remoteDshPort: 3080 })]
+    const events = new DeviceEventsService()
+    let emit: ((event: { type: string; [key: string]: unknown }) => void) | undefined
+    const service = new ConnectivityService(new FakeRegistry(records) as never, events, {
+      createProtocol: async () => ({
+        kind: 'rc2' as const,
+        client: {
+          kind: 'rc2' as const,
+          probe: async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' }),
+          listSessions: async () => [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }],
+          listWorkspaces: async () => ({ items: [], archivedSessionIds: [] }),
+        },
+        stream: {
+          on(name: string, fn: (event: { type: string; [key: string]: unknown }) => void) { if (name === 'event') emit = fn; return this },
+          off() { return this },
+          open: async () => {},
+          dispose() {},
+        },
+      }) as never,
+    })
+    for (let attempt = 0; attempt < 200 && service.statuses()[0]?.state !== 'READY'; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(service.statuses()[0]?.state).toBe('READY')
+    const PAGE = 'page-ffffffffffffffff'
+    const offStream = events.subscribe(() => {}, PAGE)
+    expect(() => service.setForeground(PAGE, 'missing-device')).toThrow('unknown device')
+    const completed = () => service.statuses()[0]?.sessionStatuses.find(status => status.kind === 'completed')?.count ?? 0
+
+    // The device reports official status (no unread of its own), so any
+    // reminder below can only be the cockpit-side background one.
+    const origin = new URL(service.statuses()[0]!.endpoint!).origin
+    service.bridgeStatusSnapshot(origin, [{ sessionId: 's1', running: true, completionUnread: false }], 1)
+
+    // The page shows no device: s1 finishes unseen → reminded.
+    service.setForeground(PAGE, null)
+    emit?.({ type: 'session-status', deviceId: 'local', sessionId: 's1', running: false })
+    service.bridgeStatusSnapshot(origin, [], 1)
+    expect(completed()).toBe(1)
+
+    // Showing the device clears the cockpit-side reminder.
+    service.setForeground(PAGE, 'local')
+    expect(completed()).toBe(0)
+
+    // While shown, the next completion is not reminded cockpit-side.
+    emit?.({ type: 'session-status', deviceId: 'local', sessionId: 's1', running: true })
+    emit?.({ type: 'session-status', deviceId: 'local', sessionId: 's1', running: false })
+    expect(completed()).toBe(0)
+    offStream()
     await service.onApplicationShutdown()
   })
 })

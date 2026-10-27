@@ -21,6 +21,36 @@ export class DeviceEventsService implements OnApplicationShutdown {
   readonly #pageConnections = new Map<string, number>()
   readonly #pageGrace = new Map<string, ReturnType<typeof setTimeout>>()
   readonly #expiryListeners = new Set<(pageId: string) => void>()
+  /** Device each connected cockpit page is currently showing. Removed the
+   * moment the page's last stream closes (no grace: when unsure, treat the
+   * device as unwatched so a background completion is still reminded). */
+  readonly #foreground = new Map<string, string>()
+  readonly #foregroundListeners = new Set<(deviceId: string) => void>()
+
+  /** Record which device a connected page shows (`null` = none). Reports from
+   * a page with no live stream are ignored; it re-reports on reconnect. */
+  setForeground(pageId: string, deviceId: string | null): void {
+    if (!this.hasPage(pageId)) return
+    const previous = this.#foreground.get(pageId)
+    if (deviceId === null) {
+      this.#foreground.delete(pageId)
+      return
+    }
+    this.#foreground.set(pageId, deviceId)
+    if (previous !== deviceId) for (const listener of this.#foregroundListeners) listener(deviceId)
+  }
+
+  /** Whether any connected cockpit page currently shows this device. */
+  isForeground(deviceId: string): boolean {
+    for (const value of this.#foreground.values()) if (value === deviceId) return true
+    return false
+  }
+
+  /** Called with a device id whenever a page starts showing it. */
+  onForegroundChanged(listener: (deviceId: string) => void): () => void {
+    this.#foregroundListeners.add(listener)
+    return () => { this.#foregroundListeners.delete(listener) }
+  }
 
   /** Notifies all subscribers with a fresh snapshot. */
   publish(facts: readonly DeviceStatusFacts[]): void {
@@ -89,6 +119,7 @@ export class DeviceEventsService implements OnApplicationShutdown {
       return
     }
     this.#pageConnections.delete(pageId)
+    this.#foreground.delete(pageId)
     this.armPageGrace(pageId)
   }
 }

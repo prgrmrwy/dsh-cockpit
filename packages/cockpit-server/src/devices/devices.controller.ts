@@ -137,6 +137,28 @@ export class DevicesController {
     }
   }
 
+  /** Cockpit parent page: which device this page currently shows (`null` =
+   * none). A completion on a device no page shows is reminded by the cockpit
+   * even when the hidden device page suppresses its own unread mark.
+   * Cookie-gated and same-origin like every non-bridge /api route. */
+  @Post('foreground')
+  @HttpCode(HttpStatus.OK)
+  setForeground(@Body() body: { pageId?: unknown; deviceId?: unknown } | undefined): { ok: true } {
+    const { pageId, deviceId } = body ?? {}
+    if (typeof pageId !== 'string' || !isValidOpaqueId(pageId)) {
+      throw new HttpException(toError('bad-request', 'pageId invalid'), HttpStatus.BAD_REQUEST)
+    }
+    if (deviceId !== null && (typeof deviceId !== 'string' || deviceId.length === 0)) {
+      throw new HttpException(toError('bad-request', 'deviceId invalid'), HttpStatus.BAD_REQUEST)
+    }
+    try {
+      this.connectivity.setForeground(pageId, deviceId)
+      return { ok: true }
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
   /** Cockpit parent page: release every holder of one ended bridge instance
    * of this device (design D4(a)). Cookie-gated like every /api/devices
    * route. */

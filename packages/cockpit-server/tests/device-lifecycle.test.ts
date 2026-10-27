@@ -30,6 +30,7 @@ const record = (overrides: Partial<DeviceRecord> = {}): DeviceRecord => ({
 function device(
   sessions?: readonly { sessionId: string; running: boolean; updatedAt: number; blank: boolean; origin?: string; parentSessionId?: string }[],
   overrides: Partial<DeviceRecord> = {},
+  isForeground?: () => boolean,
 ) {
   const handlers = new Map<string, (event: { type: string; [key: string]: unknown }) => void>()
   const tunnel = new TunnelManager({
@@ -51,6 +52,7 @@ function device(
       dispose: () => {},
     }),
     onFacts: () => {},
+    ...(isForeground === undefined ? {} : { isForeground }),
   })
   return {
     lifecycle,
@@ -1643,5 +1645,108 @@ describe('device lifecycle bounded handshake', () => {
     expect(baselines).toBeGreaterThanOrEqual(2)
     await lifecycle.stop()
     await tunnel.disposeAll()
+  })
+})
+
+describe('background-device completion reminders (remind-background-device-completion)', () => {
+  type Ops = {
+    setBridgeStatusSnapshot(items: readonly { sessionId: string; running: boolean; completionUnread: boolean }[]): void
+    setBridgeSelection(id: string | undefined): void
+    clearAllCompleted(): void
+    clearCompleted(id: string): void
+    clearBackgroundCompleted(): void
+  }
+  const ops = (lifecycle: unknown) => lifecycle as Ops
+  const completed = (n: number) => [{ state: 'done', kind: 'completed', count: n }]
+
+  async function started(foreground: { value: boolean }, sessions?: Parameters<typeof device>[0]) {
+    const ctx = device(sessions ?? [{ sessionId: 's1', running: true, updatedAt: 1, blank: false }], {}, () => foreground.value)
+    const task = (ctx.lifecycle as { start(): void }).start() as unknown as Promise<void>
+    for (let i = 0; i < 100 && ctx.lifecycle.current().state !== 'READY'; i++) await new Promise(r => setTimeout(r, 5))
+    return { ...ctx, task }
+  }
+  async function finish(ctx: Awaited<ReturnType<typeof started>>) {
+    await ctx.lifecycle.stop()
+    await ctx.task
+    await ctx.tunnel.disposeAll()
+  }
+
+  it('reminds a completion on a device no page shows, even when the hidden page keeps it selected and the official mark is absent', async () => {
+    const fg = { value: true }
+    const ctx = await started(fg)
+    ops(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: true, completionUnread: false }])
+    ops(ctx.lifecycle).setBridgeSelection('s1')
+    fg.value = false // user switched to another device
+    ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    ops(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: false, completionUnread: false }])
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual(completed(1))
+
+    // Switching back to the device clears it.
+    fg.value = true
+    ops(ctx.lifecycle).clearBackgroundCompleted()
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+    await finish(ctx)
+  })
+
+  it('does not remind while the device is shown', async () => {
+    const fg = { value: true }
+    const ctx = await started(fg)
+    ops(ctx.lifecycle).setBridgeSelection('s1')
+    ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+    await finish(ctx)
+  })
+
+  it('counts a session marked both officially and cockpit-side once', async () => {
+    const fg = { value: false }
+    const ctx = await started(fg)
+    ops(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: true, completionUnread: false }])
+    ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+    ops(ctx.lifecycle).setBridgeStatusSnapshot([{ sessionId: 's1', running: false, completionUnread: true }])
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual(completed(1))
+    await finish(ctx)
+  })
+
+  it('a rerun, a manual clear, a per-session ack, archive and detach each drop the reminder', async () => {
+    const fg = { value: false }
+    const ctx = await started(fg)
+    const finishRun = () => {
+      ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: false })
+      expect(ctx.lifecycle.current().sessionStatuses).toEqual(completed(1))
+    }
+    const rerun = () => ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 's1', running: true })
+
+    finishRun()
+    rerun()
+    expect(ctx.lifecycle.current().sessionStatuses.find(s => s.kind === 'completed')).toBeUndefined()
+
+    finishRun()
+    ops(ctx.lifecycle).clearAllCompleted()
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+
+    rerun(); finishRun()
+    ops(ctx.lifecycle).clearCompleted('s1')
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+
+    rerun(); finishRun()
+    ctx.emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: ['s1'] })
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+    ctx.emit({ type: 'archived-sessions-changed', deviceId: 'd1', archivedSessionIds: [] })
+
+    rerun(); finishRun()
+    ctx.emit({ type: 'session-removed', deviceId: 'd1', sessionId: 's1' })
+    expect(ctx.lifecycle.current().sessionStatuses).toEqual([])
+    await finish(ctx)
+  })
+
+  it('never reminds a subagent', async () => {
+    const fg = { value: false }
+    const ctx = await started(fg, [
+      { sessionId: 's1', running: false, updatedAt: 1, blank: false },
+      { sessionId: 'sub', running: true, updatedAt: 1, blank: false, origin: 'subagent', parentSessionId: 's1' },
+    ])
+    ctx.emit({ type: 'session-status', deviceId: 'd1', sessionId: 'sub', running: false })
+    expect(ctx.lifecycle.current().sessionStatuses.find(s => s.kind === 'completed')).toBeUndefined()
+    await finish(ctx)
   })
 })

@@ -16,6 +16,7 @@ class FakeEventSource {
   static instances: FakeEventSource[] = []
   onmessage: ((event: MessageEvent<string>) => void) | null = null
   onerror: (() => void) | null = null
+  onopen: (() => void) | null = null
   readyState = 0
   constructor(public readonly url: string) {
     FakeEventSource.instances.push(this)
@@ -149,5 +150,37 @@ describe('app live status', () => {
     await waitFor(() => {
       expect(container.querySelector('[data-federation-node="d1"]')).not.toBeNull()
     })
+  })
+})
+
+describe('foreground device report (remind-background-device-completion)', () => {
+  beforeEach(() => {
+    FakeEventSource.instances = []
+    fetchMock.mockClear()
+    window.localStorage.clear()
+    vi.stubGlobal('fetch', fetchMock)
+    vi.stubGlobal('EventSource', FakeEventSource)
+  })
+
+  const foregroundBodies = () => fetchMock.mock.calls
+    .filter(([input]) => String(input).endsWith('/api/foreground'))
+    .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as { pageId: string; deviceId: string | null })
+
+  it('reports the shown device on change and again on every stream (re)open', async () => {
+    const { container } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    act(() => { stream.emit({ device: [device({ deviceId: 'd1', order: 0 }), device({ deviceId: 'd2', displayName: 'VM B', order: 1 })] }) })
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d1'))
+    expect(foregroundBodies()[0]?.pageId).toMatch(/.+/)
+
+    const tab = container.querySelector('[data-federation-node="d2"]') as HTMLElement
+    fireEvent.click(tab)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d2'))
+
+    const before = foregroundBodies().length
+    act(() => { stream.onopen?.() })
+    await waitFor(() => expect(foregroundBodies().length).toBe(before + 1))
+    expect(foregroundBodies().at(-1)?.deviceId).toBe('d2')
   })
 })

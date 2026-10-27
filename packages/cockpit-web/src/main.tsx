@@ -52,7 +52,13 @@ export function App() {
   // Live status: the server pushes every facts change over SSE. Without this
   // subscription the UI would only update on full page refreshes — the
   // CONNECTING → READY transition would be invisible ("刷新了才出来").
-  useEffect(() => subscribeDevices(applyDevices), [applyDevices])
+  // The foreground report is per stream connection on the server, so it is
+  // re-sent on every (re)open as well as whenever the shown device changes.
+  const foregroundRef = useRef<string | null>(null)
+  const reportForeground = useCallback(() => {
+    void api.setForeground(foregroundRef.current).catch(() => { /* next change or reconnect retries */ })
+  }, [])
+  useEffect(() => subscribeDevices(applyDevices, reportForeground), [applyDevices, reportForeground])
 
   // The registry snapshot includes disabled devices for management, but only
   // enabled records are valid workbench navigation targets.
@@ -84,6 +90,13 @@ export function App() {
       setPanel('overview')
     }
   }, [devices.length, enabledDevices, lastUsed])
+
+  // Report the shown device: a completion on any other device is then
+  // reminded even though its hidden page still treats the session as open.
+  useEffect(() => {
+    foregroundRef.current = currentId ?? null
+    reportForeground()
+  }, [currentId, reportForeground])
 
   const select = useCallback((deviceId: string) => {
     setCurrentId(deviceId)

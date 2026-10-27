@@ -46,6 +46,11 @@ export interface DeviceLifecycleOptions {
   readonly sshExecutable?: string
   readonly reconnectDelay?: (attempt: number) => number
   readonly onFacts: (facts: LiveDeviceFacts) => void
+  /** Whether any cockpit page currently shows this device. A completion edge
+   * while it is not shown is reminded cockpit-side, because the hidden device
+   * page still treats the session as open and suppresses its own unread mark.
+   * Defaults to "always shown" (no cockpit-side reminders). */
+  readonly isForeground?: () => boolean
   /** Reports the local forward port a remote tunnel actually bound, so the
    * owner can persist it as this device's stable port. */
   readonly onLocalPort?: (deviceId: string, localPort: number) => void
@@ -130,6 +135,12 @@ export class DeviceLifecycle {
    * not ours to write (operation plane stays zero-coupled), so the clear is
    * remembered until the mark flips or the session runs again (design D3). */
   #officialCleared = new Set<string>()
+  /** Root sessions that completed while no cockpit page showed this device
+   * (remind-background-device-completion). Unioned with the official/fallback
+   * unread set; cleared when the device is shown again, the session reruns,
+   * the user clears, or the session is archived/detached. */
+  #backgroundCompleted = new Set<string>()
+  readonly #isForeground: () => boolean
   /** Per-session pending interactions (official pendingInteractions: session →
    * key → status). A session's display status is a single value — pending
    * outranks running (official sessionStatuses). */
@@ -168,6 +179,7 @@ export class DeviceLifecycle {
     this.#diagnostic = options.record.enabled ? '' : 'device disabled'
     this.#tunnels = options.tunnels
     this.#onFacts = options.onFacts
+    this.#isForeground = options.isForeground ?? (() => true)
     this.#onLocalPort = options.onLocalPort
     this.#reconnectDelay = options.reconnectDelay ?? (attempt => Math.min(30_000, 500 * 2 ** Math.min(attempt, 6)))
     this.#baselineTimeoutMs = options.baselineTimeoutMs ?? 5_000
@@ -333,10 +345,13 @@ export class DeviceLifecycle {
       for (const [id, row] of this.#officialStatus) {
         if (row.completionUnread && !this.#officialCleared.has(id) && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
       }
-      return ids
+    } else {
+      for (const [id, state] of this.#sessions) {
+        if (state.completedGeneration === state.generation && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+      }
     }
-    for (const [id, state] of this.#sessions) {
-      if (state.completedGeneration === state.generation && !this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
+    for (const id of this.#backgroundCompleted) {
+      if (!this.#subagents.has(id) && !this.#archivedSessions.has(id)) ids.add(id)
     }
     return ids
   }
@@ -386,10 +401,14 @@ export class DeviceLifecycle {
       state.running = true
       state.acknowledgedGeneration = undefined
       state.completedGeneration = undefined
+      this.#backgroundCompleted.delete(sessionId)
       return
     }
     if (state.running && !running) {
       state.running = false
+      if (!this.#archivedSessions.has(sessionId) && !this.#subagents.has(sessionId) && !this.#isForeground()) {
+        this.#backgroundCompleted.add(sessionId)
+      }
       const acknowledged = state.acknowledgedGeneration === state.generation
         || this.#bridgeSelection === sessionId
         || this.#archivedSessions.has(sessionId)
@@ -410,6 +429,7 @@ export class DeviceLifecycle {
   #pruneSubagent(sessionId: string): void {
     this.#sessions.delete(sessionId)
     this.#pendingBySession.delete(sessionId)
+    this.#backgroundCompleted.delete(sessionId)
     if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
     this.#archivedSessions.delete(sessionId)
   }
@@ -457,10 +477,19 @@ export class DeviceLifecycle {
     if (selectionChanged || hadCompleted) this.#emitFacts()
   }
 
+  /** The device is being shown by a cockpit page again: every cockpit-side
+   * background reminder has been seen. Official/fallback unread untouched. */
+  clearBackgroundCompleted(): void {
+    if (this.#backgroundCompleted.size === 0) return
+    this.#backgroundCompleted.clear()
+    this.#emitFacts()
+  }
+
   /** Acknowledge exactly one session's current generation without changing the
    * selected snapshot. This is the per-session bridge ack API. */
   clearCompleted(sessionId: string): void {
     if (this.#subagents.has(sessionId)) return
+    if (this.#backgroundCompleted.delete(sessionId)) this.#emitFacts()
     if (this.#officialStatus?.get(sessionId)?.completionUnread === true && !this.#officialCleared.has(sessionId)) {
       this.#officialCleared.add(sessionId)
       this.#emitFacts()
@@ -476,7 +505,8 @@ export class DeviceLifecycle {
   /** Acknowledge every known root-session generation, including generations
    * whose completion edge is still in flight. */
   clearAllCompleted(): void {
-    let changed = false
+    let changed = this.#backgroundCompleted.size > 0
+    this.#backgroundCompleted.clear()
     for (const [sessionId, row] of this.#officialStatus ?? []) {
       if (row.completionUnread && !this.#officialCleared.has(sessionId) && !this.#subagents.has(sessionId)) {
         this.#officialCleared.add(sessionId)
@@ -565,6 +595,7 @@ export class DeviceLifecycle {
     this.#officialStatus = undefined
     this.#officialSubagentRunning.clear()
     this.#officialCleared.clear()
+    this.#backgroundCompleted.clear()
     this.#protocolKind = 'rc2'
     this.#archivedSessions.clear()
     this.#bridgeSelection = undefined
@@ -852,6 +883,7 @@ export class DeviceLifecycle {
             state.completedGeneration = undefined
           }
           this.#pendingBySession.delete(sessionId)
+          this.#backgroundCompleted.delete(sessionId)
           if (this.#bridgeSelection === sessionId) this.#bridgeSelection = undefined
         }
         this.#archivedSessions = nextArchived
@@ -879,6 +911,7 @@ export class DeviceLifecycle {
         if (this.#subagentInfo.has(event.sessionId)) this.#noteSubagent(event.sessionId, { running: false })
         this.#officialSubagentRunning.delete(event.sessionId)
         this.#pendingBySession.delete(event.sessionId)
+        this.#backgroundCompleted.delete(event.sessionId)
         this.#archivedSessions.delete(event.sessionId)
         break
       }
@@ -1008,6 +1041,7 @@ export class DeviceLifecycle {
     for (const [sessionId, state] of this.#sessions) {
       if (state.running) continue
       if (state.completedGeneration === state.generation) continue
+      if (this.#backgroundCompleted.has(sessionId)) continue
       if (this.#bridgeSelection === sessionId) continue
       if (this.#archivedSessions.has(sessionId)) continue
       if (this.#lastBaselineSeen.has(sessionId)) continue

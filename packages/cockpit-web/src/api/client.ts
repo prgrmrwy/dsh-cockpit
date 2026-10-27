@@ -73,6 +73,9 @@ export const api = {
   workbenchLaunch: (deviceId: string) => request<{ url: string; authGeneration: number }>(`/devices/${encodeURIComponent(deviceId)}/workbench-launch`, { method: 'POST' }),
   /** Marks every currently known completion generation for this device read. */
   ackCompleted: (deviceId: string) => request<{ acked: boolean }>(`/devices/${encodeURIComponent(deviceId)}/completed/ack`, { method: 'POST' }),
+  /** Tells the server which device this page shows (`null` = none), so a
+   * completion on a device nobody is looking at is still reminded. */
+  setForeground: (deviceId: string | null) => request<{ ok: true }>('/foreground', { method: 'POST', body: JSON.stringify({ pageId: PAGE_ID, deviceId }) }),
   /** Requests the short-lived capability used by the iframe bridge handshake. */
   bridgeCapability: (deviceId: string) => request<BridgeCapabilityPayload>(`/devices/${encodeURIComponent(deviceId)}/bridge/capability`, { method: 'POST', body: JSON.stringify({ pageId: PAGE_ID }) }),
   /** A bridge page instance in this device's iframe ended (design D4(a)). */

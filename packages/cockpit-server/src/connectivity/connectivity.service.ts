@@ -81,6 +81,9 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#registry = registry
     this.#capabilities = seams.capabilities ?? new BridgeCapabilityService()
     events.onPageExpired(pageId => { void this.#reclaimPage(pageId) })
+    // A device a page starts showing has been "seen": drop the cockpit-side
+    // reminders recorded while nobody was looking at it.
+    events.onForegroundChanged(deviceId => { this.#lifecycles.get(deviceId)?.clearBackgroundCompleted() })
     this.#sshExecutable = resolveSshExecutable()
     this.#fetchImpl = seams.fetch
     this.#createProtocol = seams.createProtocol
@@ -103,6 +106,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     const lifecycle = new DeviceLifecycle({
       record,
       tunnels: this.#tunnels,
+      isForeground: () => this.events.isForeground(record.deviceId),
       ...(this.#createProtocol === undefined ? {} : { createProtocol: this.#createProtocol }),
       // Any lifecycle state change is pushed to the browser immediately; the
       // REST snapshot stays available for manual refresh.
@@ -600,6 +604,13 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   /** Clears all currently-known completion generations on one device. */
+  /** Record which device a cockpit page shows. An unknown device is rejected;
+   * `null` clears the page's foreground. */
+  setForeground(pageId: string, deviceId: string | null): void {
+    if (deviceId !== null && !this.#lifecycles.has(deviceId)) throw new Error(`unknown device ${deviceId}`)
+    this.events.setForeground(pageId, deviceId)
+  }
+
   ackCompleted(deviceId: string): void {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)

@@ -211,3 +211,31 @@ describe('bridge session-opened / hello endpoints', () => {
     expect(bridgeHello).toHaveBeenCalledWith('http://127.0.0.1:4317', 'legacy-plugin', 1, undefined)
   })
 })
+
+describe('foreground endpoint (remind-background-device-completion)', () => {
+  const PAGE = 'page-aaaaaaaaaaaaaaaa'
+
+  it('forwards a valid page/device pair and a null clear', () => {
+    const setForeground = vi.fn()
+    const controller = new DevicesController({ setForeground } as never, {} as never)
+    expect(controller.setForeground({ pageId: PAGE, deviceId: 'device-1' })).toEqual({ ok: true })
+    expect(controller.setForeground({ pageId: PAGE, deviceId: null })).toEqual({ ok: true })
+    expect(setForeground).toHaveBeenNthCalledWith(1, PAGE, 'device-1')
+    expect(setForeground).toHaveBeenNthCalledWith(2, PAGE, null)
+  })
+
+  it('rejects a malformed page id or device id without calling the service', () => {
+    const setForeground = vi.fn()
+    const controller = new DevicesController({ setForeground } as never, {} as never)
+    for (const body of [undefined, {}, { pageId: 'x', deviceId: 'device-1' }, { pageId: PAGE }, { pageId: PAGE, deviceId: '' }, { pageId: PAGE, deviceId: 3 }]) {
+      expect(() => controller.setForeground(body as never)).toThrow(expect.objectContaining({ status: 400 }) as never)
+    }
+    expect(setForeground).not.toHaveBeenCalled()
+  })
+
+  it('surfaces an unknown device as a 404', () => {
+    const setForeground = vi.fn(() => { throw new Error('unknown device device-9') })
+    const controller = new DevicesController({ setForeground } as never, {} as never)
+    expect(() => controller.setForeground({ pageId: PAGE, deviceId: 'device-9' })).toThrow(expect.objectContaining({ status: 404 }) as never)
+  })
+})

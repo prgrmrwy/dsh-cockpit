@@ -12,10 +12,13 @@ import { PAGE_ID, type DevicesPayload } from './client.js'
  * server is unreachable: EventSource retries on its own, frames are ignored
  * until they parse, and a later push resumes the live flow.
  */
-export function subscribeDevices(next: (devices: readonly DeviceStatusFacts[]) => void): () => void {
+export function subscribeDevices(next: (devices: readonly DeviceStatusFacts[]) => void, onOpen?: () => void): () => void {
   // `?page=` counts this connection for the page's forward holders; the
   // server reclaims them 30s after the page's last connection closes.
   const source = new EventSource(`/api/devices/stream?page=${encodeURIComponent(PAGE_ID)}`)
+  // Fires on the first connect and after every automatic reconnect: per-page
+  // server state (the foreground device) is dropped when the stream closes.
+  if (onOpen !== undefined) source.onopen = () => { onOpen() }
   source.onmessage = (event: MessageEvent<string>) => {
     try {
       const payload = JSON.parse(event.data) as DevicesPayload
