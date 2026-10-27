@@ -4,6 +4,7 @@ import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from './api/client.js'
 import { subscribeDevices } from './api/stream.js'
 import { registerServiceWorker } from './pwa.js'
+import { createChimePlayer, detectChimes, installChimeUnlock, type ChimeCounts } from './chime.js'
 import { TopBar } from './components/TopBar.jsx'
 import { Workbench } from './workbench/Workbench.jsx'
 import { DevicePanel, OverviewPanel, SettingsPanel, type PanelName } from './panels/Panels.jsx'
@@ -18,15 +19,27 @@ export function App() {
   const [error, setError] = useState<string | undefined>()
   const autoOpenedOverview = useRef(false)
 
+  // Status chimes: knock when a device gains a pending decision, ding when it
+  // gains an unread completion. Derived purely from the facts below.
+  const chimeBaseline = useRef<ReadonlyMap<string, ChimeCounts> | undefined>(undefined)
+  const chimePlayer = useMemo(() => createChimePlayer(), [])
+  useEffect(() => installChimeUnlock(chimePlayer), [chimePlayer])
+  const applyDevices = useCallback((next: readonly DeviceStatusFacts[]) => {
+    const result = detectChimes(chimeBaseline.current, next)
+    chimeBaseline.current = result.next
+    chimePlayer.play(result)
+    setDevices(next)
+  }, [chimePlayer])
+
   const refresh = useCallback(async () => {
     try {
       const payload = await api.devices()
-      setDevices(payload.device)
+      applyDevices(payload.device)
       setError(undefined)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
-  }, [])
+  }, [applyDevices])
 
   // First visit: ask the server to set the cookie, then load. Subsequent
   // reloads already hold the cookie and skip the round trip.
@@ -39,7 +52,7 @@ export function App() {
   // Live status: the server pushes every facts change over SSE. Without this
   // subscription the UI would only update on full page refreshes — the
   // CONNECTING → READY transition would be invisible ("刷新了才出来").
-  useEffect(() => subscribeDevices(setDevices), [])
+  useEffect(() => subscribeDevices(applyDevices), [applyDevices])
 
   // The registry snapshot includes disabled devices for management, but only
   // enabled records are valid workbench navigation targets.

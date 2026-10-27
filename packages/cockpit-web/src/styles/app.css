@@ -211,6 +211,7 @@ body {
 }
 .panel-header { display: flex; align-items: center; justify-content: space-between; }
 .panel-header h2 { margin: 0; font-size: 18px; }
+.settings-toggle { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .panel-form { max-width: 420px; display: flex; flex-direction: column; gap: 10px; padding: 16px 0; }
 .panel-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--fg-dim); }
 .panel-form input {

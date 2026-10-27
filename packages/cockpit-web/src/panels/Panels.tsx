@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { api } from '../api/client.js'
 import { ForwardList } from './ForwardList.jsx'
+import { isChimeEnabled, setChimeEnabled } from '../chime.js'
 
 export type PanelName = 'devices' | 'overview' | 'settings'
 
@@ -444,6 +445,7 @@ export function OverviewPanel({ devices, onClose, onSelect }: PanelProps & {
 }
 
 export function SettingsPanel({ onClose }: PanelProps) {
+  const [chime, setChime] = useState(isChimeEnabled)
   return (
     <div className="panel" role="dialog" aria-modal="true" data-cockpit-panel="settings">
       <header className="panel-header">
@@ -451,6 +453,14 @@ export function SettingsPanel({ onClose }: PanelProps) {
         <button className="ghost" onClick={onClose}>✕</button>
       </header>
       <p>驾驶舱数据目录：<code>~/.dsh-cockpit/</code></p>
+      <label className="settings-toggle">
+        <input
+          type="checkbox"
+          checked={chime}
+          onChange={event => { setChimeEnabled(event.target.checked); setChime(event.target.checked) }}
+        />
+        提示音（等待决策时敲门，完成未读时叮一声；仅保存在本浏览器）
+      </label>
     </div>
   )
 }
