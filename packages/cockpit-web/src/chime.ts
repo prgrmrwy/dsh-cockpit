@@ -66,16 +66,18 @@ function tone(ctx: AudioContext, opts: { type: OscillatorType; freq: number; end
 /** 「叮~」: bright single note with a soft octave overtone and a short tail. */
 function ding(ctx: AudioContext): void {
   const t = ctx.currentTime
-  tone(ctx, { type: 'sine', freq: 1320, at: t, attack: 0.005, decay: 0.7, peak: 0.25 })
-  tone(ctx, { type: 'sine', freq: 2640, at: t, attack: 0.005, decay: 0.35, peak: 0.06 })
+  tone(ctx, { type: 'sine', freq: 1320, at: t, attack: 0.005, decay: 0.8, peak: 0.6 })
+  tone(ctx, { type: 'sine', freq: 2640, at: t, attack: 0.005, decay: 0.4, peak: 0.15 })
 }
 
 /** 「咚咚」: two short, low knocks with a pitch drop for a woody thud. */
 function knock(ctx: AudioContext): void {
   const t = ctx.currentTime
   for (const offset of [0, 0.16]) {
-    tone(ctx, { type: 'triangle', freq: 180, endFreq: 90, at: t + offset, attack: 0.003, decay: 0.09, peak: 0.5 })
-    tone(ctx, { type: 'sine', freq: 420, endFreq: 200, at: t + offset, attack: 0.002, decay: 0.03, peak: 0.15 })
+    // Laptop speakers roll off below ~200Hz, so the body sits at 320→160Hz and
+    // a brighter click carries the attack.
+    tone(ctx, { type: 'triangle', freq: 320, endFreq: 160, at: t + offset, attack: 0.003, decay: 0.11, peak: 0.8 })
+    tone(ctx, { type: 'sine', freq: 900, endFreq: 400, at: t + offset, attack: 0.002, decay: 0.04, peak: 0.35 })
   }
 }
 
