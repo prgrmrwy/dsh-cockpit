@@ -63,11 +63,18 @@ function tone(ctx: AudioContext, opts: { type: OscillatorType; freq: number; end
   osc.stop(opts.at + opts.attack + opts.decay + 0.05)
 }
 
-/** 「叮~」: bright single note with a soft octave overtone and a short tail. */
+/** 「叮~」: SMS-style ascending three-note chime. */
 function ding(ctx: AudioContext): void {
+  // Tri-tone style (synthesized, not Apple's recording): three ascending notes
+  // of a major triad, each a bell-like sine with a soft octave overtone and a
+  // long overlapping tail, ~1.2s overall.
   const t = ctx.currentTime
-  tone(ctx, { type: 'sine', freq: 1320, at: t, attack: 0.005, decay: 0.8, peak: 0.6 })
-  tone(ctx, { type: 'sine', freq: 2640, at: t, attack: 0.005, decay: 0.4, peak: 0.15 })
+  const notes = [1046.5, 1318.5, 1568] // C6 E6 G6
+  notes.forEach((freq, index) => {
+    const at = t + index * 0.13
+    tone(ctx, { type: 'sine', freq, at, attack: 0.006, decay: 0.9, peak: 0.45 })
+    tone(ctx, { type: 'sine', freq: freq * 2, at, attack: 0.004, decay: 0.35, peak: 0.08 })
+  })
 }
 
 /** 「咚咚」: two short, low knocks with a pitch drop for a woody thud. */
