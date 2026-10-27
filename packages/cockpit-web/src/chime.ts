@@ -77,10 +77,10 @@ function ding(ctx: AudioContext): void {
   })
 }
 
-/** 「咚咚」: two short, low knocks with a pitch drop for a woody thud. */
+/** 「咚咚咚」: three short knocks with a pitch drop for a woody thud. */
 function knock(ctx: AudioContext): void {
   const t = ctx.currentTime
-  for (const offset of [0, 0.16]) {
+  for (const offset of [0, 0.18, 0.36]) {
     // Laptop speakers roll off below ~200Hz, so the body sits at 320→160Hz and
     // a brighter click carries the attack.
     tone(ctx, { type: 'triangle', freq: 320, endFreq: 160, at: t + offset, attack: 0.003, decay: 0.11, peak: 0.8 })
