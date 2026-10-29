@@ -43,6 +43,29 @@ describe('app live status', () => {
     vi.stubGlobal('EventSource', FakeEventSource)
   })
 
+  it('keeps disabled devices in settings, removes their header tab, and re-enables without deleting', async () => {
+    window.localStorage.setItem('cockpit:last-device', 'd1')
+    const { container, getByRole, getByText } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    const vm = device({ remoteDshPort: 3080, dshAuthState: 'not-configured', dshAuthConfigured: false, dshAuthAutoDiscovery: false, dshAuthGeneration: 0 })
+    act(() => stream.emit({ device: [vm] }))
+    fireEvent.click(getByRole('button', { name: '设备管理' }))
+    fireEvent.click(getByRole('button', { name: 'VM A 更多操作' }))
+    fireEvent.click(getByRole('menuitem', { name: '禁用VM A' }))
+    await waitFor(() => expect(fetchMock.mock.calls.some(call => String(call[0]).endsWith('/api/devices/d1'))).toBe(true))
+    act(() => stream.emit({ device: [{ ...vm, enabled: false, state: 'DISABLED', endpoint: undefined }] }))
+    expect(container.querySelector('[data-federation-node="d1"]')).toBeNull()
+    expect(getByText('已禁用', { selector: '.console-disabled-tag' })).toBeTruthy()
+    await waitFor(() => expect(getByRole('button', { name: 'VM A 更多操作' }).hasAttribute('disabled')).toBe(false))
+    fireEvent.click(getByRole('button', { name: 'VM A 更多操作' }))
+    fireEvent.click(getByRole('menuitem', { name: '启用VM A' }))
+    await waitFor(() => expect(getByRole('button', { name: 'VM A 更多操作' }).hasAttribute('disabled')).toBe(false))
+    act(() => stream.emit({ device: [vm] }))
+    await waitFor(() => expect(container.querySelector('[data-federation-node="d1"]')).not.toBeNull())
+    expect(getByRole('button', { name: 'VM A，已连接' })).toBeTruthy()
+  })
+
   it('updates the UI from SSE pushes without a manual refresh', async () => {
     const { container } = render(<App />)
     // Boot (bootstrap + baseline list) must settle before we push, so the

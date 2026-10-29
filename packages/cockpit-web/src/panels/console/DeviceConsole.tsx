@@ -20,6 +20,7 @@ export function DevicePanel({ devices, onClose, onChanged, initialSelection, con
   const [view, setView] = useState('list')
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
+  const [actionError, setActionError] = useState<{ deviceId: string; message: string }>()
   const pendingId = useRef<string>()
   const previousIndex = useRef(0)
   const dialog = useRef<HTMLDivElement>(null)
@@ -85,10 +86,20 @@ export function DevicePanel({ devices, onClose, onChanged, initialSelection, con
     setBusy(true); setError(undefined)
     try { await run(); onChanged() } catch (cause) { setError(errorMessage(cause)) } finally { setBusy(false) }
   }
-  const toggle = () => {
-    if (!device || (dirty && !confirmDiscard())) return
-    const next = { ...draftFor(device), enabled: !device.enabled }
-    void action(async () => { await api.updateDevice(device.deviceId, { enabled: !device.enabled }); setForm(next); setBaseline(next) })
+  const sidebarAction = async (target: DeviceStatusFacts, update: { order?: number; enabled?: boolean }) => {
+    if (busy) return
+    const selected = device?.deviceId === target.deviceId
+    if (selected && update.enabled !== undefined && dirty && !confirmDiscard()) return
+    setBusy(true); setActionError(undefined)
+    try {
+      await api.updateDevice(target.deviceId, update)
+      if (selected && update.enabled !== undefined) {
+        const next = { ...draftFor(target), enabled: update.enabled }
+        setForm(next); setBaseline(next)
+      }
+      onChanged()
+    } catch (cause) { setActionError({ deviceId: target.deviceId, message: errorMessage(cause) }) }
+    finally { setBusy(false) }
   }
   const remove = () => {
     if (!device || !confirmDelete(device)) return
@@ -108,12 +119,13 @@ export function DevicePanel({ devices, onClose, onChanged, initialSelection, con
       else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first?.focus() }
     }
   }}>
-    <ConsoleSidebar devices={ordered} selection={selection} onSelect={navigate} onClose={close} busy={busy} />
+    <ConsoleSidebar devices={ordered} selection={selection} onSelect={navigate} onClose={close} busy={busy} actionError={actionError}
+      onMove={(target, direction) => void sidebarAction(target, { order: ordered.findIndex(d => d.deviceId === target.deviceId) + direction })}
+      onToggle={target => void sidebarAction(target, { enabled: !target.enabled })} />
     <div className="console-detail"><div className="console-toolbar"><button className="ghost console-back" onClick={() => setView('list')}>返回</button><button className="ghost console-close" aria-label="关闭设备管理" disabled={busy} onClick={close}>✕</button></div>
       {selection.kind === 'general' ? <GeneralSettings /> : selection.kind === 'add' ? <AddDeviceForm form={form} onChange={setForm} onSave={event => void save(event)} busy={busy} error={error} /> : device ? <DeviceDetail device={device} form={form} onChange={setForm} busy={busy} dirty={dirty} error={error}
         onSave={event => void save(event)} onReset={() => { const next = draftFor(device); setForm(next); setBaseline(next); setError(undefined) }}
-        first={ordered.indexOf(device) === 0} last={ordered.indexOf(device) === ordered.length - 1}
-        onMove={direction => void action(() => api.updateDevice(device.deviceId, { order: ordered.indexOf(device) + direction }))} onToggle={toggle} onDelete={remove}
+        onDelete={remove}
         {...(confirmDeleteForward ? { confirmDeleteForward } : {})} /> : <div className="console-content" role="status">正在同步设备…{error && <p role="alert">{error}</p>}</div>}
     </div>
   </div>
