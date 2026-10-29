@@ -1,381 +1,197 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { DevicePanel } from '../src/panels/Panels.jsx'
+import { DevicePanel } from '../src/panels/Panels.js'
+import { connectionRoute } from '../src/panels/console/ConnectionRoute.js'
 
-const apiMock = vi.hoisted(() => ({
-  addDevice: vi.fn(),
-  updateDevice: vi.fn(),
-  removeDevice: vi.fn(),
-}))
-
+const apiMock = vi.hoisted(() => ({ addDevice: vi.fn(), updateDevice: vi.fn(), removeDevice: vi.fn() }))
 vi.mock('../src/api/client.js', () => ({ api: apiMock }))
-
 afterEach(cleanup)
-
 const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts => ({
-  deviceId: 'remote-1',
-  displayName: '开发虚拟机',
-  kind: 'remote',
-  sshAlias: 'dev-vm',
-  remoteDshPort: 3080,
-  enabled: true,
-  order: 0,
-  state: 'READY',
-  runningSessionCount: 0,
-  pendingInteractionCount: 0, pendingInteractionObservability: 'available',
-  sessionStatuses: [],
-  compatibility: 'SUPPORTED',
-  lastUpdatedAt: 0,
-  dshAuthConfigured: false,
-  dshAuthState: 'not-configured',
-  dshAuthAutoDiscovery: false,
-  dshAuthGeneration: 0,
+  deviceId: 'vm', displayName: '开发虚拟机', kind: 'remote', sshAlias: 'dev-vm', remoteDshPort: 3080,
+  enabled: true, order: 0, state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0,
+  pendingInteractionObservability: 'available', sessionStatuses: [], compatibility: 'SUPPORTED',
+  lastUpdatedAt: 0, dshAuthConfigured: false, dshAuthState: 'not-configured', dshAuthAutoDiscovery: false, dshAuthGeneration: 0,
   ...overrides,
-} as DeviceStatusFacts)
-
-function renderPanel(
-  devices: readonly DeviceStatusFacts[] = [],
-  onChanged = vi.fn(),
-  confirmDelete?: (device: DeviceStatusFacts) => boolean,
-) {
-  return {
-    onChanged,
-    ...render(
-      <DevicePanel
-        devices={devices}
-        onClose={vi.fn()}
-        onChanged={onChanged}
-        {...(confirmDelete === undefined ? {} : { confirmDelete })}
-      />,
-    ),
-  }
+})
+const other = device({ deviceId: 'local', displayName: '本机', kind: 'local', order: 1 })
+function panel(devices: readonly DeviceStatusFacts[] = [device()], props: Partial<Parameters<typeof DevicePanel>[0]> = {}) {
+  const onChanged = vi.fn(), onClose = vi.fn()
+  return { onChanged, onClose, ...render(<DevicePanel devices={devices} onChanged={onChanged} onClose={onClose} {...props} />) }
 }
+const input = (label: string) => screen.getByLabelText(label) as HTMLInputElement
+const change = (label: string, value: string) => fireEvent.change(input(label), { target: { value } })
+const select = (name: string) => fireEvent.click(within(screen.getByRole('navigation')).getByRole('button', { name }))
+const save = () => fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
+beforeEach(() => {
+  vi.clearAllMocks(); window.localStorage.clear()
+  apiMock.addDevice.mockResolvedValue({ deviceId: 'new' })
+  apiMock.updateDevice.mockResolvedValue({ deviceId: 'vm' })
+  apiMock.removeDevice.mockResolvedValue({ removed: true })
+})
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (reason?: unknown) => void
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
+describe('device console', () => {
+  it('defaults to the current workbench device and presents one detail at a time', () => {
+    panel([device(), other], { initialSelection: { kind: 'device', deviceId: 'local' } })
+    expect(input('显示名').value).toBe('本机')
+    expect(screen.getByRole('button', { name: '本机，已连接' }).getAttribute('aria-current')).toBe('page')
+    select('开发虚拟机，已连接')
+    expect(input('显示名').value).toBe('开发虚拟机')
+    expect(screen.getByText('SSH dev-vm')).toBeTruthy()
+    expect(screen.getByText('vm')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '编辑开发虚拟机' })).toBeNull()
+    expect(screen.getByRole('button', { name: '保存修改' }).hasAttribute('disabled')).toBe(true)
   })
-  return { promise, resolve, reject }
-}
-
-describe('DevicePanel', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    apiMock.addDevice.mockResolvedValue({ deviceId: 'new-device' })
-    apiMock.updateDevice.mockResolvedValue({ deviceId: 'remote-1' })
-    apiMock.removeDevice.mockResolvedValue({ removed: true, requiresConfirmation: false })
-  })
-
-  it('shows a device summary and human-readable device facts', () => {
-    renderPanel([
-      device(),
-      device({
-        deviceId: 'local-1', displayName: '本机 DSH', kind: 'local', sshAlias: undefined,
-        remoteDshPort: 4090, order: 1, state: 'CONNECTING', diagnostic: '正在探测服务',
-      }),
-      device({
-        deviceId: 'broken-1', displayName: '测试机', order: 2, enabled: false,
-        state: 'DISABLED', diagnostic: 'device disabled', sshAlias: 'broken-vm',
-      }),
-    ])
-
-    expect(screen.getByText('设备总数')).toBeTruthy()
-    expect(screen.getByText('3')).toBeTruthy()
-    expect(screen.getByText('1', { selector: '[data-summary="ready"] strong' })).toBeTruthy()
-    expect(screen.getByText('1', { selector: '[data-summary="attention"] strong' })).toBeTruthy()
-    expect(screen.getByText('1', { selector: '[data-summary="disabled"] strong' })).toBeTruthy()
-
-    const remoteRow = screen.getByRole('listitem', { name: /开发虚拟机/ })
-    expect(within(remoteRow).getByText('SSH 远端')).toBeTruthy()
-    expect(within(remoteRow).getByText('已连接')).toBeTruthy()
-    expect(within(remoteRow).getByText('dev-vm:3080')).toBeTruthy()
-    expect(within(remoteRow).getByText('remote-1')).toBeTruthy()
-
-    const localRow = screen.getByRole('listitem', { name: /本机 DSH/ })
-    expect(within(localRow).getByText('本机')).toBeTruthy()
-    expect(within(localRow).getByText('正在连接')).toBeTruthy()
-    expect(within(localRow).getByText('127.0.0.1:4090')).toBeTruthy()
-    expect(within(localRow).getByText('正在探测服务')).toBeTruthy()
-
-    const brokenRow = screen.getByRole('listitem', { name: /测试机/ })
-    expect(within(brokenRow).getByText('已禁用')).toBeTruthy()
-    expect(within(brokenRow).getByText('device disabled')).toBeTruthy()
-  })
-
-  it('shows an empty state that points to the add form', () => {
-    renderPanel()
-
+  it('shows summary, disabled devices, diagnostics and the empty add page', () => {
+    const { unmount } = panel([device(), { ...other, enabled: false, state: 'DISABLED', diagnostic: 'device disabled' }])
+    expect(screen.getByLabelText('设备状态摘要').textContent).toContain('2 台设备，1 台已连接，1 台已禁用')
+    select('本机，已禁用')
+    expect(screen.getByText('device disabled')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '启用本机' })).toBeTruthy()
+    unmount(); panel([])
     expect(screen.getByText('还没有设备')).toBeTruthy()
-    const link = screen.getByRole('link', { name: '添加第一台设备' })
-    expect(link.getAttribute('href')).toBe('#device-form')
     expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()
+    expect(input('显示名').value).toBe('')
   })
-
-  it('submits the optional startup URL write-only and never pre-fills it on edit', async () => {
-    renderPanel([device()])
-    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: 'Typert' } })
-    fireEvent.change(screen.getByLabelText('SSH 别名'), { target: { value: 'typert-vm' } })
-    fireEvent.change(screen.getByLabelText('DSH 端口'), { target: { value: '3081' } })
-    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: 'http://127.0.0.1:3081/?token=opaque-token-value' } })
-    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
-    await waitFor(() => expect(apiMock.addDevice).toHaveBeenCalledWith(expect.objectContaining({ dshLaunchUrl: 'http://127.0.0.1:3081/?token=opaque-token-value' })))
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-    expect((screen.getByLabelText('DSH 启动 URL') as HTMLInputElement).value).toBe('')
+  it('keeps drafts across status pushes and guards navigation and closing', () => {
+    const confirmDiscard = vi.fn(() => false), onClose = vi.fn()
+    const { rerender } = panel([device(), other], { confirmDiscard, onClose })
+    change('显示名', '未保存')
+    rerender(<DevicePanel devices={[device({ state: 'DEGRADED', diagnostic: 'stream offline' }), other]} confirmDiscard={confirmDiscard} onClose={onClose} onChanged={vi.fn()} />)
+    expect(input('显示名').value).toBe('未保存')
+    expect(screen.getByText('stream offline')).toBeTruthy()
+    select('本机，已连接'); expect(input('显示名').value).toBe('未保存')
+    fireEvent.click(screen.getByRole('button', { name: '关闭设备管理' })); expect(onClose).not.toHaveBeenCalled()
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' }); expect(onClose).not.toHaveBeenCalled()
+    confirmDiscard.mockReturnValue(true); select('本机，已连接')
+    expect(input('显示名').value).toBe('本机')
   })
-
-  it('shows text authentication states in cards and the edit form without exposing secrets', () => {
-    renderPanel([
-      device(),
-      device({
-        deviceId: 'ready-auth', displayName: '已认证设备', order: 1,
-        dshAuthConfigured: true, dshAuthState: 'ready', dshAuthGeneration: 2,
-      }),
-      device({
-        deviceId: 'stale-auth', displayName: '待恢复设备', order: 2,
-        dshAuthConfigured: true, dshAuthState: 'recovery-required', dshAuthAutoDiscovery: true,
-      }),
-    ])
-
-    expect(within(screen.getByRole('listitem', { name: /开发虚拟机/ })).getByText('DSH 认证：未配置')).toBeTruthy()
-    expect(within(screen.getByRole('listitem', { name: /已认证设备/ })).getByText('DSH 认证：已配置')).toBeTruthy()
-    const stale = screen.getByRole('listitem', { name: /待恢复设备/ })
-    expect(within(stale).getByText('DSH 认证：需更新')).toBeTruthy()
-    expect(within(stale).getByText('自动恢复：已开启')).toBeTruthy()
-    expect(within(stale).getByText(/粘贴当前 dsh web 启动 URL/)).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑已认证设备' }))
-    expect(screen.getByRole('status', { name: '当前 DSH 认证状态：已配置' })).toBeTruthy()
-    expect((screen.getByLabelText('DSH 启动 URL') as HTMLInputElement).value).toBe('')
-    expect(screen.getByText(/编辑时留空不会修改现有认证材料/)).toBeTruthy()
+  it('retains failed edits, saves in place and clears secret inputs after saving', async () => {
+    const { onChanged } = panel()
+    change('显示名', '改名'); change('SSH 别名', 'bad')
+    apiMock.updateDevice.mockRejectedValueOnce(new Error('免密验证失败')); save()
+    expect((await screen.findByRole('alert')).textContent).toContain('免密验证失败')
+    expect(input('SSH 别名').value).toBe('bad')
+    change('DSH 启动 URL', 'http://127.0.0.1:3080/?token=test-only')
+    save(); await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1))
+    expect(apiMock.updateDevice).toHaveBeenLastCalledWith('vm', expect.objectContaining({ displayName: '改名', dshLaunchUrl: 'http://127.0.0.1:3080/?token=test-only' }))
+    expect(input('DSH 启动 URL').value).toBe('')
+    expect(input('显示名').value).toBe('改名')
+    expect(screen.getByRole('button', { name: '保存修改' }).hasAttribute('disabled')).toBe(true)
   })
-
-  it('keeps blank auth input unchanged, persists opt-in, and clears explicitly', async () => {
-    const onChanged = vi.fn()
-    renderPanel([device({ dshAuthConfigured: true, dshAuthState: 'ready' })], onChanged)
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-
-    const autoDiscovery = screen.getByLabelText('启用 ohmydsh 自动认证恢复') as HTMLInputElement
-    expect(autoDiscovery.checked).toBe(false)
-    fireEvent.click(autoDiscovery)
-    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: '仅改名称' } })
-    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: '   ' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('remote-1', {
-      displayName: '仅改名称', sshAlias: 'dev-vm', remoteDshPort: 3080, enabled: true,
-      dshAuthAutoDiscovery: true,
-    }))
+  it('shows auth states, opt-in scope and preserves blank auth material', async () => {
+    panel([device({ dshAuthState: 'recovery-required', dshAuthConfigured: true }), other])
+    expect(screen.getByRole('status', { name: '当前 DSH 认证状态：需更新' })).toBeTruthy()
+    expect(input('DSH 启动 URL').value).toBe('')
+    expect(screen.getByText(/通过现有 BatchMode SSH 身份读取远端.*有限尾部/)).toBeTruthy()
+    fireEvent.click(input('启用 ohmydsh 自动认证恢复')); save()
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('vm', expect.objectContaining({ dshAuthAutoDiscovery: true })))
     expect(apiMock.updateDevice.mock.calls[0]?.[1]).not.toHaveProperty('dshLaunchUrl')
     expect(apiMock.updateDevice.mock.calls[0]?.[1]).not.toHaveProperty('clearDshLaunchToken')
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-    fireEvent.click(screen.getByLabelText('清除 DSH 认证材料'))
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenLastCalledWith('remote-1', expect.objectContaining({
-      clearDshLaunchToken: true,
-      dshAuthAutoDiscovery: false,
-    })))
-    expect(onChanged).toHaveBeenCalledTimes(2)
+    await waitFor(() => expect(screen.getByText('所有修改已保存')).toBeTruthy())
+    fireEvent.click(input('清除 DSH 认证材料')); save()
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenLastCalledWith('vm', expect.objectContaining({ clearDshLaunchToken: true })))
   })
-
-  it('rejects conflicting clear and replacement auth inputs before calling the API', () => {
-    renderPanel([device({ dshAuthConfigured: true, dshAuthState: 'ready' })])
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-    fireEvent.click(screen.getByLabelText('清除 DSH 认证材料'))
-    fireEvent.change(screen.getByLabelText('DSH 启动 URL'), { target: { value: 'http://127.0.0.1:3080/?token=new-secret' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-
-    expect(screen.getByRole('alert').textContent).toContain('不能同时')
+  it('rejects conflicting clear and replacement before any request', () => {
+    panel(); fireEvent.click(input('清除 DSH 认证材料')); change('DSH 启动 URL', 'http://127.0.0.1:3080/?token=test')
+    save(); expect(screen.getByRole('alert').textContent).toContain('不能同时'); expect(apiMock.updateDevice).not.toHaveBeenCalled()
+  })
+  it('resets modifications to current values without entering add mode', () => {
+    panel(); change('显示名', '未保存'); fireEvent.click(screen.getByRole('button', { name: '放弃修改' }))
+    expect(input('显示名').value).toBe('开发虚拟机')
+  })
+  it('adds remote and local devices, retains failures and selects the saved device', async () => {
+    const { rerender, onChanged } = panel([])
+    change('显示名', '新设备'); change('SSH 别名', 'new-vm')
+    apiMock.addDevice.mockRejectedValueOnce(new Error('SSH 验证失败'))
+    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('SSH 验证失败')
+    expect(input('显示名').value).toBe('新设备')
+    fireEvent.change(screen.getByLabelText('类型'), { target: { value: 'local' } })
+    expect(screen.queryByLabelText('SSH 别名')).toBeNull()
+    expect(screen.getByText(/读取本机标准.*有限尾部/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1))
+    expect(apiMock.addDevice).toHaveBeenLastCalledWith({ displayName: '新设备', kind: 'local', remoteDshPort: 3080, enabled: true, dshAuthAutoDiscovery: false })
+    rerender(<DevicePanel devices={[device({ deviceId: 'new', displayName: '新设备', kind: 'local' })]} onChanged={onChanged} onClose={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '新设备，已连接' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('heading', { name: '新设备' })).toBeTruthy()
+  })
+  it('locks fields and navigation while a save is in flight', async () => {
+    let resolve!: (result: { deviceId: string }) => void
+    apiMock.addDevice.mockReturnValueOnce(new Promise(r => { resolve = r }))
+    panel([]); change('显示名', '新设备'); change('SSH 别名', 'new-vm')
+    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
+    expect(screen.getByRole('button', { name: '验证中…' }).hasAttribute('disabled')).toBe(true)
+    expect(input('显示名').closest('fieldset')?.disabled).toBe(true)
+    expect(screen.getByRole('button', { name: '通用' }).hasAttribute('disabled')).toBe(true)
+    resolve({ deviceId: 'new' }); await waitFor(() => expect(screen.queryByText('验证中…')).toBeNull())
+  })
+  it('moves one position, disables boundaries and toggles enabled state', async () => {
+    panel([device(), other])
+    expect(screen.getByRole('button', { name: '上移开发虚拟机' }).hasAttribute('disabled')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '下移开发虚拟机' }))
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('vm', { order: 1 }))
+    await waitFor(() => expect(screen.getByRole('button', { name: '禁用开发虚拟机' }).hasAttribute('disabled')).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: '禁用开发虚拟机' }))
+    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('vm', { enabled: false }))
+  })
+  it('sends zero requests when delete is cancelled, then selects an adjacent device on success', async () => {
+    const confirmDelete = vi.fn(() => false)
+    panel([device(), other], { confirmDelete })
+    fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
+    expect(apiMock.removeDevice).not.toHaveBeenCalled()
+    confirmDelete.mockReturnValue(true); fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
+    await waitFor(() => expect(apiMock.removeDevice).toHaveBeenCalledWith({ deviceId: 'vm', confirmed: true }))
+    await waitFor(() => expect(input('显示名').value).toBe('本机'))
+  })
+  it('uses browser delete confirmation and displays delete failures in place', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    apiMock.removeDevice.mockRejectedValueOnce(new Error('无法删除'))
+    panel(); fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
+    expect((await screen.findByRole('alert')).textContent).toContain('无法删除')
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('开发虚拟机')); confirm.mockRestore()
+  })
+  it('falls back to the next or previous device when a selected record disappears', () => {
+    const props = { onChanged: vi.fn(), onClose: vi.fn() }
+    const { rerender } = render(<DevicePanel devices={[device(), other]} {...props} />)
+    rerender(<DevicePanel devices={[other]} {...props} />)
+    expect(input('显示名').value).toBe('本机')
+    rerender(<DevicePanel devices={[]} {...props} />)
+    expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()
+  })
+  it('shows general settings and persists chime only in this browser', () => {
+    panel([], { initialSelection: { kind: 'general' } })
+    expect(screen.getByText('~/.dsh-cockpit/')).toBeTruthy()
+    fireEvent.click(input('提示音'))
+    expect(window.localStorage.getItem('cockpit:chime')).toBe('off')
     expect(apiMock.updateDevice).not.toHaveBeenCalled()
   })
-
-  it('explains the bounded local and SSH log scope on keyboard-accessible native controls', () => {
-    renderPanel()
-    const remoteToggle = screen.getByLabelText('启用 ohmydsh 自动认证恢复') as HTMLInputElement
-    expect(remoteToggle.type).toBe('checkbox')
-    expect(remoteToggle.checked).toBe(false)
-    remoteToggle.focus()
-    expect(document.activeElement).toBe(remoteToggle)
-    expect(screen.getByText(/通过现有 BatchMode SSH 身份读取远端.*\$DSH_HOME\/dsh\.log.*有限尾部/)).toBeTruthy()
-
-    fireEvent.click(within(screen.getByRole('radiogroup', { name: '类型' })).getByRole('radio', { name: '本机' }))
-    expect(screen.getByText(/读取本机标准 \$DSH_HOME\/dsh\.log 的有限尾部/)).toBeTruthy()
+  it('blocks background keyboard focus and restores it after closing', () => {
+    const { unmount } = render(<div><button data-testid="background">背景</button><DevicePanel devices={[device()]} onChanged={vi.fn()} onClose={vi.fn()} /></div>)
+    const background = screen.getByTestId('background')
+    expect(background.inert).toBe(true)
+    unmount(); expect(background.inert).toBe(false)
   })
-
-  it('switches add fields, retains a failed draft, and exposes the busy state', async () => {
-    const pending = deferred<{ deviceId: string }>()
-    apiMock.addDevice.mockReturnValueOnce(pending.promise)
-    const { onChanged } = renderPanel()
-
-    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: '新设备' } })
-    fireEvent.change(screen.getByLabelText('SSH 别名'), { target: { value: 'new-vm' } })
-    fireEvent.change(screen.getByLabelText('DSH 端口'), { target: { value: '4090' } })
-    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
-
-    expect(apiMock.addDevice).toHaveBeenCalledWith({
-      displayName: '新设备', kind: 'remote', sshAlias: 'new-vm', remoteDshPort: 4090, enabled: true,
-      dshAuthAutoDiscovery: false,
-    })
-    expect(screen.getByRole('button', { name: '验证中…' }).hasAttribute('disabled')).toBe(true)
-    const formFields = (screen.getByLabelText('显示名') as HTMLInputElement).closest('fieldset')
-    expect(formFields?.classList.contains('device-form-fields')).toBe(true)
-    expect(formFields?.disabled).toBe(true)
-
-    pending.reject(new Error('SSH 验证失败'))
-    expect((await screen.findByRole('alert')).textContent).toContain('SSH 验证失败')
-    expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('新设备')
-    expect((screen.getByLabelText('SSH 别名') as HTMLInputElement).value).toBe('new-vm')
-    expect((screen.getByLabelText('DSH 端口') as HTMLInputElement).value).toBe('4090')
-    expect(onChanged).not.toHaveBeenCalled()
-
-    const typeGroup = screen.getByRole('radiogroup', { name: '类型' })
-    fireEvent.click(within(typeGroup).getByRole('radio', { name: '本机' }))
-    expect(within(typeGroup).getByRole('radio', { name: '本机' }).getAttribute('aria-checked')).toBe('true')
-    expect(screen.queryByLabelText('SSH 别名')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '验证并添加' }))
-    await waitFor(() => expect(apiMock.addDevice).toHaveBeenLastCalledWith({
-      displayName: '新设备', kind: 'local', remoteDshPort: 4090, enabled: true,
-      dshAuthAutoDiscovery: false,
-    }))
-    expect(onChanged).toHaveBeenCalledTimes(1)
-    expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('')
+  it('closes only after confirming unsaved changes and guards add drafts too', () => {
+    const confirmDiscard = vi.fn(() => true)
+    const { onClose } = panel([], { confirmDiscard })
+    change('显示名', '草稿'); fireEvent.click(screen.getByRole('button', { name: '关闭设备管理' }))
+    expect(confirmDiscard).toHaveBeenCalledTimes(1); expect(onClose).toHaveBeenCalledTimes(1)
   })
-
-  it('prefills the shared edit form, retains failures, saves, and cancels back to add mode', async () => {
-    const onChanged = vi.fn()
-    renderPanel([device({ enabled: false })], onChanged)
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-    expect(screen.getByRole('heading', { name: '编辑设备' })).toBeTruthy()
-    expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('开发虚拟机')
-    const typeGroup = screen.getByRole('radiogroup', { name: '类型' })
-    const remoteType = within(typeGroup).getByRole('radio', { name: 'SSH 远端' }) as HTMLButtonElement
-    const localType = within(typeGroup).getByRole('radio', { name: '本机' }) as HTMLButtonElement
-    expect(remoteType.getAttribute('aria-checked')).toBe('true')
-    expect(remoteType.disabled).toBe(true)
-    expect(localType.disabled).toBe(true)
-    expect((screen.getByLabelText('SSH 别名') as HTMLInputElement).value).toBe('dev-vm')
-    expect((screen.getByLabelText('DSH 端口') as HTMLInputElement).value).toBe('3080')
-    expect((screen.getByLabelText('启用设备') as HTMLInputElement).checked).toBe(false)
-
-    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: '改名后的设备' } })
-    fireEvent.change(screen.getByLabelText('SSH 别名'), { target: { value: 'bad-vm' } })
-    apiMock.updateDevice.mockRejectedValueOnce(new Error('免密验证失败'))
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-
-    expect((await screen.findByRole('alert')).textContent).toContain('免密验证失败')
-    expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('改名后的设备')
-    expect((screen.getByLabelText('SSH 别名') as HTMLInputElement).value).toBe('bad-vm')
-
-    fireEvent.click(screen.getByRole('button', { name: '保存修改' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenLastCalledWith('remote-1', {
-      displayName: '改名后的设备', sshAlias: 'bad-vm', remoteDshPort: 3080, enabled: false,
-      dshAuthAutoDiscovery: false,
-    }))
-    expect(onChanged).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()
-
-    fireEvent.click(screen.getByRole('button', { name: '编辑开发虚拟机' }))
-    fireEvent.change(screen.getByLabelText('显示名'), { target: { value: '未保存草稿' } })
-    fireEvent.click(screen.getByRole('button', { name: '取消编辑' }))
-    expect(screen.getByRole('heading', { name: '添加设备' })).toBeTruthy()
-    expect((screen.getByLabelText('显示名') as HTMLInputElement).value).toBe('')
+  it('switches the narrow navigation view and returns to the list', () => {
+    panel(); select('开发虚拟机，已连接')
+    expect(screen.getByRole('dialog').getAttribute('data-view')).toBe('detail')
+    fireEvent.click(screen.getByRole('button', { name: '返回' }))
+    expect(screen.getByRole('dialog').getAttribute('data-view')).toBe('list')
   })
-
-  it('names the device action group for assistive tech', () => {
-    renderPanel([device()])
-    // The group label is only an accessible name once the container has a role.
-    const actions = screen.getByRole('group', { name: '开发虚拟机 操作' })
-    expect(within(actions).getByRole('button', { name: '编辑开发虚拟机' })).toBeTruthy()
+})
+describe('connection path', () => {
+  it.each([['SSH_UNREACHABLE', 1], ['TUNNEL_ERROR', 2], ['DSH_UNAVAILABLE', 3], ['NON_DSH_SERVICE', 3], ['INCOMPATIBLE', 3], ['READY', -1], ['CONNECTING', -1], ['DISABLED', -1], ['unknown', -1]] as const)('maps %s to the correct break', (state, failed) => {
+    expect(connectionRoute(device({ state: state as DeviceStatusFacts['state'] })).failed).toBe(failed)
   })
-
-  it('enables and disables devices with accessible device-specific controls', async () => {
-    const onChanged = vi.fn()
-    renderPanel([device(), device({ deviceId: 'off', displayName: '已停用', enabled: false, order: 1 })], onChanged)
-
-    fireEvent.click(screen.getByRole('button', { name: '禁用开发虚拟机' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('remote-1', { enabled: false }))
-    fireEvent.click(screen.getByRole('button', { name: '启用已停用' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('off', { enabled: true }))
-    expect(onChanged).toHaveBeenCalledTimes(2)
-  })
-
-  it('sends no delete request at all when the user declines the confirmation', async () => {
-    const confirmDelete = vi.fn().mockReturnValue(false)
-    const onChanged = vi.fn()
-    renderPanel([device()], onChanged, confirmDelete)
-
-    fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
-
-    await waitFor(() => expect(confirmDelete).toHaveBeenCalledTimes(1))
-    expect(confirmDelete.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ deviceId: 'remote-1' }))
-    expect(apiMock.removeDevice).not.toHaveBeenCalled()
-    expect(onChanged).not.toHaveBeenCalled()
-    expect(screen.getByRole('listitem', { name: /开发虚拟机/ })).toBeTruthy()
-  })
-
-  it('deletes with confirmed: true once the user accepts the confirmation', async () => {
-    const confirmDelete = vi.fn().mockReturnValue(true)
-    const onChanged = vi.fn()
-    renderPanel([device()], onChanged, confirmDelete)
-
-    fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
-
-    await waitFor(() => expect(apiMock.removeDevice).toHaveBeenCalledWith({ deviceId: 'remote-1', confirmed: true }))
-    expect(apiMock.removeDevice).toHaveBeenCalledTimes(1)
-    expect(onChanged).toHaveBeenCalledTimes(1)
-  })
-
-  it('defaults to the browser confirmation and names the device being deleted', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    renderPanel([device()])
-
-    fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
-
-    await waitFor(() => expect(apiMock.removeDevice).toHaveBeenCalledWith({ deviceId: 'remote-1', confirmed: true }))
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(String(confirm.mock.calls[0]?.[0])).toContain('开发虚拟机')
-
-    confirm.mockRestore()
-  })
-
-  it('keeps a failed delete visible as a row-scoped error', async () => {
-    const confirmDelete = vi.fn().mockReturnValue(true)
-    apiMock.removeDevice.mockRejectedValueOnce(new Error('设备仍在连接中'))
-    const onChanged = vi.fn()
-    renderPanel([device()], onChanged, confirmDelete)
-
-    fireEvent.click(screen.getByRole('button', { name: '删除开发虚拟机' }))
-
-    const row = screen.getByRole('listitem', { name: /开发虚拟机/ })
-    expect((await within(row).findByRole('alert')).textContent).toContain('设备仍在连接中')
-    expect(onChanged).not.toHaveBeenCalled()
-  })
-
-  it('disables boundary reorder controls and sends one target order for a move', async () => {
-    const devices = [
-      device({ deviceId: 'first', displayName: '第一台', order: 0 }),
-      device({ deviceId: 'middle', displayName: '第二台', order: 1 }),
-      device({ deviceId: 'last', displayName: '第三台', order: 2 }),
-    ]
-    const onChanged = vi.fn()
-    renderPanel(devices, onChanged)
-
-    expect(screen.getByRole('button', { name: '上移第一台' }).hasAttribute('disabled')).toBe(true)
-    expect(screen.getByRole('button', { name: '下移第三台' }).hasAttribute('disabled')).toBe(true)
-
-    fireEvent.click(screen.getByRole('button', { name: '上移第二台' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('middle', { order: 0 }))
-    expect(apiMock.updateDevice).toHaveBeenCalledTimes(1)
-
-    apiMock.updateDevice.mockClear()
-    fireEvent.click(screen.getByRole('button', { name: '下移第二台' }))
-    await waitFor(() => expect(apiMock.updateDevice).toHaveBeenCalledWith('middle', { order: 2 }))
-    expect(apiMock.updateDevice).toHaveBeenCalledTimes(1)
-    expect(onChanged).toHaveBeenCalledTimes(2)
+  it('uses the actual endpoint and a short local path', () => {
+    expect(connectionRoute(device({ endpoint: 'http://127.0.0.1:41123/' })).nodes).toContain('127.0.0.1:41123')
+    expect(connectionRoute(other).nodes).toEqual(['此电脑', '127.0.0.1:3080'])
   })
 })

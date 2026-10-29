@@ -7,7 +7,7 @@ import { registerServiceWorker } from './pwa.js'
 import { createChimePlayer, detectChimes, installChimeUnlock, type ChimeCounts } from './chime.js'
 import { TopBar } from './components/TopBar.jsx'
 import { Workbench } from './workbench/Workbench.jsx'
-import { DevicePanel, OverviewPanel, SettingsPanel, type PanelName } from './panels/Panels.jsx'
+import { DevicePanel, OverviewPanel, type PanelName } from './panels/Panels.jsx'
 import './styles/app.css'
 
 export type SelectedDevice = { deviceId: string; state: DeviceStatusFacts['state'] }
@@ -151,13 +151,13 @@ export function App() {
           onManageDevices={() => setPanel('devices')}
         />
       </main>
-      {panel === 'devices' && (
-        <DevicePanel devices={devices} onClose={() => setPanel(undefined)} onChanged={() => void refresh()} />
+      {(panel === 'devices' || panel === 'settings') && (
+        <DevicePanel devices={devices} onClose={() => setPanel(undefined)} onChanged={() => void refresh()}
+          {...(panel === 'settings' ? { initialSelection: { kind: 'general' as const } } : currentId ? { initialSelection: { kind: 'device' as const, deviceId: currentId } } : {})} />
       )}
       {panel === 'overview' && (
         <OverviewPanel devices={devices} onClose={() => setPanel(undefined)} onSelect={deviceId => { select(deviceId); setPanel(undefined) }} />
       )}
-      {panel === 'settings' && <SettingsPanel onClose={() => setPanel(undefined)} />}
     </div>
   )
 }

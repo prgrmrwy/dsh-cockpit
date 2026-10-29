@@ -93,7 +93,7 @@ describe('app live status', () => {
     expect(container.querySelector('[data-cockpit-panel="overview"]')).toBeNull()
 
     // Closing a panel also stays closed across pushes.
-    fireEvent.click(container.querySelector('[data-cockpit-panel="devices"] .panel-close')!)
+    fireEvent.click(container.querySelector('[data-cockpit-panel="devices"] .console-close')!)
     act(() => { stream.emit({ device: [{ ...vm, runningSessionCount: 2 }] }) })
     await waitFor(() => expect(container.querySelector('.cockpit-main')).not.toBeNull())
     expect(container.querySelector('[data-cockpit-panel]')).toBeNull()
