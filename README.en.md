@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="packages/cockpit-web/public/icons/icon-192.png" width="96" height="96" alt="dsh-cockpit icon" />
+
 # dsh-cockpit
 
 **Manage DeepSeek Harness across every machine from one page — pick a device and use its native DSH workbench directly.**

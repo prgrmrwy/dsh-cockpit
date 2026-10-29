@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="packages/cockpit-web/public/icons/icon-192.png" width="96" height="96" alt="dsh-cockpit 图标" />
+
 # dsh-cockpit
 
 **一个页面管理多台机器上的 DeepSeek Harness——选中设备，直接用它原生的 DSH 工作台。**
