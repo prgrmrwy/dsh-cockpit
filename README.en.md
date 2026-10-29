@@ -17,9 +17,27 @@
 
 ---
 
-A multi-device cockpit for DeepSeek Harness: manage DSH running on several
-machines from a single page, and once you select a device, work in **that
-machine's own DSH workbench**.
+Run DSH on your local machine, VMs and devboxes, then bring them into one page: **switch devices in the top bar and keep working in native DSH**. Sessions, settings, subscriptions and plugins stay on their own devices; the cockpit does not require you to configure them again.
+
+## Quick start
+
+Requires **Node.js ≥22**. Remote devices also require system OpenSSH and a working passwordless SSH alias; local devices do not need SSH.
+
+```bash
+git clone https://github.com/prgrmrwy/dsh-cockpit.git
+cd dsh-cockpit
+node bin/cockpit bootstrap
+node bin/cockpit start
+```
+
+Open **http://127.0.0.1:3090/**, then:
+
+1. Start `dsh web` on the target device and note its port.
+2. Open **☰ → Add device**, choose local or SSH remote, and enter the DSH port. For remote devices, enter an existing SSH alias too.
+3. If DSH requires launch authentication, paste the full URL printed by that process into the DSH authentication section, then validate and add the device.
+4. Select the device in the top bar to use its native DSH workbench.
+
+No bridge plugin is required for your first connection. Install the [optional bridge](#bridge-plugin-optional-talking-to-dsh) when you need precise read acknowledgement, remote editor integration or plugin-requested port forwards. See [Running it](#running-it) for all commands, Windows installation and environment variables.
 
 ## What it is
 
@@ -54,10 +72,13 @@ The cockpit does exactly two things:
 [bridge plugin](#bridge-plugin-optional-talking-to-dsh) is a device-side
 companion; skipping it costs you no core capability.
 
-The cockpit only uses official rc.2 interfaces: `host.describe`,
-`session.list`, `/api/events.mux` and `/api/events.host`. Every status signal it
-needs (`host/session-status`, `approval/requested`, `question/requested` and
-their `*/resolved` counterparts) is already covered by the official streams.
+The cockpit supports the official rc.2 interfaces (`host.describe`, `session.list`, `/api/events.mux`, `/api/events.host`) and DSH 0.1.2 typert interfaces (`session/list`, `$events` and `workspace/follow` over `/api/remote.mux`).
+
+For typert browser authentication, paste the process's full launch URL when adding or editing a device. Launch tokens and official authority-bound cookies stay in the cockpit's own atomic, 0600 device store; read APIs expose only non-sensitive authentication status. Reconnects reuse valid cookies before exchanging the current launch token.
+
+For ohmydsh-managed devices, fixed-log authentication recovery is an explicit, per-device opt-in, off by default. Only after a standard DSH authentication challenge and failure of existing material does it read a bounded tail of the local or remote `${DSH_HOME:-$HOME/.dsh}/dsh.log`, using the existing BatchMode SSH identity for remote devices. It does not accept arbitrary paths or commands, scan other files, or read provider credentials. Failure falls back to manual URL entry.
+
+rc.2 pending interactions come from Host events. For typert, pending status is observable only after a compatible bridge supplies a complete snapshot; otherwise the UI explicitly reports it as unavailable, not zero.
 
 There are only two prerequisites:
 
@@ -85,6 +106,24 @@ There are only two prerequisites:
   surfaced directly, because the remote page cannot say it itself.
 
 ![Device connection states: CONNECTING → probe → READY; a dropped event stream enters DEGRADED while keeping the workbench; SSH / DSH failures are shown with their diagnosis and retried with backoff](docs/assets/dsh-cockpit-device-states.dual.svg)
+
+## Devices and settings console
+
+Open **☰** to select devices on the left and edit connection and DSH authentication settings on the right. The connection path helps locate failures at the SSH, loopback tunnel or DSH step.
+
+| Task | Where to find it |
+| --- | --- |
+| Add a local or remote device | Add device in the sidebar |
+| Edit connection or authentication | Device details → Save changes |
+| Reorder device tabs | Device row `⋯` → Move up / Move down |
+| Pause or resume a connection | Device row `⋯` → Disable / Enable |
+| Manage additional port forwards | Forwards section in remote device details |
+| Remove a registered device | Delete device at the bottom of its details; confirmation required |
+| Toggle sounds or view the data directory | General in the sidebar |
+
+**Disabling is not deleting.** A disabled device stops connecting and disappears from the top bar, but remains in the sidebar with a disabled tag and can be re-enabled. Deleting removes its registration, not DSH or its sessions on the device.
+
+Connection and authentication forms require an explicit save; reordering and enable/disable actions in `⋯` apply immediately. Switching devices or closing the console asks before discarding unsaved changes, and live status updates do not overwrite drafts. Narrow screens use list → details navigation; light and dark themes follow the system. Labels in the current UI are in Chinese.
 
 ## Completion reminders: generations, acknowledgement, and manual fallback
 
