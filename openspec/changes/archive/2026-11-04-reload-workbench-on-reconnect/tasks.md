@@ -25,5 +25,6 @@
 
 - [x] 4.1 若 README 中有 ↻ 行为或驾驶舱日志内容的描述，同步更新；`CHANGELOG.md` 增加条目。验证：`rg "重连当前设备"` 无遗留旧文案（测试除外）。
 - [x] 4.2 运行 `pnpm build`、`pnpm typecheck`、`pnpm test`、`pnpm lint`，全部通过；`openspec validate reload-workbench-on-reconnect --strict` 通过。
-- [ ] 4.3 部署到本机驾驶舱（`bin/cockpit build` + `restart`）并手工复现：在 wsl 设备上执行 `dsh restart`，若工作台白屏，点击 ↻ 后应恢复，无需整页刷新；`cockpit.log` 中出现对应的启动日志行，且其中不含 token。验收记录写入本 change 的 tasks 备注。
+- [x] 4.3 部署到本机驾驶舱（`bin/cockpit build` + `restart`）并手工复现：在 wsl 设备上执行 `dsh restart`，若工作台白屏，点击 ↻ 后应恢复，无需整页刷新；`cockpit.log` 中出现对应的启动日志行，且其中不含 token。验收记录写入本 change 的 tasks 备注。
   - 2026-11-04 进度：已 `pnpm build` 并 `node bin/cockpit restart --no-open`（新 PID 13892）；`/api/devices` 已返回各设备 `connectionGeneration`。待用户刷新驾驶舱页面加载新前端，再在 wsl 上点击 ↻，验收「只重载一次」和日志行。白屏本身无法按需复现，没有用 `dsh restart` 强行制造（会断开当前会话）。
+  - 2026-11-04 验收：用户刷新驾驶舱并在 wsl 上点击 ↻，确认验收通过。`cockpit.log` 记录 wsl（device-fjy6929z）的签发：00:41:05（刷新页面后首次加载），00:47:21、00:47:27（点击后的重新签发，结果均为 `result=ok`，authGeneration=55）。所有 `workbench launch` 行中均不含 `token=` 或 `dsh-auth-`。白屏场景本身未复现，验收的是「点击后重新加载、日志不含认证材料」。
