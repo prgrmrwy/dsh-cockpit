@@ -581,13 +581,19 @@ describe('connectivity device updates', () => {
     expect(tunnelConnects[0]?.preferredLocalPort).toBeUndefined()
 
     // Reconnect: the persisted port is offered, reused, and not rewritten.
-    await service.reconnectDevice('a')
-    for (let i = 0; i < 200 && tunnelConnects.length < 2; i += 1) {
+    const generationBefore = service.statuses()[0]!.connectionGeneration
+    const reconnectGeneration = await service.reconnectDevice('a')
+    // The replacement loop's generation is already known when the request
+    // returns; the READY that follows carries at least that value.
+    expect(reconnectGeneration).toBeGreaterThan(generationBefore)
+    for (let i = 0; i < 200 && (tunnelConnects.length < 2 || service.statuses()[0]?.state !== 'READY'); i += 1) {
       await new Promise(resolve => setTimeout(resolve, 5))
     }
     expect(tunnelConnects[1]?.preferredLocalPort).toBe(port)
     expect(registry.localPortWrites).toHaveLength(1)
     expect(service.statuses()[0]?.endpoint).toBe(`http://127.0.0.1:${port}/`)
+    expect(service.statuses()[0]).toMatchObject({ state: 'READY' })
+    expect(service.statuses()[0]!.connectionGeneration).toBeGreaterThanOrEqual(reconnectGeneration)
 
     await service.onApplicationShutdown()
   })
@@ -1254,6 +1260,45 @@ describe('workbench launch authentication for a fresh browser', () => {
       expect(String(failure.message)).not.toContain('source-unavailable')
       await service.onApplicationShutdown()
     })
+  })
+
+  it('logs each launch outcome without token, launch URL or cookie', async () => {
+    const lines: string[] = []
+    const capture = (message: unknown) => { lines.push(String(message)) }
+    const spies = (['debug', 'warn'] as const).map(level => vi.spyOn(Logger.prototype, level).mockImplementation(capture))
+    try {
+      await withGlobalFetch(async () => {
+        const ok = await typertServiceFor({ auth: {
+          version: 1 as const, launchToken: 'current-token-abcdef', serverCookie: 'server-cookie',
+          cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+          updatedAt: 0, generation: 3,
+        } })
+        await ok.service.workbenchLaunch('a')
+        await ok.service.onApplicationShutdown()
+
+        const rejected = await typertServiceFor({
+          auth: {
+            version: 1 as const, launchToken: 'stale-token-abcdefg',
+            cookieAuthority: '127.0.0.1:51777', cookieExpiresAt: Date.now() + 60_000, autoDiscovery: 'disabled' as const,
+            updatedAt: 0, generation: 2,
+          },
+          validation: (url) => url.includes('?token=') ? exchangeRejected() : challenge(),
+        })
+        await expect(rejected.service.workbenchLaunch('a')).rejects.toMatchObject({ code: 'workbench-auth-required' })
+        await expect(rejected.service.workbenchLaunch('evil\ninjected')).rejects.toThrow()
+        await rejected.service.onApplicationShutdown()
+      })
+      const launches = lines.filter(line => line.startsWith('workbench launch:'))
+      expect(launches).toContain('workbench launch: device=a protocol=typert authGeneration=3 result=ok')
+      expect(launches).toContain('workbench launch: device=a protocol=typert authGeneration=2 result=workbench-auth-required')
+      expect(launches).toContain('workbench launch: device=unknown protocol=typert authGeneration=unknown result=error')
+      const all = launches.join('\n')
+      for (const secret of ['current-token-abcdef', 'stale-token-abcdefg', '?token=', 'server-cookie', 'dsh-auth-', 'injected']) {
+        expect(all).not.toContain(secret)
+      }
+    } finally {
+      for (const spy of spies) spy.mockRestore()
+    }
   })
 
   it('recovers browser launch auth without disturbing the healthy server connection', async () => {

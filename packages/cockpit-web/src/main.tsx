@@ -6,7 +6,7 @@ import { subscribeDevices } from './api/stream.js'
 import { registerServiceWorker } from './pwa.js'
 import { createChimePlayer, detectChimes, installChimeUnlock, type ChimeCounts } from './chime.js'
 import { TopBar } from './components/TopBar.jsx'
-import { Workbench } from './workbench/Workbench.jsx'
+import { Workbench, type WorkbenchReloadRequest } from './workbench/Workbench.jsx'
 import { DevicePanel, OverviewPanel, type PanelName } from './panels/Panels.jsx'
 import './styles/app.css'
 
@@ -104,10 +104,19 @@ export function App() {
   }, [])
 
   // Reconnect only the current device; everything that is already connected
-  // stays untouched (a global refresh would disrupt healthy tunnels).
+  // stays untouched (a global refresh would disrupt healthy tunnels). The
+  // user's click also counts as an explicit workbench retry: the Workbench
+  // relaunches this device once the connection the server just started is
+  // ready, so a page stuck on a network error recovers without a full reload.
+  const [reloadRequest, setReloadRequest] = useState<WorkbenchReloadRequest | undefined>(undefined)
   const reconnectCurrent = useCallback(async () => {
     if (currentId === undefined) return
-    try { await api.reconnectDevice(currentId) } catch (cause) {
+    try {
+      const { connectionGeneration } = await api.reconnectDevice(currentId)
+      if (typeof connectionGeneration === 'number') {
+        setReloadRequest(previous => ({ deviceId: currentId, minGeneration: connectionGeneration, nonce: (previous?.nonce ?? 0) + 1 }))
+      }
+    } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [currentId])
@@ -135,7 +144,7 @@ export function App() {
         onSelect={select}
         onOpenPanel={setPanel}
         onRefresh={reconnectCurrent}
-        onRefreshLabel="重连当前设备"
+        onRefreshLabel="重连并重新加载当前设备"
         onAckCompleted={ackCompleted}
       />
       <main className="cockpit-main">
@@ -149,6 +158,7 @@ export function App() {
           releaseForwardInstance={api.releaseForwardInstance}
           onReconnect={reconnectCurrent}
           onManageDevices={() => setPanel('devices')}
+          {...(reloadRequest === undefined ? {} : { reloadRequest })}
         />
       </main>
       {(panel === 'devices' || panel === 'settings') && (

@@ -159,6 +159,24 @@ describe('device lifecycle', () => {
     } finally { await h.lifecycle.stop() }
   })
 
+  it('advances connectionGeneration before a manual reconnect resolves', async () => {
+    const h = reconnectHarness()
+    h.lifecycle.start()
+    try {
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      const before = h.lifecycle.current().connectionGeneration
+      await h.lifecycle.reconnect()
+      // The client keys its user retry on this: the facts it sees when the
+      // reconnect request returns are not ready yet, but already newer.
+      const after = h.lifecycle.current()
+      expect(after.connectionGeneration).toBeGreaterThan(before)
+      expect(after.state).toBe('CONNECTING')
+      expect(after.endpoint).toBeUndefined()
+      await vi.waitFor(() => expect(h.lifecycle.current().state).toBe('READY'))
+      expect(h.lifecycle.current().connectionGeneration).toBeGreaterThan(before)
+    } finally { await h.lifecycle.stop() }
+  })
+
   it('bare instance reports CONNECTING until a connection runs', () => {
     const { lifecycle } = device()
     expect(lifecycle.current().state).toBe('CONNECTING')

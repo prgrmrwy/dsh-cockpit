@@ -40,6 +40,16 @@ export interface WorkbenchProps {
   readonly devices?: readonly DeviceStatusFacts[]
   /** Releases every holder of one ended bridge page instance (design D4(a)). */
   readonly releaseForwardInstance?: (deviceId: string, instanceId: string) => Promise<unknown>
+  /** A user-initiated reconnect of the current device, counted as an explicit
+   * retry of its workbench once a connection at `minGeneration` or later is
+   * ready. A new `nonce` replaces any earlier request. */
+  readonly reloadRequest?: WorkbenchReloadRequest
+}
+
+export interface WorkbenchReloadRequest {
+  readonly deviceId: string
+  readonly minGeneration: number
+  readonly nonce: number
 }
 
 /** The snapshot a device page may see: no host pid, no holder identities. */
@@ -126,7 +136,7 @@ interface FrameInfo {
  * keep-alive promises to preserve. The parent never reads the iframe DOM;
  * status aggregation goes through the cockpit API, so a workbench crash
  * cannot affect it and vice versa. */
-export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs, releaseForwardInstance }: WorkbenchProps) {
+export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onManageDevices, requestBridgeCapability, requestWorkbenchLaunch, navigationDeadlineMs, releaseForwardInstance, reloadRequest }: WorkbenchProps) {
   const deadlineMs = navigationDeadlineMs ?? DEFAULT_NAVIGATION_DEADLINE_MS
   const registryRef = useRef<Map<string, FrameInfo>>(new Map())
   const lifecycleRef = useRef(0)
@@ -576,6 +586,52 @@ export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onMa
       setFrames([...registryRef.current.values()])
     }
   }, [device, requestWorkbenchLaunch])
+
+  // A user reconnect is the explicit retry the launch contract allows: once the
+  // replacement connection is ready, forget this device's attempted tuples so
+  // the launch effect below runs exactly once more. Reconnecting usually keeps
+  // the same origin and auth generation, so without this a frame stuck on a
+  // network error page would never be navigated again. Declared BEFORE the
+  // launch effect on purpose: when the same commit also changes the tuple, the
+  // attempts are cleared first and the launch effect issues one request, not two.
+  const pendingReloadRef = useRef<WorkbenchReloadRequest | undefined>(undefined)
+  useEffect(() => {
+    if (reloadRequest !== undefined) pendingReloadRef.current = reloadRequest
+  }, [reloadRequest?.nonce])
+  useEffect(() => {
+    const pending = pendingReloadRef.current
+    if (pending === undefined) return
+    // Only the device the user reconnected; moving on abandons the request.
+    if (device === undefined || pending.deviceId !== device.deviceId) {
+      pendingReloadRef.current = undefined
+      return
+    }
+    if (
+      device.connectionGeneration < pending.minGeneration
+      || device.endpoint === undefined
+      || (device.state !== 'READY' && device.state !== 'DEGRADED')
+    ) return
+    pendingReloadRef.current = undefined
+    const frame = registryRef.current.get(device.deviceId)
+    if (frame === undefined) return
+    clearDeadline(device.deviceId)
+    pendingNavigationRef.current.delete(device.deviceId)
+    launchTargetRef.current.delete(device.deviceId)
+    for (const key of launchAttemptsRef.current) {
+      if (key.startsWith(`${device.deviceId}\u0000`)) launchAttemptsRef.current.delete(key)
+    }
+    // The previous navigation's tuple must not dedupe the retried response.
+    // hasNavigated stays: the existing page remains visible until the result.
+    registryRef.current.set(device.deviceId, { ...frame, lastNavigationAttemptKey: undefined })
+    publishFrame(device.deviceId, { launchPhase: 'idle', launchFailure: undefined })
+    setRetryNonce(nonce => nonce + 1)
+  }, [
+    reloadRequest?.nonce,
+    device?.deviceId,
+    device?.connectionGeneration,
+    device?.endpoint,
+    device?.state,
+  ])
 
   useEffect(() => {
     if (

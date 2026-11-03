@@ -112,6 +112,9 @@ export interface DeviceStatusFacts {
   readonly dshAuthAutoDiscovery: boolean
   readonly dshAuthGeneration: number
   readonly dshAuthExpiresAt?: number
+  /** Monotonic per server process: advances on every connection attempt, so a
+   * READY carrying a larger value is a connection made after that point. */
+  readonly connectionGeneration: number
   /** Forward table projection (remote devices only): the workbench channel as
    * a `system` row plus every additional entry. No page or instance ids. */
   readonly forwards?: DeviceForwardsProjection

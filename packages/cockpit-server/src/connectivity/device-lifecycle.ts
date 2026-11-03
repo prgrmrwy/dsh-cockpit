@@ -36,6 +36,7 @@ export interface LiveDeviceFacts {
   readonly dshAuthAutoDiscovery: boolean
   readonly dshAuthGeneration: number
   readonly dshAuthExpiresAt?: number
+  readonly connectionGeneration: number
 }
 
 /** One device's connection lifecycle. Owns exactly one tunnel generation and
@@ -253,6 +254,7 @@ export class DeviceLifecycle {
       dshAuthAutoDiscovery: this.#record.dshAuth?.autoDiscovery === 'ohmydsh-log',
       dshAuthGeneration: this.#record.dshAuth?.generation ?? (this.#record.dshLaunchToken === undefined ? 0 : 1),
       ...(this.#record.dshAuth?.cookieExpiresAt === undefined ? {} : { dshAuthExpiresAt: this.#record.dshAuth.cookieExpiresAt }),
+      connectionGeneration: this.#connectionGeneration,
     }
   }
 

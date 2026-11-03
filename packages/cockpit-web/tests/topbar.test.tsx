@@ -310,4 +310,25 @@ describe('top bar', () => {
     fireEvent.contextMenu(tab, { clientX: 10, clientY: 10 })
     expect(container.querySelector('[data-cockpit-context-menu]')).not.toBeNull()
   })
+
+  it('names the refresh button and its menu item with the same label', () => {
+    const devices = [device({ deviceId: 'd1', displayName: 'A' })]
+    let refreshed = 0
+    const { container, getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => { refreshed += 1 }} onRefreshLabel="重连并重新加载当前设备" /></StrictMode>,
+    )
+    expect(getByRole('button', { name: '重连并重新加载当前设备' }).getAttribute('title')).toBe('重连并重新加载当前设备')
+    fireEvent.contextMenu(container.querySelector('[role="tab"]') as HTMLElement, { clientX: 10, clientY: 10 })
+    fireEvent.click(getByRole('menuitem', { name: '重连并重新加载当前设备' }))
+    expect(refreshed).toBe(1)
+  })
+
+  it('keeps the default menu wording when no label is supplied', () => {
+    const devices = [device({ deviceId: 'd1', displayName: 'A' })]
+    const { container, getByRole } = render(
+      <StrictMode><TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} /></StrictMode>,
+    )
+    fireEvent.contextMenu(container.querySelector('[role="tab"]') as HTMLElement, { clientX: 10, clientY: 10 })
+    expect(getByRole('menuitem', { name: '刷新状态' })).toBeTruthy()
+  })
 })

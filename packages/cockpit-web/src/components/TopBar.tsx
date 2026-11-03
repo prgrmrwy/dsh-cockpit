@@ -173,7 +173,7 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
           role="menu"
           data-cockpit-context-menu={menuFor}
         >
-          <button role="menuitem" onClick={() => { onRefresh(); closeMenu() }}>刷新状态</button>
+          <button role="menuitem" onClick={() => { onRefresh(); closeMenu() }}>{onRefreshLabel ?? '刷新状态'}</button>
           <button role="menuitem" onClick={() => { onOpenPanel('overview'); closeMenu() }}>查看状态</button>
           <button role="menuitem" onClick={() => { onOpenPanel('devices'); closeMenu() }}>编辑</button>
         </div>

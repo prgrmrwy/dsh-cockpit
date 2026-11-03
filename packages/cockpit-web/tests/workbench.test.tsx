@@ -46,7 +46,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', sshAlias: 'vm-a', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
-  dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1,
+  dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1, connectionGeneration: 1,
   ...overrides,
 })
 
@@ -842,4 +842,194 @@ describe('workbench launch authentication', () => {
     // The failure overlay is gone, and nothing claims success.
     expect(container.querySelector('[data-cockpit-auth="d1"]')).toBeNull()
   })
+})
+
+/** reload-workbench-on-reconnect: a user reconnect is an explicit retry of the
+ * current device's workbench, taken once the connection the server started for
+ * it (minGeneration) is ready. Nothing automatic may take that path. */
+describe('workbench reload on user reconnect', () => {
+  const ready = (overrides: Partial<DeviceStatusFacts> = {}) => device({ connectionGeneration: 1, ...overrides })
+  const reconnecting = (generation: number) => ready({ state: 'CONNECTING', endpoint: undefined, connectionGeneration: generation })
+  const reload = (minGeneration: number, nonce = 1, deviceId = 'd1') => ({ deviceId, minGeneration, nonce })
+
+  /** Mounts d1, lets its first launch navigate and settle as unobservable —
+   * the state a network error page leaves behind. */
+  async function settled(launch: ReturnType<typeof vi.fn>) {
+    const view = render(<Workbench device={ready()} requestWorkbenchLaunch={launch} />)
+    const frame = view.container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('navigating'))
+    frame.dispatchEvent(new Event('load'))
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('unobservable'))
+    expect(launch).toHaveBeenCalledTimes(1)
+    return { ...view, frame, src }
+  }
+
+  it('relaunches once after the reconnected device is ready, with the same tuple', async () => {
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=again', authGeneration: 1 })
+    const { rerender, frame, src } = await settled(launch)
+
+    // (c) The newer connection is still coming up: nothing yet.
+    rerender(<Workbench device={reconnecting(2)} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await Promise.resolve()
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(container(frame).querySelector('[data-cockpit-offline="d1"]')).not.toBeNull()
+
+    // (a) Same origin and auth generation once READY: exactly one more launch
+    // and one more navigation; the existing page was never hidden meanwhile.
+    rerender(<Workbench device={ready({ connectionGeneration: 2 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(src.assignments).toEqual([
+      'http://127.0.0.1:51688/?token=first',
+      'http://127.0.0.1:51688/?token=again',
+    ]))
+    expect(frame.style.visibility).not.toBe('hidden')
+
+    // (d) Afterwards the ordinary rules hold again.
+    frame.dispatchEvent(new Event('load'))
+    rerender(<Workbench device={ready({ connectionGeneration: 2, lastUpdatedAt: 5 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    rerender(<Workbench device={ready({ connectionGeneration: 3, lastUpdatedAt: 6 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await Promise.resolve()
+    expect(launch).toHaveBeenCalledTimes(2)
+    expect(src.assignments).toHaveLength(2)
+    src.disconnect()
+  })
+
+  it('launches exactly once when the reconnect also lands on a new port', async () => {
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockResolvedValue({ url: 'http://127.0.0.1:51999/?token=moved', authGeneration: 1 })
+    const { rerender, src } = await settled(launch)
+
+    // The tuple change and the reload request become due in the same commit;
+    // they must not each issue their own launch.
+    rerender(<Workbench device={reconnecting(2)} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    rerender(<Workbench device={ready({ connectionGeneration: 2, endpoint: 'http://127.0.0.1:51999/' })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await waitFor(() => expect(src.assignments).toEqual([
+      'http://127.0.0.1:51688/?token=first',
+      'http://127.0.0.1:51999/?token=moved',
+    ]))
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(launch).toHaveBeenCalledTimes(2)
+    src.disconnect()
+  })
+
+  it('does not take a stale READY from before the reconnect as the new connection', async () => {
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=again', authGeneration: 1 })
+    const { rerender, src } = await settled(launch)
+
+    // (b) The response arrived before the SSE caught up: still the old READY.
+    rerender(<Workbench device={ready({ lastUpdatedAt: 1 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await Promise.resolve()
+    expect(launch).toHaveBeenCalledTimes(1)
+
+    rerender(<Workbench device={ready({ connectionGeneration: 2, lastUpdatedAt: 2 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await waitFor(() => expect(launch).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(src.assignments).toHaveLength(2))
+    src.disconnect()
+  })
+
+  it('never fires while the generation stays below the requested one', async () => {
+    const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+    const { rerender, src } = await settled(launch)
+
+    // (g) e.g. the cockpit server restarted and counts from zero again.
+    for (const lastUpdatedAt of [1, 2, 3]) {
+      rerender(<Workbench device={ready({ connectionGeneration: 1, lastUpdatedAt })} requestWorkbenchLaunch={launch} reloadRequest={reload(5)} />)
+    }
+    await Promise.resolve()
+    expect(launch).toHaveBeenCalledTimes(1)
+    expect(src.assignments).toHaveLength(1)
+    src.disconnect()
+  })
+
+  it('shows the launch failure overlay when the retried launch fails, without retrying again', async () => {
+    const { ApiRequestError } = await import('../src/api/client.js')
+    const launch = vi.fn()
+      .mockResolvedValueOnce({ url: 'http://127.0.0.1:51688/?token=first', authGeneration: 1 })
+      .mockRejectedValue(new ApiRequestError('workbench-unavailable', 'device is not ready', 503))
+    const { rerender, frame } = await settled(launch)
+
+    // (f)
+    rerender(<Workbench device={ready({ connectionGeneration: 2 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await waitFor(() => expect(container(frame).querySelector('[data-cockpit-auth-code="workbench-unavailable"]')).not.toBeNull())
+    rerender(<Workbench device={ready({ connectionGeneration: 2, lastUpdatedAt: 9 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    frame.dispatchEvent(new Event('load'))
+    await Promise.resolve()
+    expect(launch).toHaveBeenCalledTimes(2)
+  })
+
+  it('reloads only the reconnected current device and survives switching away and back', async () => {
+    const calls = new Map<string, number>()
+    const launch = vi.fn(async (deviceId: string) => {
+      const call = (calls.get(deviceId) ?? 0) + 1
+      calls.set(deviceId, call)
+      const port = deviceId === 'd1' ? 51000 : 52000
+      return { url: `http://127.0.0.1:${port}/?token=${deviceId}-${call}`, authGeneration: 1 }
+    })
+    const a = (overrides: Partial<DeviceStatusFacts> = {}) => ready({ deviceId: 'd1', endpoint: 'http://127.0.0.1:51000/', ...overrides })
+    const b = ready({ deviceId: 'd2', displayName: 'B', endpoint: 'http://127.0.0.1:52000/' })
+    const view = (active: DeviceStatusFacts, request?: ReturnType<typeof reload>) => (
+      <Workbench device={active} enabledDeviceIds={['d1', 'd2']} requestWorkbenchLaunch={launch} {...(request === undefined ? {} : { reloadRequest: request })} />
+    )
+    const { container: root, rerender } = render(view(a()))
+    await waitFor(() => expect(calls.get('d1')).toBe(1))
+    rerender(view(b))
+    await waitFor(() => expect(calls.get('d2')).toBe(1))
+    const frameA = root.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const frameB = root.querySelector('iframe[data-workbench-device="d2"]') as HTMLIFrameElement
+    await waitFor(() => expect(frameB.getAttribute('src')).toBe('http://127.0.0.1:52000/?token=d2-1'))
+    const src = watchSrcAssignments(frameA, frameB)
+
+    // (e) Reconnect A while it is current: only A relaunches.
+    rerender(view(a(), reload(2)))
+    rerender(view(a({ connectionGeneration: 2 }), reload(2)))
+    await waitFor(() => expect(calls.get('d1')).toBe(2))
+    await waitFor(() => expect(frameA.getAttribute('src')).toBe('http://127.0.0.1:51000/?token=d1-2'))
+    expect(calls.get('d2')).toBe(1)
+
+    // (d) Switching away and back afterwards relaunches nothing.
+    rerender(view(b, reload(2)))
+    rerender(view(a({ connectionGeneration: 2 }), reload(2)))
+    await Promise.resolve()
+    expect(calls.get('d1')).toBe(2)
+    expect(calls.get('d2')).toBe(1)
+    // B's only entry is the value it already had when observation began.
+    expect(src.assignments.filter(value => value.includes('52000'))).toEqual(['http://127.0.0.1:52000/?token=d2-1'])
+
+    // Moving on before the reconnect is ready abandons that request.
+    rerender(view(a({ connectionGeneration: 2 }), reload(3, 2)))
+    rerender(view(b, reload(3, 2)))
+    rerender(view(a({ connectionGeneration: 3 }), reload(3, 2)))
+    await Promise.resolve()
+    expect(calls.get('d1')).toBe(2)
+    src.disconnect()
+  })
+
+  it('reloads an rc.2 device by navigating its clean endpoint once more', async () => {
+    const launch = vi.fn().mockResolvedValue({ url: 'http://127.0.0.1:51688/', authGeneration: 0 })
+    const legacy = (overrides: Partial<DeviceStatusFacts> = {}) => ready({
+      dshAuthConfigured: false, dshAuthState: 'not-configured', dshAuthGeneration: 0, ...overrides,
+    })
+    const { container: root, rerender } = render(<Workbench device={legacy()} requestWorkbenchLaunch={launch} />)
+    const frame = root.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement
+    const src = watchSrcAssignments(frame)
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/']))
+    frame.dispatchEvent(new Event('load'))
+
+    // (h)
+    rerender(<Workbench device={legacy({ connectionGeneration: 2 })} requestWorkbenchLaunch={launch} reloadRequest={reload(2)} />)
+    await waitFor(() => expect(src.assignments).toEqual(['http://127.0.0.1:51688/', 'http://127.0.0.1:51688/']))
+    expect(launch).toHaveBeenCalledTimes(2)
+    src.disconnect()
+  })
+
+  /** The rendered root a frame belongs to, for overlay queries. */
+  function container(frame: HTMLIFrameElement): HTMLElement {
+    return frame.closest('[data-cockpit-workbench]') as HTMLElement
+  }
 })

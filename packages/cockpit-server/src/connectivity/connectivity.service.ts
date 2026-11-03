@@ -410,6 +410,7 @@ export class ConnectivityService implements OnApplicationShutdown {
           dshAuthAutoDiscovery: facts.dshAuthAutoDiscovery,
           dshAuthGeneration: facts.dshAuthGeneration,
           ...(facts.dshAuthExpiresAt === undefined ? {} : { dshAuthExpiresAt: facts.dshAuthExpiresAt }),
+          connectionGeneration: facts.connectionGeneration,
           ...forwardsField(this.#forwardProjection(facts.deviceId, l)),
         }
       })
@@ -596,11 +597,14 @@ export class ConnectivityService implements OnApplicationShutdown {
   }
 
   /** Force reconnect of one enabled device only. */
-  async reconnectDevice(deviceId: string): Promise<void> {
+  /** Resolves with the connection generation the replacement loop already
+   * started: a READY fact at or above it belongs to the new connection. */
+  async reconnectDevice(deviceId: string): Promise<number> {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     if (!lifecycle.current().enabled) throw new Error(`device ${deviceId} is disabled`)
     await lifecycle.reconnect()
+    return lifecycle.connectionGeneration()
   }
 
   /** Clears all currently-known completion generations on one device. */
@@ -632,6 +636,26 @@ export class ConnectivityService implements OnApplicationShutdown {
    * Nothing here relays a DSH cookie to the browser: the target DSH sets its own
    * authority-bound cookie during the iframe's own exchange. */
   async workbenchLaunch(deviceId: string, signal?: AbortSignal): Promise<{ url: string; authGeneration: number }> {
+    // One diagnostic line per launch, so a blank workbench can be matched to
+    // the launch that produced it. Never the URL, token, cookie or the error
+    // message (which may quote either): only stable, non-sensitive fields.
+    // The id comes from the request path unvalidated; only a registered id is
+    // echoed, so a crafted path cannot write arbitrary text into the log.
+    const lifecycle = this.#lifecycles.get(deviceId)
+    const device = lifecycle === undefined ? 'unknown' : deviceId
+    const protocol = lifecycle?.protocolKind() === 'rc2' ? 'rc2' : 'typert'
+    try {
+      const result = await this.#workbenchLaunch(deviceId, signal)
+      this.#logger.debug(`workbench launch: device=${device} protocol=${protocol} authGeneration=${result.authGeneration} result=ok`)
+      return result
+    } catch (cause) {
+      const code = cause instanceof WorkbenchLaunchError ? cause.code : 'error'
+      this.#logger.warn(`workbench launch: device=${device} protocol=${protocol} authGeneration=${lifecycle?.current().dshAuthGeneration ?? 'unknown'} result=${code}`)
+      throw cause
+    }
+  }
+
+  async #workbenchLaunch(deviceId: string, signal?: AbortSignal): Promise<{ url: string; authGeneration: number }> {
     const lifecycle = this.#lifecycles.get(deviceId)
     if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
     const facts = lifecycle.current()

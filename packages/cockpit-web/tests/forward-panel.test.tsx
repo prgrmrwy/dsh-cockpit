@@ -36,7 +36,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   deviceId: 'vm', displayName: '开发虚拟机', kind: 'remote', sshAlias: 'dev-vm', remoteDshPort: 3080, enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, dshAuthConfigured: false, dshAuthState: 'not-configured',
-  dshAuthAutoDiscovery: false, dshAuthGeneration: 0,
+  dshAuthAutoDiscovery: false, dshAuthGeneration: 0, connectionGeneration: 1,
   forwards: table(
     extra(5432, { pinned: true, label: 'db' }),
     extra(3939, { holders: ['memex-browse:default'], holderCount: 1 }),

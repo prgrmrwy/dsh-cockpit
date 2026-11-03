@@ -9,6 +9,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   deviceId: 'd1', displayName: 'VM A', kind: 'remote', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51688/',
+  connectionGeneration: 1,
   ...overrides,
 })
 
@@ -205,5 +206,71 @@ describe('foreground device report (remind-background-device-completion)', () =>
     act(() => { stream.onopen?.() })
     await waitFor(() => expect(foregroundBodies().length).toBe(before + 1))
     expect(foregroundBodies().at(-1)?.deviceId).toBe('d2')
+  })
+})
+
+describe('reconnect reloads the current workbench (reload-workbench-on-reconnect)', () => {
+  function shell(reconnect: () => Response) {
+    const launches: string[] = []
+    const fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/reconnect')) return reconnect()
+      if (url.endsWith('/workbench-launch')) {
+        launches.push(url)
+        return { ok: true, json: async () => ({ url: `http://127.0.0.1:51688/?token=t${launches.length}`, authGeneration: 1 }) } as Response
+      }
+      if (url.endsWith('/api/devices')) return { ok: true, json: async () => ({ device: [] }) } as Response
+      return { ok: true, json: async () => ({}) } as Response
+    })
+    FakeEventSource.instances = []
+    window.localStorage.clear()
+    window.localStorage.setItem('cockpit:last-device', 'd1')
+    vi.stubGlobal('fetch', fetch)
+    vi.stubGlobal('EventSource', FakeEventSource)
+    return { fetch, launches }
+  }
+
+  async function settledApp() {
+    const view = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    act(() => { stream.emit({ device: [device()] }) })
+    // jsdom may fire the iframe load itself; either way end in `unobservable`,
+    // the state a network error page leaves the parent in.
+    const frame = await waitFor(() => {
+      const element = view.container.querySelector('iframe[data-workbench-device="d1"]') as HTMLIFrameElement | null
+      expect(['navigating', 'unobservable']).toContain(element?.getAttribute('data-workbench-phase'))
+      return element!
+    })
+    if (frame.getAttribute('data-workbench-phase') === 'navigating') act(() => { frame.dispatchEvent(new Event('load')) })
+    await waitFor(() => expect(frame.getAttribute('data-workbench-phase')).toBe('unobservable'))
+    return { ...view, stream, frame }
+  }
+
+  it('relaunches the current device once its reconnected connection is ready', async () => {
+    const { launches } = shell(() => ({ ok: true, json: async () => ({ reconnecting: true, connectionGeneration: 2 }) } as Response))
+    const { getByRole, stream } = await settledApp()
+    expect(launches).toHaveLength(1)
+
+    fireEvent.click(getByRole('button', { name: '重连并重新加载当前设备' }))
+    act(() => { stream.emit({ device: [device({ state: 'CONNECTING', endpoint: undefined, connectionGeneration: 2 })] }) })
+    await act(async () => { await Promise.resolve() })
+    expect(launches).toHaveLength(1)
+    act(() => { stream.emit({ device: [device({ connectionGeneration: 2 })] }) })
+    await waitFor(() => expect(launches).toHaveLength(2))
+    act(() => { stream.emit({ device: [device({ connectionGeneration: 2, lastUpdatedAt: 3 })] }) })
+    await act(async () => { await Promise.resolve() })
+    expect(launches).toHaveLength(2)
+  })
+
+  it('does not reload when the reconnect request fails', async () => {
+    const { launches } = shell(() => ({ ok: false, status: 404, json: async () => ({ code: 'not-found', message: 'unknown device d1' }) } as Response))
+    const { getByRole, stream, container } = await settledApp()
+
+    fireEvent.click(getByRole('button', { name: '重连并重新加载当前设备' }))
+    await waitFor(() => expect(container.querySelector('.cockpit-error')?.textContent).toContain('unknown device d1'))
+    act(() => { stream.emit({ device: [device({ connectionGeneration: 2 })] }) })
+    await act(async () => { await Promise.resolve() })
+    expect(launches).toHaveLength(1)
   })
 })

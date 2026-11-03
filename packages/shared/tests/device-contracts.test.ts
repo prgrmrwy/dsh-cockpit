@@ -42,6 +42,7 @@ const remoteFacts = {
   dshAuthState: 'not-configured',
   dshAuthAutoDiscovery: false,
   dshAuthGeneration: 0,
+  connectionGeneration: 1,
 } satisfies DeviceStatusFacts
 
 const localFacts = {
@@ -61,6 +62,7 @@ const localFacts = {
   dshAuthState: 'not-configured',
   dshAuthAutoDiscovery: false,
   dshAuthGeneration: 0,
+  connectionGeneration: 1,
 } satisfies DeviceStatusFacts
 
 const disabledFacts = {

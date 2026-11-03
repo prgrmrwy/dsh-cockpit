@@ -26,7 +26,7 @@ const device = (overrides: Partial<DeviceStatusFacts> = {}): DeviceStatusFacts =
   deviceId: 'd1', displayName: 'A', kind: 'remote', sshAlias: 'vm-a', enabled: true, order: 0,
   state: 'READY', runningSessionCount: 0, pendingInteractionCount: 0, pendingInteractionObservability: 'available',
   sessionStatuses: [], compatibility: 'SUPPORTED', lastUpdatedAt: 0, endpoint: 'http://127.0.0.1:51000/',
-  dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1,
+  dshAuthConfigured: true, dshAuthState: 'ready', dshAuthAutoDiscovery: false, dshAuthGeneration: 1, connectionGeneration: 1,
   ...overrides,
 })
 

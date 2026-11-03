@@ -69,7 +69,7 @@ export const api = {
   updateDevice: (deviceId: string, input: UpdateDeviceRequest) => request<{ deviceId: string }>(`/devices/${encodeURIComponent(deviceId)}`, { method: 'PUT', body: JSON.stringify(input) }),
   removeDevice: (input: RemoveDeviceRequest) => request<{ removed: boolean; requiresConfirmation: boolean }>(`/devices/${encodeURIComponent(input.deviceId)}${input.confirmed ? '?confirmed=true' : ''}`, { method: 'DELETE' }),
   refreshDevice: (deviceId: string) => request<{ refreshed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/refresh`, { method: 'POST' }),
-  reconnectDevice: (deviceId: string) => request<{ reconnecting: boolean }>(`/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: 'POST' }),
+  reconnectDevice: (deviceId: string) => request<{ reconnecting: boolean; connectionGeneration: number }>(`/devices/${encodeURIComponent(deviceId)}/reconnect`, { method: 'POST' }),
   workbenchLaunch: (deviceId: string) => request<{ url: string; authGeneration: number }>(`/devices/${encodeURIComponent(deviceId)}/workbench-launch`, { method: 'POST' }),
   /** Marks every currently known completion generation for this device read. */
   ackCompleted: (deviceId: string) => request<{ acked: boolean }>(`/devices/${encodeURIComponent(deviceId)}/completed/ack`, { method: 'POST' }),

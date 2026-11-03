@@ -118,10 +118,10 @@ export class DevicesController {
 
   /** Reconnects exactly this device; other devices keep their live state. */
   @Post('devices/:deviceId/reconnect')
-  async reconnect(@Param('deviceId') deviceId: string): Promise<{ reconnecting: boolean }> {
+  async reconnect(@Param('deviceId') deviceId: string): Promise<{ reconnecting: boolean; connectionGeneration: number }> {
     try {
-      await this.connectivity.reconnectDevice(decodeDeviceId(deviceId))
-      return { reconnecting: true }
+      const connectionGeneration = await this.connectivity.reconnectDevice(decodeDeviceId(deviceId))
+      return { reconnecting: true, connectionGeneration }
     } catch (cause) {
       throw toHttp(cause)
     }
