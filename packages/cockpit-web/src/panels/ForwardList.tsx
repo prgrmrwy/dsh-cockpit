@@ -233,20 +233,29 @@ export function ForwardList({ device, confirm = defaultConfirm, openWindow = def
             <span>标签（可选）</span>
             <input value={label} maxLength={64} onChange={event => { setLabel(event.target.value) }} disabled={busy} />
           </label>
+          {/* Same label column + control column as the inputs above; the
+              hint sits directly under its own control. */}
           <label className="forward-form-same-port">
-            <input type="checkbox" checked={sameLocalPort} onChange={event => { setSameLocalPort(event.target.checked) }} disabled={busy} />
-            <span>本地端口同设备端口</span>
+            <span>本地端口</span>
+            <span className="forward-form-control">
+              <span className="forward-form-check">
+                <input aria-label="本地端口同设备端口" type="checkbox" checked={sameLocalPort} onChange={event => { setSameLocalPort(event.target.checked) }} disabled={busy} />
+                同设备端口
+              </span>
+              <span className="forward-form-hint">用于只接受 Host 为 127.0.0.1:&lt;本端口&gt; 的面板；端口被占用时报错重试，不会换端口。每个本地端口只能被一台设备占用。</span>
+            </span>
           </label>
-          <p className="forward-form-hint">用于只接受 Host 为 127.0.0.1:&lt;本端口&gt; 的面板；端口被占用时报错重试，不会换端口。每个本地端口只能被一台设备占用。</p>
           <label className="forward-form-path">
             <span>打开路径（可选）</span>
             <input value={openPath} maxLength={512} placeholder="/" onChange={event => { setOpenPath(event.target.value) }} disabled={busy} />
           </label>
           <label className="forward-form-command">
             <span>打开地址命令（可选）</span>
-            <input value={urlCommand} maxLength={1024} spellCheck={false} onChange={event => { setUrlCommand(event.target.value) }} disabled={busy} />
+            <span className="forward-form-control">
+              <input value={urlCommand} maxLength={1024} spellCheck={false} onChange={event => { setUrlCommand(event.target.value) }} disabled={busy} />
+              <span className="forward-form-hint">配置后，「打开」会经 SSH 在设备上执行这条命令，取输出中最后一个 http://127.0.0.1:&lt;设备端口&gt; 地址打开；只在点击时执行，输出不保存。</span>
+            </span>
           </label>
-          <p className="forward-form-hint">配置后，「打开」会经 SSH 在设备上执行这条命令，取输出中最后一个 http://127.0.0.1:&lt;设备端口&gt; 地址打开；只在点击时执行，输出不保存。</p>
           <button className="primary-action" type="submit" disabled={busy}>添加常驻转发</button>
         </div>
         {error !== undefined && <p className="panel-error" role="alert">{error}</p>}

@@ -306,12 +306,24 @@ body {
 .forward-form-hint { margin: 0; color: var(--fg-dim); font-size: 12px; }
 .forward-form-row { display: flex; flex-direction: column; align-items: stretch; gap: 6px; min-width: 0; }
 .forward-form-row label { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--fg-dim); }
-.forward-form-row label > span { flex: none; min-width: 6.5em; }
+/* One label column for every row (same 128px as .console-fields), so the
+   controls line up whatever the label length. */
+.forward-form-row label > span:first-child { flex: 0 0 128px; min-width: 6.5em; }
 .forward-form-row input { min-width: 0; max-width: 100%; }
 .forward-form-port input { flex: 0 1 6.5em; }
-.forward-form-label input, .forward-form-path input, .forward-form-command input { flex: 1 1 auto; }
-.forward-form-row label.forward-form-same-port { gap: 7px; color: var(--fg); }
-.forward-form-same-port input[type="checkbox"] { width: 16px; min-height: 16px; margin: 0; flex: none; }
+.forward-form-label input, .forward-form-path input { flex: 1 1 auto; }
+/* Rows whose control column carries a hint: label top-aligned with the
+   control, hint directly under it. */
+.forward-form-row label.forward-form-same-port, .forward-form-row label.forward-form-command { align-items: flex-start; }
+.forward-form-same-port > span:first-child { line-height: 20px; }
+.forward-form-command > span:first-child { line-height: 36px; }
+.forward-form-control { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+.forward-form-control .forward-form-hint { line-height: 18px; }
+.forward-form-control > input { width: 100%; }
+.forward-form-check { display: inline-flex; align-items: center; gap: 8px; min-height: 20px; color: var(--fg); }
+.forward-form-check input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--accent); }
+.console-shell .forward-form-check { color: var(--console-fg); }
+.console-shell .forward-form-check input[type="checkbox"] { accent-color: var(--console-accent); }
 /* The panel's primary colors at the card's rhythm: the shared 42px slab was
    heavier than every other control in the card. */
 .forward-form .primary-action { align-self: flex-start; min-height: 30px; padding: 0 14px; font-size: 12px; font-weight: 650; }
@@ -373,7 +385,7 @@ body {
 .console-fields > label, .console-readonly { display: grid; grid-template-columns: 128px minmax(0, 1fr); align-items: start; gap: 16px; padding: 16px 0; border-bottom: 1px solid var(--console-border); }
 .console-fields > :last-child { border-bottom: 0; }
 .console-fields p, .console-note { color: var(--console-muted); font-size: 12px; line-height: 19px; margin: 6px 0 0; max-width: 65ch; }
-.console-fields input:not([type="checkbox"]), .console-fields select, .console-shell .forward-form input { width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-bg); color: inherit; }
+.console-fields input:not([type="checkbox"]), .console-fields select, .console-shell .forward-form input:not([type="checkbox"]) { width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; border: 1px solid var(--console-border); border-radius: 8px; background: var(--console-bg); color: inherit; }
 .console-check { grid-template-columns: minmax(0, 1fr) auto !important; cursor: pointer; }
 .console-check input { width: 16px; height: 16px; margin: 3px 0 0; accent-color: var(--console-accent); }
 .console-readonly > :last-child { overflow-wrap: anywhere; color: var(--console-secondary); }
