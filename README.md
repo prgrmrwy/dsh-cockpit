@@ -198,7 +198,7 @@ iframe DOM，也拿不到它。有了插件后：
     - 从输出中取最后一个 origin 精确等于 `http://127.0.0.1:<设备端口>` 的 URL 打开；命令只在点击时执行。
     - 命令输出与结果 URL 不写日志、不进注册表、不进投影或快照。
     - 失败码：`forward-not-ready`、`url-command-failed`、`url-command-timed-out`、`url-command-no-url`、`url-command-output-too-large`。
-  - **工作台标签页**：同端口常驻条目可再勾选「在工作台显示为标签页」（`workbenchTab`；非同端口条目以 `workbench-tab-requires-same-port` 拒绝）。顶栏在当前设备项后显示它的标签页项，点开即在驾驶舱内以 iframe 承载 `127.0.0.1:<设备端口>` 上的服务；点设备项回到原生 DSH 工作台。
+  - **工作台标签页**：同端口常驻条目可再勾选「在工作台显示为标签页」（`workbenchTab`；非同端口条目以 `workbench-tab-requires-same-port` 拒绝）。顶栏常驻显示所有设备的标签页项（跟在所属设备后，名称如 `devbox · SA`），点开即切到该设备并在驾驶舱内以 iframe 承载 `127.0.0.1:<设备端口>` 上的服务；点设备项回到原生 DSH 工作台。
     - 首次选中才创建 iframe，之后不销毁；条目未就绪时只显示状态与诊断。启动地址与「打开」相同（有打开地址命令时经解析端点取得），只交给 iframe 一次，不进状态与日志。
     - 服务重启、token 轮换后，驾驶舱看不到 iframe 里的 401：在标签页项上右键（或长按）选「重新加载」。
     - 标签页 iframe 不参与 bridge 握手：即使该服务装了 `dsh-cockpit-bridge`，它在标签页里也保持静默，不上报会话。看标签页时，该设备不算前台，期间完成的会话照常补记完成提醒。

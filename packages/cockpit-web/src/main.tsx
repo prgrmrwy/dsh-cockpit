@@ -97,11 +97,12 @@ export function App() {
   // or absent for the device workbench. Page memory only, never persisted.
   const [views, setViews] = useState<ReadonlyMap<string, string>>(new Map())
   const [tabReload, setTabReload] = useState<ForwardTabReloadRequest | undefined>(undefined)
-  const currentFacts = enabledDevices.find(device => device.deviceId === currentId)
-  const currentTabs = useMemo(() => forwardTabsOf(currentFacts), [currentFacts])
+  // Every enabled device's tabs stay in the topbar; only the current
+  // device's view can be a tab.
+  const allTabs = useMemo(() => enabledDevices.flatMap(device => forwardTabsOf(device)), [enabledDevices])
   const wantedTab = currentId === undefined ? undefined : views.get(currentId)
   // A tab whose mark was cleared (or whose entry is gone) falls back to the workbench.
-  const activeTabKey = currentTabs.some(tab => tab.key === wantedTab) ? wantedTab : undefined
+  const activeTabKey = allTabs.some(tab => tab.key === wantedTab && tab.deviceId === currentId) ? wantedTab : undefined
 
   // Report the shown device: a completion on any other device is then
   // reminded even though its hidden page still treats the session as open.
@@ -113,19 +114,21 @@ export function App() {
   }, [currentId, activeTabKey, reportForeground])
 
   const select = useCallback((deviceId: string) => {
-    // The current device's own item returns to its workbench; another device
-    // reopens whatever view it had.
-    if (deviceId === currentId) {
-      setViews(previous => { const next = new Map(previous); next.delete(deviceId); return next })
-    }
+    // A device item always shows that device's workbench; its tabs have
+    // their own topbar items.
+    setViews(previous => { const next = new Map(previous); next.delete(deviceId); return next })
     setCurrentId(deviceId)
     try { window.localStorage.setItem('cockpit:last-device', deviceId) } catch { /* ignore */ }
-  }, [currentId])
+  }, [])
 
+  // A tab item switches to its device AND to the tab.
   const selectTab = useCallback((key: string) => {
-    if (currentId === undefined) return
-    setViews(previous => new Map(previous).set(currentId, key))
-  }, [currentId])
+    const tab = allTabs.find(candidate => candidate.key === key)
+    if (tab === undefined) return
+    setViews(previous => new Map(previous).set(tab.deviceId, key))
+    setCurrentId(tab.deviceId)
+    try { window.localStorage.setItem('cockpit:last-device', tab.deviceId) } catch { /* ignore */ }
+  }, [allTabs])
 
   const reloadTab = useCallback((key: string) => {
     setTabReload(previous => ({ key, nonce: (previous?.nonce ?? 0) + 1 }))
@@ -174,7 +177,7 @@ export function App() {
         onRefresh={reconnectCurrent}
         onRefreshLabel="重连并重新加载当前设备"
         onAckCompleted={ackCompleted}
-        tabs={currentTabs}
+        tabs={allTabs}
         activeTabKey={activeTabKey}
         onSelectTab={selectTab}
         onReloadTab={reloadTab}

@@ -14,6 +14,6 @@ export interface ForwardTab {
 export function forwardTabsOf(device: DeviceStatusFacts | undefined): readonly ForwardTab[] {
   if (device === undefined) return []
   return (device.forwards?.rows ?? []).flatMap(row => row.kind === 'additional' && row.workbenchTab
-    ? [{ key: `${device.deviceId}:${row.devicePort}`, deviceId: device.deviceId, devicePort: row.devicePort, name: row.label ?? `${device.displayName}:${row.devicePort}`, row }]
+    ? [{ key: `${device.deviceId}:${row.devicePort}`, deviceId: device.deviceId, devicePort: row.devicePort, name: row.label === undefined ? `${device.displayName}:${row.devicePort}` : `${device.displayName} · ${row.label}`, row }]
     : [])
 }

@@ -3,6 +3,7 @@ import { StrictMode } from 'react'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { TopBar } from '../src/components/TopBar.jsx'
+import { forwardTabsOf } from '../src/workbench/forward-tabs-model.js'
 
 afterEach(cleanup)
 
@@ -361,5 +362,20 @@ describe('top bar', () => {
     rerender(<TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} />)
     expect(container.querySelector('[data-forward-tab-item]')).toBeNull()
     expect(getAllByRole('tab')).toHaveLength(2)
+  })
+
+  it('keeps another device tabs after that device, unselected, and names them with the device', () => {
+    const row = { kind: 'additional' as const, devicePort: 3082, state: 'ready' as const, pinned: true, sameLocalPort: true, workbenchTab: true,
+      label: 'SA', holders: [], holderCount: 0, createdAt: 0, stateChangedAt: 0, localPort: 3082 }
+    const vmB = device({ deviceId: 'd2', displayName: 'VM B', forwards: { rows: [row], additionalCount: 1, limit: 8 } })
+    const unlabeled = device({ deviceId: 'd1', displayName: 'VM A', forwards: { rows: [{ ...row, devicePort: 3090, label: undefined }], additionalCount: 1, limit: 8 } })
+    const tabs = [...forwardTabsOf(unlabeled), ...forwardTabsOf(vmB)]
+    expect(tabs.map(tab => tab.name)).toEqual(['VM A:3090', 'VM B · SA'])
+    const { getAllByRole } = render(
+      <TopBar devices={[unlabeled, vmB]} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} tabs={tabs} activeTabKey={undefined} />,
+    )
+    const items = getAllByRole('tab')
+    expect(items.map(tab => tab.textContent)).toEqual(['VM A', 'VM A:3090', 'VM B', 'VM B · SA'])
+    expect(items[3]!.getAttribute('aria-selected')).toBe('false')
   })
 })

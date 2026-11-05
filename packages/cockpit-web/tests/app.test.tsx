@@ -209,7 +209,7 @@ describe('foreground device report (remind-background-device-completion)', () =>
   })
 
   // change forward-workbench-tab: views per device; a tab is not the device.
-  it('switches between workbench and forward tab, keeps the view per device, and reports no foreground on a tab', async () => {
+  it('keeps every device tab in the topbar, switches device and view from it, and reports no foreground on a tab', async () => {
     const tabRow = (workbenchTab: boolean) => ({
       kind: 'additional' as const, devicePort: 3082, state: 'ready' as const, pinned: true, sameLocalPort: true, workbenchTab,
       label: 'SA', holders: [], holderCount: 0, createdAt: 0, stateChangedAt: 0, localPort: 3082, pid: 9100,
@@ -228,15 +228,18 @@ describe('foreground device report (remind-background-device-completion)', () =>
     expect(tabsShown()).toBe(true)
     await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBeNull())
 
-    // Away to d2 and back: d1 reopens on its tab.
+    // On d2 the d1 tab stays in the topbar; clicking it switches device and view.
     fireEvent.click(container.querySelector('[data-federation-node="d2"]')!)
     await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d2'))
-    expect(tabItem()).toBeNull()
-    fireEvent.click(container.querySelector('[data-federation-node="d1"]')!)
+    expect(tabsShown()).toBe(false)
+    expect(tabItem()).not.toBeNull()
+    expect(tabItem()!.getAttribute('aria-selected')).toBe('false')
+    fireEvent.click(tabItem()!)
     expect(tabsShown()).toBe(true)
+    expect(tabItem()!.getAttribute('aria-selected')).toBe('true')
     await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBeNull())
 
-    // The current device's own item returns to its workbench.
+    // A device item always shows its workbench.
     fireEvent.click(container.querySelector('[data-federation-node="d1"]')!)
     expect(tabsShown()).toBe(false)
     await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d1'))

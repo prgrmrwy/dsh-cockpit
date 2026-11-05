@@ -51,7 +51,7 @@ export interface TopBarProps {
   readonly onRefreshLabel?: string
   /** Clears this device's current completion generations without selecting it. */
   readonly onAckCompleted?: (deviceId: string) => void | Promise<void>
-  /** Forward tabs of the CURRENT device (change forward-workbench-tab). */
+  /** Forward tabs of every enabled device, each shown after its device (change forward-workbench-tab). */
   readonly tabs?: readonly ForwardTab[]
   readonly activeTabKey?: string | undefined
   readonly onSelectTab?: (key: string) => void
@@ -103,7 +103,7 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
       <div className="topbar-devices" role="tablist">
         {devices.filter(device => device.enabled).map(device => {
           const active = device.deviceId === currentId
-          const deviceTabs = active ? tabs : []
+          const deviceTabs = tabs.filter(tab => tab.deviceId === device.deviceId)
           return [
             <div
               key={device.deviceId}

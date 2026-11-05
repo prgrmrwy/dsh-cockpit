@@ -66,6 +66,11 @@
   结果记录到本文件。
 - [x] 6.4 在协作空间 `cockpit-shim-publish` 通知部署侧。
 
+## 7. 标签页常驻顶栏（验收后修订 D1）
+
+- [x] 7.1 顶栏常驻所有已启用设备的标签页项，跟在所属设备后；名称带设备名；点标签页项同时切换设备与视图，点设备项总是回到工作台。验证：`topbar.test.tsx` 新增「其它设备的标签页常驻且未选中、名称带设备名」，`app.test.tsx` 更新为「从其它设备直接打开标签页、前台上报为空、点设备项回到工作台」；web 全量测试、typecheck、lint 通过。
+- [ ] 7.2 实机复验：离开 devbox 后顶栏仍显示 `devbox · SA`，点击即切回并打开 SA。
+
 ## Workflow follow-up
 
 - 用户验收后，按 `openspec-archive-change` 归档，并把 delta 合入 `openspec/specs/`。

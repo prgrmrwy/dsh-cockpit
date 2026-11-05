@@ -14,7 +14,7 @@
 
 ### Added
 
-- 同端口常驻转发可显示为工作台标签页：顶栏在当前设备后列出，点开即在驾驶舱内承载设备上的其它 Web 服务（如另一个 DSH Web），右键「重新加载」应对 token 轮换；标签页不参与 bridge 握手（change `forward-workbench-tab`）。
+- 同端口常驻转发可显示为工作台标签页：顶栏常驻列出（跟在所属设备后），点开即在驾驶舱内承载设备上的其它 Web 服务（如另一个 DSH Web），右键「重新加载」应对 token 轮换；标签页不参与 bridge 握手（change `forward-workbench-tab`）。
 - 常驻转发可选「本地端口同设备端口」：端口被占用时不换端口，跨设备冲突以 `local-port-conflict` 拒绝。设备面板就绪行新增「打开」，支持打开路径，并可经设备命令取出带 token 的打开地址（`POST /api/devices/:id/forwards/:port/open-url`）。bridge 与 iframe 快照不变（change `forward-fixed-port-open`）。
 - README 新增架构图与设备连接状态图（`docs/assets/*.dual.svg`，深浅主题自适应），协议细节与验收记录折叠展示。
 - 仓库工程化对齐 ohmydsh：`.editorconfig`、`.nvmrc`、`.gitattributes`、`CODE_OF_CONDUCT.md`、本 CHANGELOG、Dependabot 依赖更新；CI 增加并发取消、最小权限与手动触发。
