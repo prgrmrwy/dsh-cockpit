@@ -115,7 +115,7 @@ describe('cockpit visual contracts', () => {
     expect(css).toMatch(/\.forward-diagnostic\s*\{[^}]*overflow-wrap:\s*anywhere/s)
     // The create fields stack with their names in one aligned column.
     expect(css).toMatch(/\.forward-form-row\s*\{[^}]*flex-direction:\s*column/s)
-    expect(css).toMatch(/\.forward-form-row\s+label\s*>\s*span:first-child\s*\{[^}]*min-width:\s*6\.5em/s)
+    expect(css).toMatch(/\.forward-form-row\s+label\s*>\s*span:first-child[^{]*\{[^}]*min-width:\s*6\.5em/s)
   })
   it('styles the same-port marker, open action and new create fields with tokens only', () => {
     expect(css).toMatch(/\.forward-same-port\s*\{[^}]*color:\s*var\(--accent\)/s)

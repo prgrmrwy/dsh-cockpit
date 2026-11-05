@@ -122,4 +122,16 @@ describe('forward list: same-port and open', () => {
     fireEvent.click(within(region()).getByRole('button', { name: '添加常驻转发' }))
     await waitFor(() => expect(within(region()).getByRole('alert').textContent).toContain('才能显示为工作台标签页'))
   })
+
+  it('clicking the tab switch text ticks the tab switch, not same-port', () => {
+    render(<ForwardList device={device()} />)
+    const same = within(region()).getByLabelText('本地端口同设备端口') as HTMLInputElement
+    const tab = within(region()).getByLabelText('在工作台显示为标签页') as HTMLInputElement
+    fireEvent.click(within(region()).getByText('同设备端口'))
+    expect(same.checked).toBe(true)
+    fireEvent.click(within(region()).getByText('在工作台显示为标签页'))
+    expect(same.checked).toBe(true)
+    expect(tab.checked).toBe(true)
+    expect(tab.disabled).toBe(false)
+  })
 })

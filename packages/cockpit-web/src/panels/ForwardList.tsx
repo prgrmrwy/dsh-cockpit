@@ -239,21 +239,23 @@ export function ForwardList({ device, confirm = defaultConfirm, openWindow = def
             <input value={label} maxLength={64} onChange={event => { setLabel(event.target.value) }} disabled={busy} />
           </label>
           {/* Same label column + control column as the inputs above; the
-              hint sits directly under its own control. */}
-          <label className="forward-form-same-port">
+              hint sits directly under its own control. A div, not a label:
+              a label wrapping two checkboxes forwards every click on it to the
+              FIRST one, so clicking the tab switch's text unticked same-port. */}
+          <div className="forward-form-same-port" role="group" aria-label="本地端口">
             <span>本地端口</span>
             <span className="forward-form-control">
-              <span className="forward-form-check">
+              <label className="forward-form-check">
                 <input aria-label="本地端口同设备端口" type="checkbox" checked={sameLocalPort} onChange={event => { setSameLocalPort(event.target.checked) }} disabled={busy} />
                 同设备端口
-              </span>
-              <span className={`forward-form-check${sameLocalPort ? '' : ' forward-form-check-disabled'}`}>
+              </label>
+              <label className={`forward-form-check${sameLocalPort ? '' : ' forward-form-check-disabled'}`}>
                 <input aria-label="在工作台显示为标签页" type="checkbox" checked={sameLocalPort && workbenchTab} onChange={event => { setWorkbenchTab(event.target.checked) }} disabled={busy || !sameLocalPort} />
                 在工作台显示为标签页
-              </span>
+              </label>
               <span className="forward-form-hint">用于只接受 Host 为 127.0.0.1:&lt;本端口&gt; 的面板；端口被占用时报错重试，不会换端口。每个本地端口只能被一台设备占用。开启标签页后，顶栏在该设备后显示它，在驾驶舱内直接打开。</span>
             </span>
-          </label>
+          </div>
           <label className="forward-form-path">
             <span>打开路径（可选）</span>
             <input value={openPath} maxLength={512} placeholder="/" onChange={event => { setOpenPath(event.target.value) }} disabled={busy} />
