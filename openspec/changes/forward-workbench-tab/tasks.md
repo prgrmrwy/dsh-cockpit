@@ -64,7 +64,7 @@
   - 3080 主工作台与会话上报不受影响。
 
   结果记录到本文件。
-- [ ] 6.4 在协作空间 `cockpit-shim-publish` 通知部署侧。
+- [x] 6.4 在协作空间 `cockpit-shim-publish` 通知部署侧。
 
 ## Workflow follow-up
 
