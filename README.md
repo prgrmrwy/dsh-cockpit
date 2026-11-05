@@ -190,12 +190,21 @@ iframe DOM，也拿不到它。有了插件后：
 - **远程编辑器服务**：bridge 以稳定服务名 `cockpitBridge.editorOpen` 面向任意同页面插件；收到合法 `sshAlias` 后，在原始用户点击链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。不新增反向 postMessage；其它插件不得绕过 bridge 直接与驾驶舱通信。
 - **转发申请服务**（bridge 0.6.0 起）：bridge 以稳定服务名 `cockpitBridge.forwards` 面向任意同页面插件，让设备上只监听回环的服务能被宿主机浏览器访问。`acquire(devicePort, holder)` 立即返回条目当前状态（`starting` / `ready` / `retrying` / `paused`），地址在就绪后经父页面推送的快照交付（`127.0.0.1:<localPort>` 与 `http://` URL）；`release(handle)` 释放；`list()` / `subscribe()` 读最近一次快照。条目从快照中消失时持有者收到 `removed`，bridge 不自动重新申请。
   - **每台设备一张转发表**：主通道以 `system` 行投影在表中（不可删）；附加条目按设备端口去重，每台设备至多 8 条。条目有两种寿命——**常驻**（只能在驾驶舱设备面板创建/删除，以 `{ devicePort, label? }` 写入注册表，不含本地端口，驾驶舱重启与设备重新启用后重建）与**随持有者**（仅在内存，持有者为 `(驾驶舱页面, bridge 页面实例, 标签)`）。附加转发的本地端口由内核分配、**不持久化**，自愈重建后可能变化。
+  - **同端口常驻条目**：有些设备面板只接受 `Host` 为 `127.0.0.1:<自身端口>` 的请求。创建常驻条目时勾选「本地端口同设备端口」，该条目就始终绑定 `127.0.0.1:<设备端口>`。注册表里只记一个 `sameLocalPort` 标记，不记端口号。
+    - 端口被占用时**不换端口**：条目以 `local port 127.0.0.1:<port> is in use` 进入「重试中」，端口释放后自动恢复。
+    - 一个本地端口在驾驶舱内只能有一个持有方：已被其他设备的同端口条目或任一设备的工作台端口占用时，以 `local-port-conflict` 拒绝。多台设备并存同一端口需要 Host 改写代理，本功能不提供。
+  - **在浏览器打开**：就绪的附加条目有「打开」按钮，在不持有 opener 的新窗口中打开 `http://127.0.0.1:<localPort><打开路径>`。常驻条目还可以配一条**打开地址命令**，适合地址带 token、每次服务重启都会变的面板。
+    - 点击「打开」时，驾驶舱经 BatchMode SSH 在设备上执行这条命令，超时 10 秒，输出上限 64 KiB。
+    - 从输出中取最后一个 origin 精确等于 `http://127.0.0.1:<设备端口>` 的 URL 打开；命令只在点击时执行。
+    - 命令输出与结果 URL 不写日志、不进注册表、不进投影或快照。
+    - 失败码：`forward-not-ready`、`url-command-failed`、`url-command-timed-out`、`url-command-no-url`、`url-command-output-too-large`。
+  - **回滚提示**：旧版驾驶舱读取注册表时会丢掉 `sameLocalPort`、`openPath`、`urlCommand`，并在下一次写注册表时把它们从文件中删除。重新升级后，需要在面板里重新提交这些选项。
   - **持有者回收**：bridge 页面实例结束（`pagehide` / dispose / bfcache 恢复换新标识）时经父页面调用 `release-instance`；驾驶舱页面的设备状态流连接数归零 30 秒后，回收该页面的全部持有；二者都不依赖计时续约。
   - **自愈**：子进程就绪后意外退出时条目置为 `retrying` 并按 1s 起加倍、上限 60s、带抖动的退避重建；主通道不可用时只暂停新建、不杀存活进程；修改 SSH 别名后全部附加子进程终止，待主通道在新别名上就绪后重建。
   - **不是通用隧道**：安全边界是结构性的——只转发设备的回环地址、只在宿主机回环监听、每条转发绑定单个端口、每设备至多 8 条、作用对象由能力串授权记录限定为调用页面自己的设备（配合 `cockpit-api-auth` 阻止设备页面带 cookie 调用管理 API）、全部条目在驾驶舱面板与设备 DSH 设置页可见并可在面板删除、设备页面不能建立常驻条目也不能删除任何条目。调用方可以直接传端口号：0.5.x 的「先登记 channel 再发布」并不构成边界（登记与发布出自同一可信页面上下文），已在本版移除。
-  - 业务拒绝返回 409 与稳定 `code`（`forward-limit`、`reserved-port`、`invalid-port`、`invalid-holder`、`invalid-label`、`local-device`、`device-unavailable`），bridge 不为此换发能力串；能力串相关拒绝保持 400/401。驾驶舱不进入被转发流量的数据路径，不解析、不重写、不记录其内容。
+  - 业务拒绝返回 409 与稳定 `code`（`forward-limit`、`reserved-port`、`invalid-port`、`invalid-holder`、`invalid-label`、`local-device`、`device-unavailable`；仅驾驶舱面板的创建端点另有 `local-port-conflict`、`invalid-open-path`、`invalid-url-command`），bridge 不为此换发能力串；能力串相关拒绝保持 400/401。驾驶舱不进入被转发流量的数据路径，不解析、不重写、不记录其内容。
   - 服务缺席、握手未完成或页面不在驾驶舱中时，调用同步抛出 `unavailable`，消费方据此回落自身的本机地址——不在驾驶舱中运行时这就是常态。
-  - 管理入口：驾驶舱「设备与设置」中所选远端设备详情的「转发」清单（占用 `N / 8`、状态、pid、诊断、创建常驻、删除）；设备 DSH 设置页「驾驶舱转发」区块只读显示同一张表。
+  - 管理入口：驾驶舱「设备与设置」中所选远端设备详情的「转发」清单（占用 `N / 8`、状态、pid、诊断、创建常驻（可选同端口、打开路径、打开地址命令；对已有端口再次提交即更新选项）、打开、删除）；设备 DSH 设置页「驾驶舱转发」区块只读显示同一张表。
 - **前置与边界**：宿主机需安装 VS Code Remote-SSH；未安装时 URI 可能被静默丢弃。带点的目录名可能被 VS Code URI handler 判断为文件。
 - **端口不写死**：插件不再固定请求 `127.0.0.1:3090`——实际 Cockpit Origin 由
   父页面握手动态提供，因此驾驶舱运行在 `COCKPIT_PORT` 指定的**任意受支持端口**

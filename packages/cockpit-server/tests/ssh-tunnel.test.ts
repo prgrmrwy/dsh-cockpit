@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:net'
 import { Readable } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import { defaultSpawner, probeSshIdentity, reserveCandidatePort, validateSshAlias, type OwnedProcess } from '../src/connectivity/ssh.js'
-import { TunnelManager, WORKBENCH_CHANNEL, isPortBindFailure } from '../src/connectivity/tunnel-manager.js'
+import { TunnelManager, WORKBENCH_CHANNEL, isPortBindFailure, localPortInUseDiagnostic } from '../src/connectivity/tunnel-manager.js'
 
 /** Fake ssh: keeps running long enough to look alive; records signals. */
 class FakeProcess implements OwnedProcess {
@@ -362,6 +362,69 @@ describe('tunnel manager local port reuse', () => {
     expect(handle.localPort).toBe(stablePort)
     expect(quiet).toHaveLength(0)
     await stable.disposeAll()
+  })
+})
+
+/** Same-port pinned forwards (change forward-fixed-port-open): the local port
+ * must equal the device port, so it is bound strictly and never drifts. */
+describe('tunnel manager strict local port', () => {
+  const settle = async () => ({ ok: true, state: 'READY' as const, diagnostic: 'ok' })
+
+  it('fails with the in-use diagnostic instead of drifting when the strict port is taken', async () => {
+    const strict = (await reserveCandidatePort()).port
+    const holder = await occupy(strict)
+    const spawned: string[][] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => { spawned.push([...argv]); return new FakeProcess(900 + spawned.length) },
+      readinessProbe: settle,
+    })
+    try {
+      await expect(manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'fwd-x', remoteDshPort: strict, strictLocalPort: strict, probeForDsh: false }))
+        .rejects.toThrow(localPortInUseDiagnostic(strict))
+      // No ssh child was started on some other local port.
+      expect(spawned).toHaveLength(0)
+    } finally {
+      await manager.disposeAll()
+      await release(holder)
+    }
+  })
+
+  it('reports the in-use diagnostic when OpenSSH loses the strict port in the bind window', async () => {
+    const strict = (await reserveCandidatePort()).port
+    const spawned: string[][] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        spawned.push([...argv])
+        const child = new FakeProcess(910 + spawned.length)
+        child.emitStderrThenExit(`bind [127.0.0.1]:${strict}: Address already in use\r\nCould not request local forwarding.\r\n`, 255)
+        return child
+      },
+      readinessProbe: settle,
+    })
+    await expect(manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'fwd-x', remoteDshPort: strict, strictLocalPort: strict, probeForDsh: false }))
+      .rejects.toThrow(localPortInUseDiagnostic(strict))
+    expect(spawned).toHaveLength(1)
+    expect(forwardedPort(spawned[0]!)).toBe(strict)
+    await manager.disposeAll()
+  })
+
+  it('retries a link-level failure on the same strict port', async () => {
+    const strict = (await reserveCandidatePort()).port
+    const spawned: string[][] = []
+    const manager = new TunnelManager({
+      spawn: (_exe, argv) => {
+        spawned.push([...argv])
+        const child = new FakeProcess(920 + spawned.length)
+        if (spawned.length === 1) child.emitStderrThenExit('ssh: connect to host 10.255.255.1 port 22: Operation timed out\r\n', 255)
+        return child
+      },
+      readinessProbe: settle,
+    })
+    const handle = await manager.connect({ deviceId: 'd1', sshAlias: 'vm-a', channelId: 'fwd-x', remoteDshPort: strict, strictLocalPort: strict, probeForDsh: false })
+    expect(spawned).toHaveLength(2)
+    expect(spawned.map(forwardedPort)).toEqual([strict, strict])
+    expect(handle.localPort).toBe(strict)
+    await manager.disposeAll()
   })
 })
 

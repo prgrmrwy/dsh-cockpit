@@ -117,4 +117,13 @@ describe('cockpit visual contracts', () => {
     expect(css).toMatch(/\.forward-form-row\s*\{[^}]*flex-direction:\s*column/s)
     expect(css).toMatch(/\.forward-form-row\s+label\s*>\s*span\s*\{[^}]*min-width:\s*6\.5em/s)
   })
+  it('styles the same-port marker, open action and new create fields with tokens only', () => {
+    expect(css).toMatch(/\.forward-same-port\s*\{[^}]*color:\s*var\(--accent\)/s)
+    expect(css).toMatch(/\.forward-row-actions\s*\{[^}]*display:\s*flex/s)
+    expect(css).toMatch(/\.forward-open-path,\s*\.forward-url-command\s*\{[^}]*overflow-wrap:\s*anywhere/s)
+    expect(css).toMatch(/\.forward-form-same-port\s+input\[type="checkbox"\]\s*\{[^}]*flex:\s*none/s)
+    for (const rule of css.match(/\.forward-(?:same-port|open|open-path|url-command|row-actions|form-same-port|form-path|form-command)[^{]*\{[^}]*\}/gs) ?? []) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+    }
+  })
 })

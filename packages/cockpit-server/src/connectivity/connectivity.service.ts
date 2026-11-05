@@ -1,10 +1,11 @@
 import { Inject, Injectable, Logger, Optional, OnApplicationShutdown } from '@nestjs/common'
-import { FORWARD_LIMIT, isValidOpaqueId, type DeviceConnectionStatus, type DeviceForwardsProjection, type DeviceRecord, type DeviceStatusFacts } from '@dsh-cockpit/shared'
+import { FORWARD_LIMIT, isValidOpaqueId, type PinnedForwardRecord, type DeviceConnectionStatus, type DeviceForwardsProjection, type DeviceRecord, type DeviceStatusFacts } from '@dsh-cockpit/shared'
 import { DeviceRegistry } from '../storage/registry.js'
 import { DeviceLifecycle, type DeviceLifecycleOptions } from './device-lifecycle.js'
 import { DeviceEventsService } from './device-events.service.js'
-import { DeviceForwards, ForwardRejection, type AcquireResult, type ForwardHolder } from './forward-table.js'
+import { DeviceForwards, ForwardRejection, type AcquireResult, type ForwardHolder, type PinOptions } from './forward-table.js'
 import { TunnelManager } from './tunnel-manager.js'
+import { ForwardOpenFailure, resolveUrlByCommand, type UrlCommandOptions } from './forward-url-command.js'
 import { probeSshIdentity, validateSshAlias } from './ssh.js'
 import { probeDshCarrier } from './protocol-client.js'
 import { parseDshLaunchUrl } from './dsh-auth.js'
@@ -37,6 +38,8 @@ export interface ConnectivityServiceSeams {
   readonly createProtocol?: DeviceLifecycleOptions['createProtocol']
   /** Pre-built tunnel manager (tests drive fake ssh children through it). */
   readonly tunnels?: TunnelManager
+  /** Process seam for open-address commands (tests use a fake spawner). */
+  readonly urlCommand?: UrlCommandOptions
 }
 
 @Injectable()
@@ -49,6 +52,10 @@ export class ConnectivityService implements OnApplicationShutdown {
   /** Per-device forward tables (design D1). Owned by the device, not by any
    * one lifecycle instance: replacing the workbench connection keeps them. */
   readonly #forwards = new Map<string, DeviceForwards>()
+  /** Same-port pins whose registry write is still in flight (change
+   * forward-fixed-port-open D3): local port → device id. Checked and filled
+   * in one synchronous section, so two racing pins cannot both pass. */
+  readonly #pendingSamePorts = new Map<number, string>()
   /** Per cockpit page: bridge instance ids that already ended (D4(e)). */
   readonly #endedInstances = new Map<string, Set<string>>()
   /** Last bridge hello per device (dsh-cockpit-bridge plugin heartbeats). */
@@ -65,6 +72,7 @@ export class ConnectivityService implements OnApplicationShutdown {
   /** Protocol-factory seam, mirroring DeviceLifecycle's own option: a typert
    * fixture needs a real handshake otherwise, which a unit test cannot host. */
   readonly #createProtocol: DeviceLifecycleOptions['createProtocol']
+  readonly #urlCommand: UrlCommandOptions | undefined
 
   constructor(
     @Inject(DeviceRegistry) registry: DeviceRegistry,
@@ -87,6 +95,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     this.#sshExecutable = resolveSshExecutable()
     this.#fetchImpl = seams.fetch
     this.#createProtocol = seams.createProtocol
+    this.#urlCommand = seams.urlCommand
     this.#launchCoordinator = seams.launchCoordinator ?? new WorkbenchLaunchCoordinator({ logger: this.#logger })
     this.#tunnels = seams.tunnels ?? new TunnelManager({
       sshExecutable: this.#sshExecutable,
@@ -169,7 +178,7 @@ export class ConnectivityService implements OnApplicationShutdown {
     // park as `paused` until the workbench channel is READY.
     for (const pinned of record.forwards ?? []) {
       try {
-        table.pin(pinned.devicePort, pinned.label)
+        table.pin(pinned.devicePort, pinnedOptions(pinned))
       } catch (cause) {
         const code = cause instanceof ForwardRejection ? cause.code : String(cause)
         this.#logger.warn(`pinned forward not restored: device=${record.deviceId} port=${pinned.devicePort} reason=${code}`)
@@ -256,21 +265,79 @@ export class ConnectivityService implements OnApplicationShutdown {
   /** Cockpit panel: create a pinned entry (or pin a held one). Disk first
    * (design D3): the mark is written through `mutateDevice`, and only after
    * that succeeds does memory change and a child start. */
-  async pinForward(deviceId: string, devicePort: number, label?: string): Promise<AcquireResult> {
+  async pinForward(deviceId: string, devicePort: number, options: PinOptions = {}): Promise<AcquireResult> {
     if (!this.#lifecycles.has(deviceId)) throw new Error(`unknown device ${deviceId}`)
     const table = this.#forwardTable(deviceId)
-    table.checkPin(devicePort, label)
-    const committed = await this.#registry.mutateDevice(deviceId, current => {
-      const existing = current.forwards ?? []
-      const previous = existing.find(entry => entry.devicePort === devicePort)
-      const nextLabel = label ?? previous?.label
-      if (previous !== undefined && previous.label === nextLabel) return current
-      const mark = nextLabel === undefined ? { devicePort } : { devicePort, label: nextLabel }
-      return { ...current, forwards: [...existing.filter(entry => entry.devicePort !== devicePort), mark] }
-    })
-    if (committed === undefined) throw new ForwardRejection('device-unavailable')
-    if (this.#forwards.get(deviceId) !== table) throw new ForwardRejection('device-unavailable')
-    return table.pin(devicePort, label)
+    table.checkPin(devicePort, options)
+    const reserved = options.sameLocalPort === true
+    if (reserved) {
+      const records = await this.#registry.load()
+      // Synchronous from here to the reservation: the conflict check and the
+      // pending mark share one critical section (D3).
+      if (this.#samePortTaken(deviceId, devicePort, records)) throw new ForwardRejection('local-port-conflict')
+      this.#pendingSamePorts.set(devicePort, deviceId)
+    }
+    try {
+      const committed = await this.#registry.mutateDevice(deviceId, current => {
+        const existing = current.forwards ?? []
+        const previous = existing.find(entry => entry.devicePort === devicePort)
+        const mark = mergePinnedMark(devicePort, previous, options)
+        if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(mark)) return current
+        return { ...current, forwards: [...existing.filter(entry => entry.devicePort !== devicePort), mark] }
+      })
+      if (committed === undefined) throw new ForwardRejection('device-unavailable')
+      if (this.#forwards.get(deviceId) !== table) throw new ForwardRejection('device-unavailable')
+      return table.pin(devicePort, options)
+    } finally {
+      if (reserved && this.#pendingSamePorts.get(devicePort) === deviceId) this.#pendingSamePorts.delete(devicePort)
+    }
+  }
+
+  /** Whether `port` is already claimed as a local port by someone other than
+   * `deviceId`: another device's same-port entry (live, pending, or persisted
+   * while disabled), or ANY remote device's workbench channel — the caller's
+   * own included — by current or persisted port, so no iframe origin is ever
+   * forced to drift. */
+  #samePortTaken(deviceId: string, port: number, records: readonly DeviceRecord[]): boolean {
+    const pending = this.#pendingSamePorts.get(port)
+    if (pending !== undefined && pending !== deviceId) return true
+    for (const [otherId, table] of this.#forwards) {
+      if (otherId !== deviceId && table.projection().some(row => row.sameLocalPort && row.devicePort === port)) return true
+    }
+    for (const record of records) {
+      if (record.kind === 'local') continue
+      if (record.localPort === port) return true
+      if (record.deviceId !== deviceId && (record.forwards ?? []).some(mark => mark.sameLocalPort === true && mark.devicePort === port)) return true
+      const endpoint = this.#lifecycles.get(record.deviceId)?.current().endpoint
+      if (endpoint !== undefined && Number(new URL(endpoint).port) === port) return true
+    }
+    return false
+  }
+
+  /** Cockpit panel: resolve a ready entry's open address by running its
+   * device command (change forward-fixed-port-open D5/D6). Only the device
+   * id, port and result code are ever logged — never the command, its output
+   * or the URL, which may carry a token. */
+  async resolveForwardUrl(deviceId: string, devicePort: number): Promise<{ url: string }> {
+    const lifecycle = this.#lifecycles.get(deviceId)
+    if (lifecycle === undefined) throw new Error(`unknown device ${deviceId}`)
+    const entry = this.#forwardTable(deviceId).entry(devicePort)
+    if (entry === undefined || entry.state !== 'ready' || entry.localPort === undefined) throw new ForwardOpenFailure('forward-not-ready')
+    if (entry.urlCommand === undefined) throw new ForwardOpenFailure('url-command-no-url')
+    const sshAlias = lifecycle.current().sshAlias
+    if (sshAlias === undefined) throw new ForwardOpenFailure('url-command-failed')
+    try {
+      const url = await resolveUrlByCommand(sshAlias, entry.urlCommand, devicePort, entry.localPort, {
+        sshExecutable: this.#sshExecutable,
+        ...this.#urlCommand,
+      })
+      this.#logger.log(`open url resolved: device=${deviceId} port=${devicePort}`)
+      return { url }
+    } catch (cause) {
+      const code = cause instanceof ForwardOpenFailure ? cause.code : 'url-command-failed'
+      this.#logger.warn(`open url failed: device=${deviceId} port=${devicePort} code=${code}`)
+      throw cause instanceof ForwardOpenFailure ? cause : new ForwardOpenFailure('url-command-failed')
+    }
   }
 
   /** Cockpit panel: delete an entry — pin mark, every holder, the child.
@@ -873,3 +940,29 @@ function randomSuffix(): string {
   return Math.random().toString(36).slice(2, 10)
 }
 
+/** A persisted pinned mark as pin options (restore path). */
+function pinnedOptions(mark: PinnedForwardRecord): PinOptions {
+  return {
+    ...(mark.label === undefined ? {} : { label: mark.label }),
+    sameLocalPort: mark.sameLocalPort === true,
+    ...(mark.openPath === undefined ? {} : { openPath: mark.openPath }),
+    ...(mark.urlCommand === undefined ? {} : { urlCommand: mark.urlCommand }),
+  }
+}
+
+/** Merge pin options into the persisted mark (D4): `undefined` keeps the
+ * previous value, an empty string clears a string field. */
+function mergePinnedMark(devicePort: number, previous: PinnedForwardRecord | undefined, options: PinOptions): PinnedForwardRecord {
+  const pick = (next: string | undefined, before: string | undefined) => next === undefined ? before : next === '' ? undefined : next
+  const label = options.label ?? previous?.label
+  const sameLocalPort = options.sameLocalPort ?? previous?.sameLocalPort === true
+  const openPath = pick(options.openPath, previous?.openPath)
+  const urlCommand = pick(options.urlCommand, previous?.urlCommand)
+  return {
+    devicePort,
+    ...(label === undefined ? {} : { label }),
+    ...(sameLocalPort ? { sameLocalPort: true as const } : {}),
+    ...(openPath === undefined ? {} : { openPath }),
+    ...(urlCommand === undefined ? {} : { urlCommand }),
+  }
+}

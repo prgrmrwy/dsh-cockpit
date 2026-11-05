@@ -62,6 +62,11 @@ export interface AdditionalForwardRow {
   readonly state: ForwardEntryState
   readonly pinned: boolean
   readonly label?: string
+  /** Pinned with the same-port mark: the local port always equals the device
+   * port (change forward-fixed-port-open). Cockpit-only: never in a snapshot. */
+  readonly sameLocalPort: boolean
+  readonly openPath?: string
+  readonly urlCommand?: string
   readonly holders: readonly string[]
   readonly holderCount: number
   readonly diagnostic?: string
@@ -79,10 +84,14 @@ export interface DeviceForwardsProjection {
   readonly limit: number
 }
 
-/** Persisted pinned entry: no local port, ever. */
+/** Persisted pinned entry: no local port number, ever — `sameLocalPort` is
+ * only a mark (the port is the device port). */
 export interface PinnedForwardRecord {
   readonly devicePort: number
   readonly label?: string
+  readonly sameLocalPort?: true
+  readonly openPath?: string
+  readonly urlCommand?: string
 }
 
 /** Parent page → device iframe: this device's forward table (design D7). */

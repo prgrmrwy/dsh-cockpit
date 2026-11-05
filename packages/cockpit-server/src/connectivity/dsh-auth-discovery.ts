@@ -114,7 +114,7 @@ export interface DiscoveryProcess {
 
 export type DiscoveryProcessSpawner = (executable: string, argv: readonly string[]) => DiscoveryProcess
 
-const defaultDiscoverySpawner: DiscoveryProcessSpawner = (executable, argv) => {
+export const defaultDiscoverySpawner: DiscoveryProcessSpawner = (executable, argv) => {
   const child = spawn(executable, [...argv], {
     shell: false,
     stdio: ['ignore', 'pipe', 'pipe'],

@@ -80,6 +80,7 @@ export const api = {
   bridgeCapability: (deviceId: string) => request<BridgeCapabilityPayload>(`/devices/${encodeURIComponent(deviceId)}/bridge/capability`, { method: 'POST', body: JSON.stringify({ pageId: PAGE_ID }) }),
   /** A bridge page instance in this device's iframe ended (design D4(a)). */
   releaseForwardInstance: (deviceId: string, instanceId: string) => request<{ released: boolean }>(`/devices/${encodeURIComponent(deviceId)}/forwards/release-instance`, { method: 'POST', body: JSON.stringify({ instanceId, pageId: PAGE_ID }) }),
-  createForward: (deviceId: string, devicePort: number, label?: string) => request<{ devicePort: number; state: string }>(`/devices/${encodeURIComponent(deviceId)}/forwards`, { method: 'POST', body: JSON.stringify(label === undefined ? { devicePort } : { devicePort, label }) }),
+  createForward: (deviceId: string, devicePort: number, options: { label?: string; sameLocalPort?: boolean; openPath?: string; urlCommand?: string } = {}) => request<{ devicePort: number; state: string }>(`/devices/${encodeURIComponent(deviceId)}/forwards`, { method: 'POST', body: JSON.stringify({ devicePort, ...options }) }),
+  resolveForwardUrl: (deviceId: string, devicePort: number) => request<{ url: string }>(`/devices/${encodeURIComponent(deviceId)}/forwards/${devicePort}/open-url`, { method: 'POST', body: '{}' }),
   deleteForward: (deviceId: string, devicePort: number) => request<{ removed: boolean }>(`/devices/${encodeURIComponent(deviceId)}/forwards/${devicePort}`, { method: 'DELETE' }),
 }

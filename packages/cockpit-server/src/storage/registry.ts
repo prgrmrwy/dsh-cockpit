@@ -3,7 +3,7 @@ import { constants } from 'node:fs'
 import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { Logger } from '@nestjs/common'
-import { FORWARD_LIMIT, isValidDevicePort, isValidForwardLabel, type DeviceRecord, type DshAuthMaterial, type PinnedForwardRecord } from '@dsh-cockpit/shared'
+import { FORWARD_LIMIT, isValidDevicePort, isValidForwardLabel, isValidOpenPath, isValidUrlCommand, type DeviceRecord, type DshAuthMaterial, type PinnedForwardRecord } from '@dsh-cockpit/shared'
 
 const FILE_NAME = 'devices.json'
 const DIR_MODE = 0o700
@@ -86,7 +86,17 @@ function validatePinnedForwards(deviceId: string, value: unknown): PinnedForward
       logger.warn(`device ${deviceId}: ignoring pinned forwards beyond the limit of ${FORWARD_LIMIT}`)
       break
     }
-    kept.push(label === undefined ? { devicePort } : { devicePort, label: label as string })
+    // Open options (change forward-fixed-port-open) are dropped one by one when
+    // invalid; the mark itself survives. The warning never quotes a value: a
+    // URL command is user-authored shell text.
+    const options: { sameLocalPort?: true; openPath?: string; urlCommand?: string } = {}
+    if (entry.sameLocalPort === true) options.sameLocalPort = true
+    else if (entry.sameLocalPort !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid sameLocalPort on pinned forward ${devicePort}`)
+    if (isValidOpenPath(entry.openPath)) options.openPath = entry.openPath
+    else if (entry.openPath !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid openPath on pinned forward ${devicePort}`)
+    if (isValidUrlCommand(entry.urlCommand)) options.urlCommand = entry.urlCommand
+    else if (entry.urlCommand !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid urlCommand on pinned forward ${devicePort}`)
+    kept.push({ devicePort, ...(label === undefined ? {} : { label: label as string }), ...options })
   }
   return kept
 }

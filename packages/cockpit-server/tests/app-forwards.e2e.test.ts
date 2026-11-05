@@ -172,6 +172,7 @@ describe('forwards endpoints (real NestJS + Express, via createCockpitApp)', () 
       ['POST', `/api/devices/${REMOTE_ID}/forwards`, JSON.stringify({ devicePort: 6379 })],
       ['DELETE', `/api/devices/${REMOTE_ID}/forwards/6379`, undefined],
       ['POST', `/api/devices/${REMOTE_ID}/forwards/release-instance`, JSON.stringify({ instanceId: 'inst-1111111111111111', pageId: 'page-1111111111111111' })],
+      ['POST', `/api/devices/${REMOTE_ID}/forwards/3082/open-url`, '{}'],
     ]
     for (const [method, route, payload] of attempts) {
       // From the device page: the origin layer refuses it outright.
@@ -183,6 +184,36 @@ describe('forwards endpoints (real NestJS + Express, via createCockpitApp)', () 
     }
     expect(await registry()).toBe(before)
     expect(rows().filter(row => row.kind === 'additional')).toEqual([])
+  })
+
+  // Change forward-fixed-port-open: same-port mark, open options, open-url.
+
+  it('creates a same-port entry with open options and rejects invalid options with 409', async () => {
+    const headers = { ...json, cookie, origin: self, 'sec-fetch-site': 'same-origin' }
+    const created = await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' }))
+    expect(created.status).toBe(201)
+    expect(rows()).toContainEqual(expect.objectContaining({ kind: 'additional', devicePort: 3082, pinned: true, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' }))
+    expect(JSON.parse(await registry()).devices.find((device: { deviceId: string }) => device.deviceId === REMOTE_ID).forwards)
+      .toEqual([{ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' }])
+
+    const before = await registry()
+    const badPath = await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 5000, openPath: 'dashboard' }))
+    expect([badPath.status, code(badPath)]).toEqual([409, 'invalid-open-path'])
+    const badCommand = await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 5000, urlCommand: 'a\nb' }))
+    expect([badCommand.status, code(badCommand)]).toEqual([409, 'invalid-url-command'])
+    expect(await registry()).toBe(before)
+  })
+
+  it('answers open-url with 409 forward-not-ready while the entry is not ready', async () => {
+    const headers = { ...json, cookie, origin: self, 'sec-fetch-site': 'same-origin' }
+    // The device is disabled, so the pinned entry stays paused.
+    await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 3082, urlCommand: 'echo x' }))
+    const notReady = await send('POST', `/api/devices/${REMOTE_ID}/forwards/3082/open-url`, headers, '{}')
+    expect([notReady.status, code(notReady)]).toEqual([409, 'forward-not-ready'])
+    const missing = await send('POST', `/api/devices/${REMOTE_ID}/forwards/5999/open-url`, headers, '{}')
+    expect([missing.status, code(missing)]).toEqual([409, 'forward-not-ready'])
+    const badPort = await send('POST', `/api/devices/${REMOTE_ID}/forwards/0/open-url`, headers, '{}')
+    expect([badPort.status, code(badPort)]).toEqual([409, 'invalid-port'])
   })
 
   // Migration (design D8): the old publish seam is gone in the same release.

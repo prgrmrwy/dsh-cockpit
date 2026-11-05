@@ -1,4 +1,4 @@
-import { FORWARD_DIAGNOSTIC_MAX, FORWARD_LIMIT, isValidDevicePort, isValidForwardLabel, isValidOpaqueId, type AdditionalForwardRow, type DeviceKind, type ForwardEntryState, type ForwardErrorCode } from '@dsh-cockpit/shared'
+import { FORWARD_DIAGNOSTIC_MAX, FORWARD_LIMIT, isValidDevicePort, isValidForwardLabel, isValidOpaqueId, isValidOpenPath, isValidUrlCommand, type AdditionalForwardRow, type DeviceKind, type ForwardEntryState, type ForwardErrorCode, type ForwardPinErrorCode } from '@dsh-cockpit/shared'
 import type { TunnelExit } from './tunnel-manager.js'
 
 /** Holder identity (design D3): the triple, never just the label. */
@@ -14,6 +14,8 @@ export interface ForwardChannelRequest {
   readonly sshAlias: string
   readonly channelId: string
   readonly remoteDshPort: number
+  /** Present for a same-port pinned entry: bind exactly this local port. */
+  readonly strictLocalPort?: number
   readonly onExit?: (exit: TunnelExit) => void
 }
 
@@ -31,7 +33,7 @@ export interface ForwardChannelConnector {
 
 /** A business rejection. Carries a stable code; the table is unchanged. */
 export class ForwardRejection extends Error {
-  constructor(readonly code: ForwardErrorCode, message: string = code) {
+  constructor(readonly code: ForwardErrorCode | ForwardPinErrorCode, message: string = code) {
     super(message)
     this.name = 'ForwardRejection'
   }
@@ -52,6 +54,15 @@ export interface DeviceForwardsOptions {
   readonly onChange?: () => void
 }
 
+/** Options of a pin request (change forward-fixed-port-open). `undefined`
+ * keeps the entry's current value; an empty string clears a string field. */
+export interface PinOptions {
+  readonly label?: string
+  readonly sameLocalPort?: boolean
+  readonly openPath?: string
+  readonly urlCommand?: string
+}
+
 export interface AcquireResult {
   readonly devicePort: number
   readonly state: ForwardEntryState
@@ -63,6 +74,9 @@ interface Entry {
   readonly holders: Map<string, ForwardHolder>
   pinned: boolean
   label: string | undefined
+  sameLocalPort: boolean
+  openPath: string | undefined
+  urlCommand: string | undefined
   state: ForwardEntryState
   handle: ForwardChannelHandle | undefined
   generation: number
@@ -174,22 +188,54 @@ export class DeviceForwards {
 
   /** Mark an entry pinned (creating it when absent). The caller persists the
    * mark FIRST; this only commits it to memory and starts the child. Pinning a
-   * held entry just adds the mark. */
-  pin(devicePort: number, label?: string): AcquireResult {
-    this.checkPin(devicePort, label)
-    const entry = this.#ensure(devicePort)
+   * held entry just adds the mark. Flipping the same-port mark of an existing
+   * entry rebuilds its child on the new local port; holders are kept. */
+  pin(devicePort: number, options: PinOptions = {}): AcquireResult {
+    this.checkPin(devicePort, options)
+    const existed = this.#entries.has(devicePort)
+    const entry = this.#ensure(devicePort, options.sameLocalPort === true)
     entry.pinned = true
-    if (label !== undefined) entry.label = label
+    if (options.label !== undefined) entry.label = options.label
+    if (options.openPath !== undefined) entry.openPath = options.openPath === '' ? undefined : options.openPath
+    if (options.urlCommand !== undefined) entry.urlCommand = options.urlCommand === '' ? undefined : options.urlCommand
+    if (existed && options.sameLocalPort !== undefined && options.sameLocalPort !== entry.sameLocalPort) {
+      entry.sameLocalPort = options.sameLocalPort
+      this.#rebuild(entry)
+    }
     this.#changed()
     return this.#result(entry)
   }
 
   /** Every rejection `pin` could raise, without touching anything: the caller
    * runs this BEFORE persisting the mark, so a doomed pin never reaches disk. */
-  checkPin(devicePort: number, label?: string): void {
+  checkPin(devicePort: number, options: PinOptions = {}): void {
     this.#validatePort(devicePort)
-    if (label !== undefined && !isValidForwardLabel(label)) throw new ForwardRejection('invalid-label')
+    if (options.label !== undefined && !isValidForwardLabel(options.label)) throw new ForwardRejection('invalid-label')
+    if (options.openPath !== undefined && options.openPath !== '' && !isValidOpenPath(options.openPath)) throw new ForwardRejection('invalid-open-path')
+    if (options.urlCommand !== undefined && options.urlCommand !== '' && !isValidUrlCommand(options.urlCommand)) throw new ForwardRejection('invalid-url-command')
     if (!this.#entries.has(devicePort) && this.#entries.size >= FORWARD_LIMIT) throw new ForwardRejection('forward-limit')
+  }
+
+  /** The entry's current state and address, without touching anything. */
+  entry(devicePort: number): { readonly state: ForwardEntryState; readonly localPort?: number; readonly urlCommand?: string; readonly openPath?: string } | undefined {
+    const entry = this.#entries.get(devicePort)
+    if (entry === undefined) return undefined
+    return {
+      ...this.#result(entry),
+      ...(entry.openPath === undefined ? {} : { openPath: entry.openPath }),
+      ...(entry.urlCommand === undefined ? {} : { urlCommand: entry.urlCommand }),
+    }
+  }
+
+  /** Kill the live child (if any) and start over: the old address is dead the
+   * moment this runs, so the entry leaves `ready` at once. */
+  #rebuild(entry: Entry): void {
+    const handle = entry.handle
+    entry.handle = undefined
+    entry.attempt = 0
+    if (entry.state === 'ready') this.#setState(entry, 'retrying')
+    this.#start(entry)
+    void handle?.dispose()
   }
 
   /** Release one holder. Unknown holders and unknown ports succeed without
@@ -239,11 +285,12 @@ export class DeviceForwards {
 
   /** Cap check and insert in one synchronous section: `starting` entries
    * already occupy a slot, so two racing requests cannot both pass. */
-  #ensure(devicePort: number): Entry {
+  #ensure(devicePort: number, sameLocalPort = false): Entry {
     const existing = this.#entries.get(devicePort)
     if (existing !== undefined) return existing
     if (this.#entries.size >= FORWARD_LIMIT) throw new ForwardRejection('forward-limit')
     const entry = this.#insert(devicePort)
+    entry.sameLocalPort = sameLocalPort
     this.#start(entry)
     return entry
   }
@@ -280,6 +327,9 @@ export class DeviceForwards {
           state: entry.state,
           pinned: entry.pinned,
           ...(entry.label === undefined ? {} : { label: entry.label }),
+          sameLocalPort: entry.sameLocalPort,
+          ...(entry.openPath === undefined ? {} : { openPath: entry.openPath }),
+          ...(entry.urlCommand === undefined ? {} : { urlCommand: entry.urlCommand }),
           holders,
           holderCount: holders.length,
           ...(entry.diagnostic === undefined ? {} : { diagnostic: entry.diagnostic }),
@@ -314,6 +364,9 @@ export class DeviceForwards {
       holders: new Map(),
       pinned: false,
       label: undefined,
+      sameLocalPort: false,
+      openPath: undefined,
+      urlCommand: undefined,
       state: 'starting',
       handle: undefined,
       generation: 0,
@@ -341,6 +394,7 @@ export class DeviceForwards {
       sshAlias: this.#sshAlias,
       channelId: forwardChannelId(entry.devicePort),
       remoteDshPort: entry.devicePort,
+      ...(entry.sameLocalPort ? { strictLocalPort: entry.devicePort } : {}),
       onExit: exit => { this.#onExit(entry, generation, exit.diagnostic) },
     }).then(handle => {
       if (this.#stale(entry, generation)) {

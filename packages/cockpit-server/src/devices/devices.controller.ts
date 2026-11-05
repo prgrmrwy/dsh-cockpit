@@ -4,6 +4,7 @@ import { ConnectivityService, type BridgeForwardBody } from '../connectivity/con
 import { DeviceEventsService } from '../connectivity/device-events.service.js'
 import { WorkbenchLaunchError } from '../connectivity/workbench-launch.js'
 import { ForwardRejection, type AcquireResult } from '../connectivity/forward-table.js'
+import { ForwardOpenFailure } from '../connectivity/forward-url-command.js'
 import { BRIDGE_CAPABILITY_HEADER } from '../auth/bridge-capability.js'
 
 @Controller('api')
@@ -357,10 +358,35 @@ export class DevicesController {
   @Post('devices/:deviceId/forwards')
   async createForward(
     @Param('deviceId') deviceId: string,
-    @Body() body: { devicePort?: unknown; label?: unknown } | undefined,
+    @Body() body: { devicePort?: unknown; label?: unknown; sameLocalPort?: unknown; openPath?: unknown; urlCommand?: unknown } | undefined,
   ): Promise<AcquireResult> {
     try {
-      return await this.connectivity.pinForward(decodeDeviceId(deviceId), body?.devicePort as number, body?.label as string | undefined)
+      // Strings are validated by the table (invalid-label / invalid-open-path
+      // / invalid-url-command); only a real boolean sets the same-port mark.
+      return await this.connectivity.pinForward(decodeDeviceId(deviceId), body?.devicePort as number, {
+        ...(body?.label === undefined ? {} : { label: body.label as string }),
+        ...(typeof body?.sameLocalPort === 'boolean' ? { sameLocalPort: body.sameLocalPort } : {}),
+        ...(body?.openPath === undefined ? {} : { openPath: body.openPath as string }),
+        ...(body?.urlCommand === undefined ? {} : { urlCommand: body.urlCommand as string }),
+      })
+    } catch (cause) {
+      throw toHttp(cause)
+    }
+  }
+
+  /** Cockpit page: resolve a ready pinned entry's open address by running its
+   * device command (change forward-fixed-port-open). Cookie-gated and
+   * same-origin only; never a bridge callback. */
+  @Post('devices/:deviceId/forwards/:devicePort/open-url')
+  @HttpCode(HttpStatus.OK)
+  async resolveForwardUrl(
+    @Param('deviceId') deviceId: string,
+    @Param('devicePort') devicePort: string,
+  ): Promise<{ url: string }> {
+    try {
+      const port = /^\d{1,5}$/.test(devicePort) ? Number(devicePort) : Number.NaN
+      if (!isValidDevicePort(port)) throw new ForwardRejection('invalid-port')
+      return await this.connectivity.resolveForwardUrl(decodeDeviceId(deviceId), port)
     } catch (cause) {
       throw toHttp(cause)
     }
@@ -622,6 +648,7 @@ function toHttp(cause: unknown): HttpException {
   // Forward business rejections are 409 with a stable code (design D7), so
   // the bridge never mistakes them for a stale capability and re-issues.
   if (cause instanceof ForwardRejection) return new HttpException(toError(cause.code, cause.message), HttpStatus.CONFLICT)
+  if (cause instanceof ForwardOpenFailure) return new HttpException(toError(cause.code, cause.code), HttpStatus.CONFLICT)
   const message = cause instanceof Error ? cause.message : String(cause)
   if (/unknown device/.test(message)) return new HttpException(toError('unknown-device', message), HttpStatus.NOT_FOUND)
   if (/SSH identity verification failed/.test(message)) return new HttpException(toError('ssh-identity-failed', message), HttpStatus.BAD_REQUEST)

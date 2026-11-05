@@ -295,6 +295,10 @@ body {
 .forward-label, .forward-holder-labels { overflow-wrap: anywhere; }
 .forward-diagnostic { flex-basis: 100%; margin: 2px 0 0; color: var(--error); white-space: pre-wrap; overflow-wrap: anywhere; }
 .forward-delete { align-self: start; min-height: 26px; }
+.forward-row-actions { display: flex; align-items: start; gap: 6px; }
+.forward-open { min-height: 26px; }
+.forward-same-port { color: var(--accent); }
+.forward-open-path, .forward-url-command { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .forward-empty { margin: 0; color: var(--fg-dim); font-size: 12px; }
 /* The write group: its own heading, its own explanation, its own failure text. */
 .forward-form { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); min-width: 0; }
@@ -305,7 +309,9 @@ body {
 .forward-form-row label > span { flex: none; min-width: 6.5em; }
 .forward-form-row input { min-width: 0; max-width: 100%; }
 .forward-form-port input { flex: 0 1 6.5em; }
-.forward-form-label input { flex: 1 1 auto; }
+.forward-form-label input, .forward-form-path input, .forward-form-command input { flex: 1 1 auto; }
+.forward-form-row label.forward-form-same-port { gap: 7px; color: var(--fg); }
+.forward-form-same-port input[type="checkbox"] { width: 16px; min-height: 16px; margin: 0; flex: none; }
 /* The panel's primary colors at the card's rhythm: the shared 42px slab was
    heavier than every other control in the card. */
 .forward-form .primary-action { align-self: flex-start; min-height: 30px; padding: 0 14px; font-size: 12px; font-weight: 650; }

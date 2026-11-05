@@ -168,4 +168,27 @@ describe('device registry', () => {
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
+
+  it('round-trips open options and drops only an invalid one, never quoting it', async () => {
+    const command = "ls -t /x/*.log | head -1 | xargs grep -ho 'http://127.0.0.1:3082/?token=[A-Za-z0-9_-]*' | tail -1"
+    await registry.save([remote()])
+    await registry.mutateDevice('device-1', current => ({
+      ...current,
+      forwards: [{ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: command }],
+    }))
+    const [kept] = await new DeviceRegistry(dir).load()
+    expect(kept?.forwards).toEqual([{ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: command }])
+
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {})
+    await writeFile(registry.file, JSON.stringify({ version: 1, devices: [{
+      ...remote(),
+      forwards: [{ devicePort: 3082, label: 'sa', sameLocalPort: 'yes', openPath: 'no-slash', urlCommand: 'echo SECRET\nrm -rf /' }],
+    }] }))
+    const [tolerant] = await new DeviceRegistry(dir).load()
+    // The mark and its valid label survive; each bad option is dropped alone.
+    expect(tolerant?.forwards).toEqual([{ devicePort: 3082, label: 'sa' }])
+    expect(warn).toHaveBeenCalledTimes(3)
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET')
+    warn.mockRestore()
+  })
 })

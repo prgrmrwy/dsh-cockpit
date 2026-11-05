@@ -51,7 +51,8 @@ class FakeConnector implements ForwardChannelConnector {
     if (this.failWith !== undefined) throw new Error(this.failWith)
     const channel: FakeChannel = {
       request,
-      localPort: this.#nextPort++,
+      // A same-port entry binds exactly its device port (TunnelManager's strict mode).
+      localPort: request.strictLocalPort ?? this.#nextPort++,
       pid: this.#nextPid++,
       disposed: false,
       die: diagnostic => {
@@ -183,7 +184,7 @@ describe('forward table: pinned and held lifetimes', () => {
     const c = holder('C', 'page-cccccccccccccccc', 'inst-cccccccccccccccc')
     forwards.acquire(3939, a)
     forwards.acquire(3939, b)
-    forwards.pin(5432, 'db')
+    forwards.pin(5432, { label: 'db' })
     forwards.acquire(5432, c)
     await settle()
     const child3939 = connector.channels.find(channel => channel.request.remoteDshPort === 3939)!
@@ -340,8 +341,8 @@ describe('forward table: data hygiene', () => {
     expect(codeOf(() => forwards.acquire(3939, holder('x'.repeat(65))))).toBe('invalid-holder')
     expect(codeOf(() => forwards.acquire(3939, holder('ok', 'short')))).toBe('invalid-holder')
     expect(codeOf(() => forwards.acquire(3939, holder('ok', 'page-aaaaaaaaaaaaaaaa', 'inst/../aaaaaaaaaaaa')))).toBe('invalid-holder')
-    expect(codeOf(() => forwards.pin(5432, 'x'.repeat(65)))).toBe('invalid-label')
-    expect(codeOf(() => forwards.pin(5432, 'tab\there'))).toBe('invalid-label')
+    expect(codeOf(() => forwards.pin(5432, { label: 'x'.repeat(65) }))).toBe('invalid-label')
+    expect(codeOf(() => forwards.pin(5432, { label: 'tab\there' }))).toBe('invalid-label')
     expect(forwards.projection()).toEqual([])
     expect(connector.requests).toEqual([])
 
@@ -377,7 +378,7 @@ describe('forward table: out of the data path', () => {
     const connector = new FakeConnector()
     const alone = table(connector)
     alone.acquire(3939, holder('H'))
-    alone.pin(5432, 'db')
+    alone.pin(5432, { label: 'db' })
     await settle()
     alone.projection()
     await alone.release(3939, holder('H'))
@@ -410,3 +411,82 @@ describe('forward table: out of the data path', () => {
     await tunnels.disposeAll()
   })
 })
+
+/** Same-port pinned entries and open options (change forward-fixed-port-open). */
+describe('same-port pinned entries', () => {
+  it('rebuilds a same-port entry on the device port after it dies', async () => {
+    vi.useFakeTimers()
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    forwards.pin(3082, { sameLocalPort: true })
+    await settle()
+    expect(connector.requests[0]).toMatchObject({ remoteDshPort: 3082, strictLocalPort: 3082 })
+    expect(additional(forwards)[0]).toMatchObject({ state: 'ready', localPort: 3082, sameLocalPort: true })
+
+    connector.live()[0]!.die('connection reset')
+    expect(additional(forwards)[0]).toMatchObject({ state: 'retrying' })
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(connector.requests).toHaveLength(2)
+    expect(connector.requests[1]).toMatchObject({ strictLocalPort: 3082 })
+    expect(additional(forwards)[0]).toMatchObject({ state: 'ready', localPort: 3082 })
+  })
+
+  it('reports the in-use diagnostic and no address while the strict port is taken', async () => {
+    const connector = new FakeConnector()
+    connector.failWith = 'local port 127.0.0.1:3082 is in use'
+    const forwards = table(connector)
+    forwards.pin(3082, { sameLocalPort: true })
+    await settle()
+    const row = additional(forwards)[0]!
+    expect(row.state).toBe('retrying')
+    expect(row.diagnostic).toBe('local port 127.0.0.1:3082 is in use')
+    expect(row.localPort).toBeUndefined()
+  })
+
+  it('rebuilds the child when the same-port mark flips, keeping holders', async () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    forwards.acquire(3082, holder('memex-browse:default'))
+    await settle()
+    const first = connector.live()[0]!
+    expect(first.localPort).not.toBe(3082)
+
+    connector.hold = true
+    forwards.pin(3082, { sameLocalPort: true })
+    // The old address is dead at once: no longer ready, no local port.
+    expect(first.disposed).toBe(true)
+    expect(additional(forwards)[0]).toMatchObject({ state: 'retrying', pinned: true, sameLocalPort: true, holderCount: 1 })
+    expect(additional(forwards)[0]!.localPort).toBeUndefined()
+    connector.release()
+    await settle()
+    expect(additional(forwards)[0]).toMatchObject({ state: 'ready', localPort: 3082, holderCount: 1 })
+  })
+
+  it('updates open options without rebuilding, and clears them with an empty string', async () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    forwards.pin(3082, { sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' })
+    await settle()
+    const pid = additional(forwards)[0]!.pid
+    forwards.pin(3082, { urlCommand: '' })
+    await settle()
+    const row = additional(forwards)[0]!
+    expect(row).toMatchObject({ openPath: '/dashboard', sameLocalPort: true, pid })
+    expect(row.urlCommand).toBeUndefined()
+    expect(connector.requests).toHaveLength(1)
+  })
+
+  it('rejects invalid open options without touching the table', () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    const codeOf = (run: () => unknown) => {
+      try { run() } catch (cause) { return cause instanceof ForwardRejection ? cause.code : 'other' }
+      return 'none'
+    }
+    expect(codeOf(() => forwards.pin(3082, { openPath: 'dashboard' }))).toBe('invalid-open-path')
+    expect(codeOf(() => forwards.pin(3082, { urlCommand: 'a\nb' }))).toBe('invalid-url-command')
+    expect(additional(forwards)).toEqual([])
+    expect(connector.requests).toEqual([])
+  })
+})
+

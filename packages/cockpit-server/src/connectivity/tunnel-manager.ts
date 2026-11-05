@@ -18,6 +18,11 @@ export interface TunnelRequest {
    * device's own DSH web client keeps its origin-scoped browser storage across
    * reconnects. Advisory only: an unavailable port falls back to a fresh one. */
   readonly preferredLocalPort?: number
+  /** Bind exactly this local port and never fall back (a same-port pinned
+   * forward, change forward-fixed-port-open). An unavailable port fails the
+   * connect with `localPortInUseDiagnostic(port)` instead of drifting; the
+   * owner's backoff retries it. Takes precedence over `preferredLocalPort`. */
+  readonly strictLocalPort?: number
   /**
    * Whether to wait for a DSH service behind the forward before reporting success.
    *
@@ -114,6 +119,11 @@ function tunnelArgs(request: TunnelRequest, localPort: number, options: Required
   ]
 }
 
+/** The fixed diagnostic of a strict local port that cannot be bound. */
+export function localPortInUseDiagnostic(port: number): string {
+  return `local port 127.0.0.1:${port} is in use`
+}
+
 /** Tracked tunnel guard: cleanup must be terminal. Once `disposeAll` runs, no
  * new tunnel may be spawned and an in-flight connect cannot leave an orphan. */
 export class TunnelManager {
@@ -150,7 +160,9 @@ export class TunnelManager {
     await this.#disposeKey(key)
     const generation = (this.#generations.get(key) ?? 0) + 1
     this.#generations.set(key, generation)
-    const persistedPort = sanitizePort(request.preferredLocalPort)
+    const strictPort = sanitizePort(request.strictLocalPort)
+    if (request.strictLocalPort !== undefined && strictPort === undefined) throw new Error(`invalid strict local port ${request.strictLocalPort}`)
+    const persistedPort = strictPort === undefined ? sanitizePort(request.preferredLocalPort) : undefined
     // Once we have strong evidence the persisted port is unavailable, we stop
     // offering it for the rest of THIS connect — a single latch, never revived
     // by a later attempt's attribution. A link/auth/readiness failure leaves it
@@ -159,7 +171,10 @@ export class TunnelManager {
     let lastDiagnostic = ''
     for (let attempt = 1; attempt <= this.#options.maxBindAttempts; attempt += 1) {
       const preferred = abandonPreferred ? undefined : persistedPort
-      const reserved = await reserveCandidatePort(preferred)
+      const reserved = await reserveCandidatePort(strictPort ?? preferred)
+      // A strict port never falls back: the reservation's fallback port is
+      // discarded and the connect fails with the fixed in-use diagnostic.
+      if (strictPort !== undefined && reserved.preferredRejected) throw new Error(localPortInUseDiagnostic(strictPort))
       const localPort = reserved.port
       // Deterministic signal: our own listen on the preferred port failed. This
       // is the TOCTOU/occupied case the spec authorizes dropping the port for.
@@ -201,6 +216,7 @@ export class TunnelManager {
         this.#active.delete(key)
         await this.#terminate(process, 1000)
         if (this.#shutDown) throw new Error('tunnel manager is shut down')
+        if (strictPort !== undefined && isPortBindFailure(lastDiagnostic, strictPort)) throw new Error(localPortInUseDiagnostic(strictPort))
         if (attempt < this.#options.maxBindAttempts) continue
         throw new Error(`OpenSSH exited before DSH readiness: ${truncate(lastDiagnostic, 200)}`)
       }

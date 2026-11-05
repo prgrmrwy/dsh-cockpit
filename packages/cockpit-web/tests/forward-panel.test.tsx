@@ -22,7 +22,7 @@ beforeEach(() => {
 })
 
 const extra = (devicePort: number, overrides: Partial<AdditionalForwardRow> = {}): AdditionalForwardRow => ({
-  kind: 'additional', devicePort, state: 'ready', pinned: false, holders: [], holderCount: 0,
+  kind: 'additional', devicePort, state: 'ready', pinned: false, sameLocalPort: false, holders: [], holderCount: 0,
   createdAt: 0, stateChangedAt: 0, localPort: devicePort + 50_000, pid: 9000 + devicePort, ...overrides,
 })
 
@@ -178,7 +178,7 @@ describe('device panel forwards list', () => {
     fireEvent.change(within(forwards()).getByLabelText('设备端口'), { target: { value: '6379' } })
     fireEvent.change(within(forwards()).getByLabelText('标签（可选）'), { target: { value: 'redis' } })
     fireEvent.click(within(forwards()).getByRole('button', { name: '添加常驻转发' }))
-    await waitFor(() => expect(apiMock.createForward).toHaveBeenCalledWith('vm', 6379, 'redis'))
+    await waitFor(() => expect(apiMock.createForward).toHaveBeenCalledWith('vm', 6379, { label: 'redis', sameLocalPort: false }))
 
     const next = device({ forwards: table(extra(5432, { pinned: true, label: 'db' }), extra(3939, { holders: ['memex-browse:default'], holderCount: 1 }), extra(6379, { pinned: true, label: 'redis', state: 'starting', localPort: undefined, pid: undefined })) })
     rerender(<DevicePanel devices={[next]} onClose={vi.fn()} onChanged={vi.fn()} />)

@@ -198,3 +198,4 @@ export interface ApiError {
 }
 export * from './bridge.js'
 export * from './forwards.js'
+export * from './forward-options.js'

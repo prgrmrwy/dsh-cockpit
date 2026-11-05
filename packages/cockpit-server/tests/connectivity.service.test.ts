@@ -84,14 +84,14 @@ let nextPid = 7000
 class FakeTunnelManager {
   readonly #active = new Map<string, FakeChild>()
   constructor(readonly options: unknown) {}
-  async connect(request: { deviceId: string; sshAlias: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number }) {
+  async connect(request: { deviceId: string; sshAlias: string; channelId?: string; remoteDshPort: number; preferredLocalPort?: number; strictLocalPort?: number }) {
     tunnelConnects.push({ deviceId: request.deviceId, preferredLocalPort: request.preferredLocalPort, channelId: request.channelId, remoteDshPort: request.remoteDshPort })
     const channelId = request.channelId ?? 'workbench'
     if (!tunnel.established || failingChannels.has(channelId)) throw new Error('no ssh in test environment')
     const key = `${request.deviceId}\u0000${channelId}`
     this.#kill(key)
     const preferred = request.preferredLocalPort
-    const localPort = preferred !== undefined && !takenPorts.has(preferred) ? preferred : nextFreshPort++
+    const localPort = request.strictLocalPort ?? (preferred !== undefined && !takenPorts.has(preferred) ? preferred : nextFreshPort++)
     const child: FakeChild = { pid: nextPid++, deviceId: request.deviceId, channelId, sshAlias: request.sshAlias, localPort, alive: true }
     children.push(child)
     this.#active.set(key, child)
@@ -841,7 +841,7 @@ describe('per-device forward table', () => {
 
   it('restores only pinned entries after a cockpit restart', async () => {
     const first = await readyRemote()
-    await first.service.pinForward('a', 5432, 'db')
+    await first.service.pinForward('a', 5432, { label: 'db' })
     first.service.acquireForward('a', 3939, H)
     await waitFor(() => additional(first.service, 5432)?.state === 'ready' && additional(first.service, 3939)?.state === 'ready')
     const oldPort = additional(first.service, 5432)!.localPort!
@@ -956,7 +956,7 @@ describe('per-device forward table', () => {
 
   it('fails a pinned delete whose disk write fails and leaves the table, holders and child unchanged', async () => {
     const { service, registry } = await readyRemote()
-    await service.pinForward('a', 5432, 'db')
+    await service.pinForward('a', 5432, { label: 'db' })
     service.acquireForward('a', 5432, H)
     await waitFor(() => additional(service, 5432)?.state === 'ready')
     const before = additional(service, 5432)
@@ -1563,3 +1563,121 @@ describe('workbench launch authentication for a fresh browser', () => {
       await service.onApplicationShutdown()
     })
   })
+
+/** Same-port pins (change forward-fixed-port-open D3): one local port, one owner. */
+describe('same-port pinned forwards', () => {
+  async function waitFor(check: () => boolean): Promise<void> {
+    for (let attempt = 0; attempt < 400 && !check(); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+    expect(check()).toBe(true)
+  }
+  const additional = (service: InstanceType<typeof ConnectivityService>, devicePort: number, deviceId: string) =>
+    service.statuses().find(status => status.deviceId === deviceId)?.forwards?.rows.find(row => row.kind === 'additional' && row.devicePort === devicePort)
+  const codeOf = async (run: () => Promise<unknown>) => {
+    try { await run() } catch (cause) { return (cause as { code?: string }).code ?? 'other' }
+    return 'none'
+  }
+
+  async function twoReady() {
+    tunnel.established = true
+    const built = await serviceFor([remote('a', 0, { enabled: true }), remote('b', 1, { enabled: true })])
+    await waitFor(() => built.service.statuses().every(status => status.state === 'READY'))
+    return built
+  }
+
+  it('rejects a second device pinning the same local port, without writing it', async () => {
+    const { service, registry } = await twoReady()
+    await service.pinForward('a', 3082, { sameLocalPort: true })
+    expect(await codeOf(() => service.pinForward('b', 3082, { sameLocalPort: true }))).toBe('local-port-conflict')
+    expect(registry.records.find(record => record.deviceId === 'b')!.forwards).toBeUndefined()
+    expect(additional(service, 3082, 'b')).toBeUndefined()
+    // A plain (kernel-port) pin of the same device port is not a conflict.
+    await service.pinForward('b', 3082)
+    expect(additional(service, 3082, 'b')).toMatchObject({ pinned: true, sameLocalPort: false })
+    await service.onApplicationShutdown()
+  })
+
+  it('lets exactly one of two racing same-port pins win', async () => {
+    const { service, registry } = await twoReady()
+    const results = await Promise.all([
+      codeOf(() => service.pinForward('a', 3082, { sameLocalPort: true })),
+      codeOf(() => service.pinForward('b', 3082, { sameLocalPort: true })),
+    ])
+    expect(results.sort()).toEqual(['local-port-conflict', 'none'])
+    const marked = registry.records.filter(record => record.forwards?.some(mark => mark.sameLocalPort === true))
+    expect(marked).toHaveLength(1)
+    await service.onApplicationShutdown()
+  })
+
+  it('rejects a same-port pin on a workbench channel local port', async () => {
+    const { service } = await twoReady()
+    const workbenchPort = Number(new URL(service.statuses().find(status => status.deviceId === 'a')!.endpoint!).port)
+    expect(await codeOf(() => service.pinForward('b', workbenchPort, { sameLocalPort: true }))).toBe('local-port-conflict')
+    await service.onApplicationShutdown()
+  })
+
+  it('persists only the mark and rebuilds on the device port after a restart', async () => {
+    const first = await twoReady()
+    await first.service.pinForward('a', 3082, { sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' })
+    await waitFor(() => additional(first.service, 3082, 'a')?.state === 'ready')
+    expect(additional(first.service, 3082, 'a')).toMatchObject({ localPort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' })
+    await first.service.onApplicationShutdown()
+    expect(first.registry.records.find(record => record.deviceId === 'a')!.forwards)
+      .toEqual([{ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' }])
+
+    const service = new ConnectivityService(first.registry as never, new DeviceEventsService())
+    await waitFor(() => additional(service, 3082, 'a')?.state === 'ready')
+    expect(additional(service, 3082, 'a')).toMatchObject({ localPort: 3082, sameLocalPort: true, openPath: '/dashboard' })
+    await service.onApplicationShutdown()
+  })
+  it('resolves an open URL by device command without leaking its token anywhere', async () => {
+    tunnel.established = true
+    const registry = new FakeRegistry([remote('a', 0, { enabled: true })])
+    const lines: string[] = []
+    const spies = (['log', 'warn', 'error', 'debug'] as const).map(level =>
+      vi.spyOn(Logger.prototype, level).mockImplementation((...args: unknown[]) => { lines.push(args.map(String).join(' ')) }))
+    const argvs: (readonly string[])[] = []
+    const { PassThrough } = await import('node:stream')
+    let output = 'boot\nhttp://127.0.0.1:3082/?token=SECRET\n'
+    const spawn = (_exe: string, argv: readonly string[]) => {
+      argvs.push(argv)
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(resolve => {
+        setTimeout(() => { stdout.end(output); stderr.end(); setTimeout(() => resolve({ code: 0, signal: null }), 0) }, 0)
+      })
+      return { stdout, stderr, exited, kill: () => true }
+    }
+    const service = new ConnectivityService(registry as never, new DeviceEventsService(), { urlCommand: { spawn } })
+    await waitFor(() => service.statuses()[0]?.state === 'READY')
+    const codeOf = async (run: () => Promise<unknown>) => {
+      try { await run() } catch (cause) { return (cause as { code?: string }).code ?? 'other' }
+      return 'none'
+    }
+
+    // No command configured: refused without running anything.
+    await service.pinForward('a', 5432)
+    await waitFor(() => additional(service, 5432, 'a')?.state === 'ready')
+    expect(await codeOf(() => service.resolveForwardUrl('a', 5432))).toBe('url-command-no-url')
+    expect(argvs).toEqual([])
+
+    await service.pinForward('a', 3082, { sameLocalPort: true, urlCommand: 'tail -1 sa.log' })
+    await waitFor(() => additional(service, 3082, 'a')?.state === 'ready')
+    expect(await service.resolveForwardUrl('a', 3082)).toEqual({ url: 'http://127.0.0.1:3082/?token=SECRET' })
+    expect(argvs[0]).toEqual(['-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '--', 'a-alias', 'tail -1 sa.log'])
+
+    output = ''
+    expect(await codeOf(() => service.resolveForwardUrl('a', 3082))).toBe('url-command-no-url')
+
+    // The token never reaches logs, the registry, the projection or a snapshot.
+    const projection = service.statuses()[0]!.forwards!
+    for (const surface of [lines.join('\n'), JSON.stringify(registry.records), JSON.stringify(projection), JSON.stringify(toForwardsSnapshot(projection))]) {
+      expect(surface).not.toContain('SECRET')
+    }
+    expect(lines.join('\n')).not.toContain('tail -1 sa.log')
+    expect(lines.some(line => line.includes('open url failed: device=a port=3082 code=url-command-no-url'))).toBe(true)
+    for (const spy of spies) spy.mockRestore()
+    await service.onApplicationShutdown()
+  })
+})
