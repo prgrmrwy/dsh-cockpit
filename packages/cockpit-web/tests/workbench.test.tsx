@@ -86,6 +86,12 @@ describe('workbench', () => {
     // cannot use the clipboard or its voice input (getUserMedia rejects with
     // NotAllowedError before any permission prompt can appear).
     expect(frame.getAttribute('allow')).toBe('clipboard-read; clipboard-write; microphone')
+    // DSH browser login preopens about:blank and navigates it later; a popup
+    // that inherits the iframe sandbox rejects that navigation (SecurityError).
+    // Popups escape the sandbox; the iframe's own token set stays minimal.
+    expect(frame.getAttribute('sandbox')?.split(/\s+/).sort()).toEqual([
+      'allow-forms', 'allow-popups', 'allow-popups-to-escape-sandbox', 'allow-same-origin', 'allow-scripts',
+    ])
     src.disconnect()
   })
 

@@ -819,7 +819,7 @@ export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onMa
               }}
               {...(requestWorkbenchLaunch === undefined ? { src: frame.url || undefined } : {})}
               title={frame.deviceId}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups"
+              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
               allow="clipboard-read; clipboard-write; microphone"
               className="workbench-iframe"
               style={launchPending ? { visibility: 'hidden' } : undefined}
