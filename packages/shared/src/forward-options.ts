@@ -4,7 +4,11 @@
 
 /** Rejections only the cockpit panel's create endpoint can raise (HTTP 409);
  * the bridge acquire seam never returns them. */
-export type ForwardPinErrorCode = 'local-port-conflict' | 'invalid-open-path' | 'invalid-url-command'
+export type ForwardPinErrorCode =
+  | 'local-port-conflict'
+  | 'invalid-open-path'
+  | 'invalid-url-command'
+  | 'workbench-tab-requires-same-port'
 
 /** Failures of resolving an entry's open address (HTTP 409 `{ code }`). */
 export type ForwardOpenErrorCode =

@@ -41,6 +41,7 @@ describe('pinned-entry open options', () => {
         state: 'ready',
         pinned: true,
         sameLocalPort: true,
+        workbenchTab: true,
         openPath: '/dashboard',
         urlCommand: 'echo SECRET',
         holders: [],
@@ -53,6 +54,7 @@ describe('pinned-entry open options', () => {
     }
     const text = JSON.stringify(toForwardsSnapshot(projection))
     assert.equal(text.includes('sameLocalPort'), false)
+    assert.equal(text.includes('workbenchTab'), false)
     assert.equal(text.includes('/dashboard'), false)
     assert.equal(text.includes('SECRET'), false)
     assert.equal(text.includes('3082'), true)

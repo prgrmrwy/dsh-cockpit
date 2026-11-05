@@ -6,7 +6,7 @@ import { api, ApiRequestError } from '../api/client.js'
  * Data comes from the device status stream; nothing here polls. Labels,
  * holder labels and diagnostics are rendered as React text only. */
 
-const STATE_TEXT: Record<ForwardEntryState, string> = {
+export const STATE_TEXT: Record<ForwardEntryState, string> = {
   starting: '建立中',
   ready: '就绪',
   retrying: '重试中',
@@ -14,7 +14,7 @@ const STATE_TEXT: Record<ForwardEntryState, string> = {
 }
 
 /** Fixed wording per stable server code; the server message is never shown. */
-const CODE_TEXT: Record<string, string> = {
+export const CODE_TEXT: Record<string, string> = {
   'forward-limit': '已达到附加转发上限（8 条）。',
   'reserved-port': '该端口是设备 DSH 工作台端口，不能再次转发。',
   'invalid-port': '请输入 1–65535 之间的设备端口。',
@@ -29,10 +29,11 @@ const CODE_TEXT: Record<string, string> = {
   'url-command-timed-out': '打开地址命令 10 秒内未结束。',
   'url-command-no-url': '没有在命令输出中找到该端口的地址。',
   'url-command-output-too-large': '打开地址命令的输出过大（超过 64 KiB）。',
+  'workbench-tab-requires-same-port': '只有「本地端口同设备端口」的条目才能显示为工作台标签页。',
 }
 const FALLBACK_TEXT = '操作失败，请重试。'
 
-function failureText(cause: unknown): string {
+export function failureText(cause: unknown): string {
   return cause instanceof ApiRequestError ? CODE_TEXT[cause.code] ?? FALLBACK_TEXT : FALLBACK_TEXT
 }
 
@@ -97,6 +98,7 @@ function RowView({ row, onDelete, onOpen, busy }: {
             <>
               {row.label !== undefined && <span className="forward-label">{row.label}</span>}
               {row.sameLocalPort && <span className="forward-same-port">同端口</span>}
+              {row.workbenchTab && <span className="forward-same-port">标签页</span>}
               {row.openPath !== undefined && <span className="forward-open-path">{row.openPath}</span>}
               {row.urlCommand !== undefined && <span className="forward-url-command" title="打开地址命令">命令 {row.urlCommand}</span>}
               <span className="forward-holders">持有者 {row.holderCount}</span>
@@ -119,6 +121,7 @@ export function ForwardList({ device, confirm = defaultConfirm, openWindow = def
   const [port, setPort] = useState('')
   const [label, setLabel] = useState('')
   const [sameLocalPort, setSameLocalPort] = useState(false)
+  const [workbenchTab, setWorkbenchTab] = useState(false)
   const [openPath, setOpenPath] = useState('')
   const [urlCommand, setUrlCommand] = useState('')
   const [openError, setOpenError] = useState<string | undefined>()
@@ -154,12 +157,14 @@ export function ForwardList({ device, confirm = defaultConfirm, openWindow = def
       await api.createForward(device.deviceId, devicePort, {
         ...(trimmed === '' ? {} : { label: trimmed }),
         sameLocalPort,
+        workbenchTab: sameLocalPort && workbenchTab,
         ...(openPath.trim() === '' ? {} : { openPath: openPath.trim() }),
         ...(urlCommand.trim() === '' ? {} : { urlCommand: urlCommand.trim() }),
       })
       setPort('')
       setLabel('')
       setSameLocalPort(false)
+      setWorkbenchTab(false)
       setOpenPath('')
       setUrlCommand('')
     } catch (cause) {
@@ -242,7 +247,11 @@ export function ForwardList({ device, confirm = defaultConfirm, openWindow = def
                 <input aria-label="本地端口同设备端口" type="checkbox" checked={sameLocalPort} onChange={event => { setSameLocalPort(event.target.checked) }} disabled={busy} />
                 同设备端口
               </span>
-              <span className="forward-form-hint">用于只接受 Host 为 127.0.0.1:&lt;本端口&gt; 的面板；端口被占用时报错重试，不会换端口。每个本地端口只能被一台设备占用。</span>
+              <span className={`forward-form-check${sameLocalPort ? '' : ' forward-form-check-disabled'}`}>
+                <input aria-label="在工作台显示为标签页" type="checkbox" checked={sameLocalPort && workbenchTab} onChange={event => { setWorkbenchTab(event.target.checked) }} disabled={busy || !sameLocalPort} />
+                在工作台显示为标签页
+              </span>
+              <span className="forward-form-hint">用于只接受 Host 为 127.0.0.1:&lt;本端口&gt; 的面板；端口被占用时报错重试，不会换端口。每个本地端口只能被一台设备占用。开启标签页后，顶栏在该设备后显示它，在驾驶舱内直接打开。</span>
             </span>
           </label>
           <label className="forward-form-path">

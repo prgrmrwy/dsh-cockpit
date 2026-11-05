@@ -207,6 +207,48 @@ describe('foreground device report (remind-background-device-completion)', () =>
     await waitFor(() => expect(foregroundBodies().length).toBe(before + 1))
     expect(foregroundBodies().at(-1)?.deviceId).toBe('d2')
   })
+
+  // change forward-workbench-tab: views per device; a tab is not the device.
+  it('switches between workbench and forward tab, keeps the view per device, and reports no foreground on a tab', async () => {
+    const tabRow = (workbenchTab: boolean) => ({
+      kind: 'additional' as const, devicePort: 3082, state: 'ready' as const, pinned: true, sameLocalPort: true, workbenchTab,
+      label: 'SA', holders: [], holderCount: 0, createdAt: 0, stateChangedAt: 0, localPort: 3082, pid: 9100,
+    })
+    const withTab = (workbenchTab: boolean) => device({ deviceId: 'd1', order: 0, forwards: { rows: [tabRow(workbenchTab)], additionalCount: 1, limit: 8 } })
+    const other = device({ deviceId: 'd2', displayName: 'VM B', order: 1 })
+    const { container } = render(<App />)
+    await waitFor(() => expect(FakeEventSource.instances).toHaveLength(1))
+    const stream = FakeEventSource.instances[0]!
+    act(() => { stream.emit({ device: [withTab(true), other] }) })
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d1'))
+    const tabItem = () => container.querySelector('[data-forward-tab-item="d1:3082"]') as HTMLElement | null
+    const tabsShown = () => (container.querySelector('[data-cockpit-forward-tabs]') as HTMLElement).style.display !== 'none'
+
+    fireEvent.click(tabItem()!)
+    expect(tabsShown()).toBe(true)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBeNull())
+
+    // Away to d2 and back: d1 reopens on its tab.
+    fireEvent.click(container.querySelector('[data-federation-node="d2"]')!)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d2'))
+    expect(tabItem()).toBeNull()
+    fireEvent.click(container.querySelector('[data-federation-node="d1"]')!)
+    expect(tabsShown()).toBe(true)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBeNull())
+
+    // The current device's own item returns to its workbench.
+    fireEvent.click(container.querySelector('[data-federation-node="d1"]')!)
+    expect(tabsShown()).toBe(false)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d1'))
+
+    // Clearing the mark while on the tab falls back to the workbench.
+    fireEvent.click(tabItem()!)
+    expect(tabsShown()).toBe(true)
+    act(() => { stream.emit({ device: [withTab(false), other] }) })
+    expect(tabItem()).toBeNull()
+    expect(tabsShown()).toBe(false)
+    await waitFor(() => expect(foregroundBodies().at(-1)?.deviceId).toBe('d1'))
+  })
 })
 
 describe('reconnect reloads the current workbench (reload-workbench-on-reconnect)', () => {

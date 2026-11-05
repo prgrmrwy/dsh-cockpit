@@ -331,4 +331,35 @@ describe('top bar', () => {
     fireEvent.contextMenu(container.querySelector('[role="tab"]') as HTMLElement, { clientX: 10, clientY: 10 })
     expect(getByRole('menuitem', { name: '刷新状态' })).toBeTruthy()
   })
+
+  it('shows the current device forward tabs right after it, with names, state text and a reload menu', () => {
+    const row = (devicePort: number, extra: Record<string, unknown> = {}) => ({
+      kind: 'additional' as const, devicePort, state: 'ready' as const, pinned: true, sameLocalPort: true, workbenchTab: true,
+      holders: [], holderCount: 0, createdAt: 0, stateChangedAt: 0, localPort: devicePort, ...extra,
+    })
+    const tabs = [
+      { key: 'd1:3082', deviceId: 'd1', devicePort: 3082, name: 'SA', row: row(3082, { label: 'SA' }) },
+      { key: 'd1:3090', deviceId: 'd1', devicePort: 3090, name: 'VM A:3090', row: row(3090, { state: 'retrying', localPort: undefined }) },
+    ]
+    const selected: string[] = []
+    const reloaded: string[] = []
+    const devices = [device({ deviceId: 'd1', displayName: 'VM A' }), device({ deviceId: 'd2', displayName: 'VM B' })]
+    const { getAllByRole, getByRole, container, rerender } = render(
+      <TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}}
+        tabs={tabs} activeTabKey="d1:3082" onSelectTab={key => selected.push(key)} onReloadTab={key => reloaded.push(key)} />,
+    )
+    expect(getAllByRole('tab').map(tab => tab.textContent)).toEqual(['VM A', 'SA', 'VM A:3090重试中', 'VM B'])
+    expect(getByRole('tab', { name: 'SA' }).getAttribute('aria-selected')).toBe('true')
+    expect(container.querySelector('[data-federation-node="d1"]')!.getAttribute('aria-selected')).toBe('false')
+    expect((container.querySelector('[data-forward-tab-item="d1:3090"]') as HTMLElement).title).toBe('VM A:3090（重试中）')
+    fireEvent.click(container.querySelector('[data-forward-tab-item="d1:3090"]')!)
+    expect(selected).toEqual(['d1:3090'])
+    fireEvent.contextMenu(container.querySelector('[data-forward-tab-item="d1:3082"]')!)
+    fireEvent.click(getByRole('menuitem', { name: '重新加载' }))
+    expect(reloaded).toEqual(['d1:3082'])
+
+    rerender(<TopBar devices={devices} currentId="d1" onSelect={() => {}} onOpenPanel={() => {}} onRefresh={() => {}} />)
+    expect(container.querySelector('[data-forward-tab-item]')).toBeNull()
+    expect(getAllByRole('tab')).toHaveLength(2)
+  })
 })

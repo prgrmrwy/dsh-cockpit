@@ -129,4 +129,13 @@ describe('cockpit visual contracts', () => {
       expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
     }
   })
+
+  it('styles forward tab items and the disabled tab switch with tokens only', () => {
+    expect(css).toMatch(/\.topbar-forward-tab-name\s*\{[^}]*text-overflow:\s*ellipsis/s)
+    expect(css).toMatch(/\.topbar-forward-tab-state\s*\{[^}]*color:\s*var\(--fg-dim\)/s)
+    expect(css).toMatch(/\.forward-form-check-disabled\s*\{[^}]*color:\s*var\(--fg-dim\)/s)
+    for (const rule of css.match(/\.(?:topbar-forward-tab|cockpit-view)[^{]*\{[^}]*\}/gs) ?? []) {
+      expect(rule).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/)
+    }
+  })
 })

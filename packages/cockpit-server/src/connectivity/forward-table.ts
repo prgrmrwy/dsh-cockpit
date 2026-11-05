@@ -59,6 +59,7 @@ export interface DeviceForwardsOptions {
 export interface PinOptions {
   readonly label?: string
   readonly sameLocalPort?: boolean
+  readonly workbenchTab?: boolean
   readonly openPath?: string
   readonly urlCommand?: string
 }
@@ -75,6 +76,7 @@ interface Entry {
   pinned: boolean
   label: string | undefined
   sameLocalPort: boolean
+  workbenchTab: boolean
   openPath: string | undefined
   urlCommand: string | undefined
   state: ForwardEntryState
@@ -196,6 +198,7 @@ export class DeviceForwards {
     const entry = this.#ensure(devicePort, options.sameLocalPort === true)
     entry.pinned = true
     if (options.label !== undefined) entry.label = options.label
+    if (options.workbenchTab !== undefined) entry.workbenchTab = options.workbenchTab
     if (options.openPath !== undefined) entry.openPath = options.openPath === '' ? undefined : options.openPath
     if (options.urlCommand !== undefined) entry.urlCommand = options.urlCommand === '' ? undefined : options.urlCommand
     if (existed && options.sameLocalPort !== undefined && options.sameLocalPort !== entry.sameLocalPort) {
@@ -213,6 +216,12 @@ export class DeviceForwards {
     if (options.label !== undefined && !isValidForwardLabel(options.label)) throw new ForwardRejection('invalid-label')
     if (options.openPath !== undefined && options.openPath !== '' && !isValidOpenPath(options.openPath)) throw new ForwardRejection('invalid-open-path')
     if (options.urlCommand !== undefined && options.urlCommand !== '' && !isValidUrlCommand(options.urlCommand)) throw new ForwardRejection('invalid-url-command')
+    // A workbench tab needs a stable origin, so only a same-port entry may
+    // carry it — judged on the merged result (change forward-workbench-tab D2).
+    const current = this.#entries.get(devicePort)
+    const sameLocalPort = options.sameLocalPort ?? current?.sameLocalPort ?? false
+    const workbenchTab = options.workbenchTab ?? current?.workbenchTab ?? false
+    if (workbenchTab && !sameLocalPort) throw new ForwardRejection('workbench-tab-requires-same-port')
     if (!this.#entries.has(devicePort) && this.#entries.size >= FORWARD_LIMIT) throw new ForwardRejection('forward-limit')
   }
 
@@ -328,6 +337,7 @@ export class DeviceForwards {
           pinned: entry.pinned,
           ...(entry.label === undefined ? {} : { label: entry.label }),
           sameLocalPort: entry.sameLocalPort,
+          workbenchTab: entry.workbenchTab,
           ...(entry.openPath === undefined ? {} : { openPath: entry.openPath }),
           ...(entry.urlCommand === undefined ? {} : { urlCommand: entry.urlCommand }),
           holders,
@@ -365,6 +375,7 @@ export class DeviceForwards {
       pinned: false,
       label: undefined,
       sameLocalPort: false,
+      workbenchTab: false,
       openPath: undefined,
       urlCommand: undefined,
       state: 'starting',

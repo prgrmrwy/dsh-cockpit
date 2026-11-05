@@ -12,6 +12,7 @@ import {
   type DeviceStatusFacts,
   type ForwardsSnapshot,
 } from '@dsh-cockpit/shared'
+import { FRAME_ALLOW, FRAME_SANDBOX } from './frame-attributes.js'
 import { ApiRequestError } from '../api/client.js'
 
 interface BridgeCapabilityPayload {
@@ -819,8 +820,8 @@ export function Workbench({ device, devices, enabledDeviceIds, onReconnect, onMa
               }}
               {...(requestWorkbenchLaunch === undefined ? { src: frame.url || undefined } : {})}
               title={frame.deviceId}
-              sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox"
-              allow="clipboard-read; clipboard-write; microphone"
+              sandbox={FRAME_SANDBOX}
+              allow={FRAME_ALLOW}
               className="workbench-iframe"
               style={launchPending ? { visibility: 'hidden' } : undefined}
               aria-hidden={launchPending}

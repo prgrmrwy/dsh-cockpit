@@ -358,7 +358,7 @@ export class DevicesController {
   @Post('devices/:deviceId/forwards')
   async createForward(
     @Param('deviceId') deviceId: string,
-    @Body() body: { devicePort?: unknown; label?: unknown; sameLocalPort?: unknown; openPath?: unknown; urlCommand?: unknown } | undefined,
+    @Body() body: { devicePort?: unknown; label?: unknown; sameLocalPort?: unknown; workbenchTab?: unknown; openPath?: unknown; urlCommand?: unknown } | undefined,
   ): Promise<AcquireResult> {
     try {
       // Strings are validated by the table (invalid-label / invalid-open-path
@@ -366,6 +366,7 @@ export class DevicesController {
       return await this.connectivity.pinForward(decodeDeviceId(deviceId), body?.devicePort as number, {
         ...(body?.label === undefined ? {} : { label: body.label as string }),
         ...(typeof body?.sameLocalPort === 'boolean' ? { sameLocalPort: body.sameLocalPort } : {}),
+        ...(typeof body?.workbenchTab === 'boolean' ? { workbenchTab: body.workbenchTab } : {}),
         ...(body?.openPath === undefined ? {} : { openPath: body.openPath as string }),
         ...(body?.urlCommand === undefined ? {} : { urlCommand: body.urlCommand as string }),
       })

@@ -17,7 +17,7 @@ afterEach(cleanup)
 beforeEach(() => { for (const mock of Object.values(apiMock)) mock.mockReset() })
 
 const extra = (devicePort: number, overrides: Partial<AdditionalForwardRow> = {}): AdditionalForwardRow => ({
-  kind: 'additional', devicePort, state: 'ready', pinned: true, sameLocalPort: false, holders: [], holderCount: 0,
+  kind: 'additional', devicePort, state: 'ready', pinned: true, sameLocalPort: false, workbenchTab: false, holders: [], holderCount: 0,
   createdAt: 0, stateChangedAt: 0, localPort: devicePort + 50_000, pid: 9000 + devicePort, ...overrides,
 })
 
@@ -40,7 +40,7 @@ describe('forward list: same-port and open', () => {
     fireEvent.click(within(region()).getByLabelText('本地端口同设备端口'))
     fireEvent.change(within(region()).getByLabelText('打开路径（可选）'), { target: { value: '/dashboard' } })
     fireEvent.click(within(region()).getByRole('button', { name: '添加常驻转发' }))
-    await waitFor(() => expect(apiMock.createForward).toHaveBeenCalledWith('vm', 3082, { sameLocalPort: true, openPath: '/dashboard' }))
+    await waitFor(() => expect(apiMock.createForward).toHaveBeenCalledWith('vm', 3082, { sameLocalPort: true, workbenchTab: false, openPath: '/dashboard' }))
   })
 
   it('keeps input and the switch when the local port conflicts', async () => {
@@ -99,5 +99,27 @@ describe('forward list: same-port and open', () => {
     expect(alert.textContent).toBe('没有在命令输出中找到该端口的地址。')
     expect(alert.textContent).not.toContain('raw server text')
     expect(blank.location.href).toBe('')
+  })
+
+  it('enables the tab switch only with same-port and submits it', async () => {
+    apiMock.createForward.mockResolvedValue({ devicePort: 3082, state: 'starting' })
+    render(<ForwardList device={device(extra(3082, { sameLocalPort: true, workbenchTab: true, localPort: 3082 }))} />)
+    expect(rowOf(3082).textContent).toContain('标签页')
+    const tabSwitch = within(region()).getByLabelText('在工作台显示为标签页') as HTMLInputElement
+    expect(tabSwitch.disabled).toBe(true)
+    fireEvent.change(within(region()).getByLabelText('设备端口'), { target: { value: '3082' } })
+    fireEvent.click(within(region()).getByLabelText('本地端口同设备端口'))
+    expect(tabSwitch.disabled).toBe(false)
+    fireEvent.click(tabSwitch)
+    fireEvent.click(within(region()).getByRole('button', { name: '添加常驻转发' }))
+    await waitFor(() => expect(apiMock.createForward).toHaveBeenCalledWith('vm', 3082, { sameLocalPort: true, workbenchTab: true }))
+  })
+
+  it('explains the same-port requirement on a 409', async () => {
+    apiMock.createForward.mockRejectedValue(new ApiRequestError('workbench-tab-requires-same-port', 'x', 409))
+    render(<ForwardList device={device()} />)
+    fireEvent.change(within(region()).getByLabelText('设备端口'), { target: { value: '5432' } })
+    fireEvent.click(within(region()).getByRole('button', { name: '添加常驻转发' }))
+    await waitFor(() => expect(within(region()).getByRole('alert').textContent).toContain('才能显示为工作台标签页'))
   })
 })

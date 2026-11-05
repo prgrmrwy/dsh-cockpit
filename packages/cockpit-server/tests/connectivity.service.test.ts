@@ -1619,16 +1619,16 @@ describe('same-port pinned forwards', () => {
 
   it('persists only the mark and rebuilds on the device port after a restart', async () => {
     const first = await twoReady()
-    await first.service.pinForward('a', 3082, { sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' })
+    await first.service.pinForward('a', 3082, { sameLocalPort: true, workbenchTab: true, openPath: '/dashboard', urlCommand: 'echo x' })
     await waitFor(() => additional(first.service, 3082, 'a')?.state === 'ready')
     expect(additional(first.service, 3082, 'a')).toMatchObject({ localPort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' })
     await first.service.onApplicationShutdown()
     expect(first.registry.records.find(record => record.deviceId === 'a')!.forwards)
-      .toEqual([{ devicePort: 3082, sameLocalPort: true, openPath: '/dashboard', urlCommand: 'echo x' }])
+      .toEqual([{ devicePort: 3082, sameLocalPort: true, workbenchTab: true, openPath: '/dashboard', urlCommand: 'echo x' }])
 
     const service = new ConnectivityService(first.registry as never, new DeviceEventsService())
     await waitFor(() => additional(service, 3082, 'a')?.state === 'ready')
-    expect(additional(service, 3082, 'a')).toMatchObject({ localPort: 3082, sameLocalPort: true, openPath: '/dashboard' })
+    expect(additional(service, 3082, 'a')).toMatchObject({ localPort: 3082, sameLocalPort: true, workbenchTab: true, openPath: '/dashboard' })
     await service.onApplicationShutdown()
   })
   it('resolves an open URL by device command without leaking its token anywhere', async () => {

@@ -89,9 +89,13 @@ function validatePinnedForwards(deviceId: string, value: unknown): PinnedForward
     // Open options (change forward-fixed-port-open) are dropped one by one when
     // invalid; the mark itself survives. The warning never quotes a value: a
     // URL command is user-authored shell text.
-    const options: { sameLocalPort?: true; openPath?: string; urlCommand?: string } = {}
+    const options: { sameLocalPort?: true; workbenchTab?: true; openPath?: string; urlCommand?: string } = {}
     if (entry.sameLocalPort === true) options.sameLocalPort = true
     else if (entry.sameLocalPort !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid sameLocalPort on pinned forward ${devicePort}`)
+    // A tab without the same-port mark could never be restored (the table
+    // refuses it), so it is dropped rather than losing the whole pin.
+    if (entry.workbenchTab === true && options.sameLocalPort === true) options.workbenchTab = true
+    else if (entry.workbenchTab !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid workbenchTab on pinned forward ${devicePort}`)
     if (isValidOpenPath(entry.openPath)) options.openPath = entry.openPath
     else if (entry.openPath !== undefined) logger.warn(`device ${deviceId}: ignoring an invalid openPath on pinned forward ${devicePort}`)
     if (isValidUrlCommand(entry.urlCommand)) options.urlCommand = entry.urlCommand

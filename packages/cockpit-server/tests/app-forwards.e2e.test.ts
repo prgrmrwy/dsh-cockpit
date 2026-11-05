@@ -204,6 +204,19 @@ describe('forwards endpoints (real NestJS + Express, via createCockpitApp)', () 
     expect(await registry()).toBe(before)
   })
 
+  it('persists a workbench tab on a same-port entry and refuses it otherwise', async () => {
+    const headers = { ...json, cookie, origin: self, 'sec-fetch-site': 'same-origin' }
+    const created = await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 3082, sameLocalPort: true, workbenchTab: true }))
+    expect(created.status).toBe(201)
+    expect(rows()).toContainEqual(expect.objectContaining({ devicePort: 3082, workbenchTab: true }))
+    const before = await registry()
+    const refused = await send('POST', `/api/devices/${REMOTE_ID}/forwards`, headers, JSON.stringify({ devicePort: 5432, workbenchTab: true }))
+    expect([refused.status, code(refused)]).toEqual([409, 'workbench-tab-requires-same-port'])
+    expect(await registry()).toBe(before)
+    expect(JSON.parse(before).devices.find((device: { deviceId: string }) => device.deviceId === REMOTE_ID).forwards)
+      .toEqual([{ devicePort: 3082, sameLocalPort: true, workbenchTab: true }])
+  })
+
   it('answers open-url with 409 forward-not-ready while the entry is not ready', async () => {
     const headers = { ...json, cookie, origin: self, 'sec-fetch-site': 'same-origin' }
     // The device is disabled, so the pinned entry stays paused.

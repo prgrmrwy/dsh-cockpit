@@ -6,6 +6,8 @@ import { subscribeDevices } from './api/stream.js'
 import { registerServiceWorker } from './pwa.js'
 import { createChimePlayer, detectChimes, installChimeUnlock, type ChimeCounts } from './chime.js'
 import { TopBar } from './components/TopBar.jsx'
+import { ForwardTabs, type ForwardTabReloadRequest } from './workbench/ForwardTabs.jsx'
+import { forwardTabsOf } from './workbench/forward-tabs-model.js'
 import { Workbench, type WorkbenchReloadRequest } from './workbench/Workbench.jsx'
 import { DevicePanel, OverviewPanel, type PanelName } from './panels/Panels.jsx'
 import './styles/app.css'
@@ -91,16 +93,42 @@ export function App() {
     }
   }, [devices.length, enabledDevices, lastUsed])
 
+  // Per-device view (change forward-workbench-tab D1): the shown forward tab,
+  // or absent for the device workbench. Page memory only, never persisted.
+  const [views, setViews] = useState<ReadonlyMap<string, string>>(new Map())
+  const [tabReload, setTabReload] = useState<ForwardTabReloadRequest | undefined>(undefined)
+  const currentFacts = enabledDevices.find(device => device.deviceId === currentId)
+  const currentTabs = useMemo(() => forwardTabsOf(currentFacts), [currentFacts])
+  const wantedTab = currentId === undefined ? undefined : views.get(currentId)
+  // A tab whose mark was cleared (or whose entry is gone) falls back to the workbench.
+  const activeTabKey = currentTabs.some(tab => tab.key === wantedTab) ? wantedTab : undefined
+
   // Report the shown device: a completion on any other device is then
   // reminded even though its hidden page still treats the session as open.
+  // On a forward tab nobody is looking at the device's DSH, so the report is
+  // empty and a completion meanwhile is reminded too.
   useEffect(() => {
-    foregroundRef.current = currentId ?? null
+    foregroundRef.current = activeTabKey === undefined ? currentId ?? null : null
     reportForeground()
-  }, [currentId, reportForeground])
+  }, [currentId, activeTabKey, reportForeground])
 
   const select = useCallback((deviceId: string) => {
+    // The current device's own item returns to its workbench; another device
+    // reopens whatever view it had.
+    if (deviceId === currentId) {
+      setViews(previous => { const next = new Map(previous); next.delete(deviceId); return next })
+    }
     setCurrentId(deviceId)
     try { window.localStorage.setItem('cockpit:last-device', deviceId) } catch { /* ignore */ }
+  }, [currentId])
+
+  const selectTab = useCallback((key: string) => {
+    if (currentId === undefined) return
+    setViews(previous => new Map(previous).set(currentId, key))
+  }, [currentId])
+
+  const reloadTab = useCallback((key: string) => {
+    setTabReload(previous => ({ key, nonce: (previous?.nonce ?? 0) + 1 }))
   }, [])
 
   // Reconnect only the current device; everything that is already connected
@@ -146,9 +174,14 @@ export function App() {
         onRefresh={reconnectCurrent}
         onRefreshLabel="重连并重新加载当前设备"
         onAckCompleted={ackCompleted}
+        tabs={currentTabs}
+        activeTabKey={activeTabKey}
+        onSelectTab={selectTab}
+        onReloadTab={reloadTab}
       />
       <main className="cockpit-main">
         {error !== undefined && <div className="cockpit-error" role="alert">{error}</div>}
+        <div className="cockpit-view" style={activeTabKey === undefined ? undefined : { display: 'none' }}>
         <Workbench
           device={current}
           enabledDeviceIds={enabledDevices.map(device => device.deviceId)}
@@ -160,6 +193,8 @@ export function App() {
           onManageDevices={() => setPanel('devices')}
           {...(reloadRequest === undefined ? {} : { reloadRequest })}
         />
+        </div>
+        <ForwardTabs devices={enabledDevices} activeKey={activeTabKey} {...(tabReload === undefined ? {} : { reloadRequest: tabReload })} />
       </main>
       {(panel === 'devices' || panel === 'settings') && (
         <DevicePanel devices={devices} onClose={() => setPanel(undefined)} onChanged={() => void refresh()}

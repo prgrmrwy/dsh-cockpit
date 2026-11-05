@@ -191,4 +191,24 @@ describe('device registry', () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain('SECRET')
     warn.mockRestore()
   })
+
+  it('keeps a workbench tab only together with the same-port mark', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {})
+    await writeFile(registry.file, JSON.stringify({ version: 1, devices: [{
+      ...remote(),
+      forwards: [
+        { devicePort: 3082, sameLocalPort: true, workbenchTab: true },
+        { devicePort: 5432, workbenchTab: true },
+        { devicePort: 6379, sameLocalPort: true, workbenchTab: 'yes' },
+      ],
+    }] }))
+    const [loaded] = await new DeviceRegistry(dir).load()
+    expect(loaded?.forwards).toEqual([
+      { devicePort: 3082, sameLocalPort: true, workbenchTab: true },
+      { devicePort: 5432 },
+      { devicePort: 6379, sameLocalPort: true },
+    ])
+    expect(warn).toHaveBeenCalledTimes(2)
+    warn.mockRestore()
+  })
 })

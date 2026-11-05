@@ -3,6 +3,8 @@ import type { DeviceStatusFacts, DeviceState, SessionActivityKind, SessionActivi
 import type { PanelName } from '../panels/Panels.jsx'
 import { StateDot } from './StateDot.jsx'
 import { BridgeIcon } from './BridgeIcon.jsx'
+import type { ForwardTab } from '../workbench/forward-tabs-model.js'
+import { STATE_TEXT } from '../panels/ForwardList.jsx'
 
 /** Status dot semantics: direct mapping of the connectivity state to the
  * official stoplight vocabulary. No new states; CONNECTING additionally
@@ -49,21 +51,31 @@ export interface TopBarProps {
   readonly onRefreshLabel?: string
   /** Clears this device's current completion generations without selecting it. */
   readonly onAckCompleted?: (deviceId: string) => void | Promise<void>
+  /** Forward tabs of the CURRENT device (change forward-workbench-tab). */
+  readonly tabs?: readonly ForwardTab[]
+  readonly activeTabKey?: string | undefined
+  readonly onSelectTab?: (key: string) => void
+  readonly onReloadTab?: (key: string) => void
 }
 
-export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, onRefreshLabel, onAckCompleted }: TopBarProps) {
+/** Forward-tab dot: ready is ok; anything else carries its text too. */
+const TAB_DOT = { ready: 'ok', starting: 'busy', retrying: 'warn', paused: 'disabled' } as const
+
+export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, onRefreshLabel, onAckCompleted, tabs = [], activeTabKey, onSelectTab, onReloadTab }: TopBarProps) {
   const [menuFor, setMenuFor] = useState<string | undefined>()
+  const [tabMenu, setTabMenu] = useState<{ key: string; x: number; y: number } | undefined>()
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | undefined>()
   const refreshRef = useRef(onRefresh)
   refreshRef.current = onRefresh
 
   const openContextMenu = useCallback((event: React.MouseEvent, deviceId: string) => {
     event.preventDefault()
+    setTabMenu(undefined)
     setMenuFor(deviceId)
     setMenuAt({ x: event.clientX, y: event.clientY })
   }, [])
 
-  const closeMenu = useCallback(() => { setMenuFor(undefined); setMenuAt(undefined) }, [])
+  const closeMenu = useCallback(() => { setMenuFor(undefined); setMenuAt(undefined); setTabMenu(undefined) }, [])
 
   // The device tab used to be a single native <button role="tab">. That is no
   // longer possible: the completed-status chip now needs its own independent
@@ -91,13 +103,16 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
       <div className="topbar-devices" role="tablist">
         {devices.filter(device => device.enabled).map(device => {
           const active = device.deviceId === currentId
-          return (
+          const deviceTabs = active ? tabs : []
+          return [
             <div
               key={device.deviceId}
               role="tab"
               tabIndex={0}
-              aria-selected={active}
-              className={`topbar-device${active ? ' active' : ''}`}
+              // One selected tab per tablist: on a forward tab the device item
+              // is current but not the shown view.
+              aria-selected={active && activeTabKey === undefined}
+              className={`topbar-device${active && activeTabKey === undefined ? ' active' : ''}`}
               title={device.diagnostic ?? device.displayName}
               onClick={() => onSelect(device.deviceId)}
               onKeyDown={event => selectOnKey(event, device.deviceId)}
@@ -156,8 +171,33 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
                   ))}
                 </span>
               )}
-            </div>
-          )
+            </div>,
+            ...deviceTabs.map(tab => {
+              const selected = tab.key === activeTabKey
+              const stateText = STATE_TEXT[tab.row.state]
+              return (
+                <div
+                  key={tab.key}
+                  role="tab"
+                  tabIndex={0}
+                  aria-selected={selected}
+                  className={`topbar-device topbar-forward-tab${selected ? ' active' : ''}`}
+                  title={tab.row.state === 'ready' ? tab.name : `${tab.name}（${stateText}）`}
+                  onClick={() => onSelectTab?.(tab.key)}
+                  onKeyDown={event => {
+                    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onSelectTab?.(tab.key) }
+                  }}
+                  onContextMenu={event => { event.preventDefault(); setMenuFor(undefined); setTabMenu({ key: tab.key, x: event.clientX, y: event.clientY }) }}
+                  data-forward-tab-item={tab.key}
+                  data-forward-tab-state={tab.row.state}
+                >
+                  <span className={`dot ${TAB_DOT[tab.row.state]}`} aria-hidden="true" />
+                  <span className="topbar-forward-tab-name">{tab.name}</span>
+                  {tab.row.state !== 'ready' && <span className="topbar-forward-tab-state">{stateText}</span>}
+                </div>
+              )
+            }),
+          ]
         })}
       </div>
       <div className="topbar-actions">
@@ -176,6 +216,17 @@ export function TopBar({ devices, currentId, onSelect, onOpenPanel, onRefresh, o
           <button role="menuitem" onClick={() => { onRefresh(); closeMenu() }}>{onRefreshLabel ?? '刷新状态'}</button>
           <button role="menuitem" onClick={() => { onOpenPanel('overview'); closeMenu() }}>查看状态</button>
           <button role="menuitem" onClick={() => { onOpenPanel('devices'); closeMenu() }}>编辑</button>
+        </div>
+      )}
+      {tabMenu !== undefined && (
+        <div
+          className="context-menu"
+          style={{ left: tabMenu.x, top: tabMenu.y }}
+          onMouseLeave={closeMenu}
+          role="menu"
+          data-cockpit-tab-menu={tabMenu.key}
+        >
+          <button role="menuitem" onClick={() => { onReloadTab?.(tabMenu.key); closeMenu() }}>重新加载</button>
         </div>
       )}
     </header>

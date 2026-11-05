@@ -200,6 +200,12 @@ body {
   background: var(--error); color: #fff; padding: 6px 14px; border-radius: 8px; z-index: 50;
 }
 .workbench { height: 100%; width: 100%; }
+/* forward tabs (change forward-workbench-tab): same box as the workbench; the
+   view wrapper keeps the workbench mounted while a tab is shown. */
+.cockpit-view { height: 100%; width: 100%; }
+.topbar-forward-tab { padding: 6px 8px; font-size: 12px; max-width: 200px; }
+.topbar-forward-tab-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.topbar-forward-tab-state { color: var(--fg-dim); white-space: nowrap; flex: none; }
 .workbench-empty {
   height: 100%; display: flex; align-items: center; justify-content: center;
   color: var(--fg-dim); font-size: 15px; text-align: center;
@@ -324,6 +330,8 @@ body {
 .forward-form-check input[type="checkbox"] { width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; flex: none; accent-color: var(--accent); }
 .console-shell .forward-form-check { color: var(--console-fg); }
 .console-shell .forward-form-check input[type="checkbox"] { accent-color: var(--console-accent); }
+.forward-form-check-disabled { color: var(--fg-dim); cursor: not-allowed; }
+.console-shell .forward-form-check-disabled { color: var(--console-muted); }
 /* The panel's primary colors at the card's rhythm: the shared 42px slab was
    heavier than every other control in the card. */
 .forward-form .primary-action { align-self: flex-start; min-height: 30px; padding: 0 14px; font-size: 12px; font-weight: 650; }

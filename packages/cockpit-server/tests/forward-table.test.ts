@@ -490,3 +490,44 @@ describe('same-port pinned entries', () => {
   })
 })
 
+/** Workbench tabs (change forward-workbench-tab D2). */
+describe('workbench tab mark', () => {
+  const codeOf = (run: () => unknown) => {
+    try { run() } catch (cause) { return cause instanceof ForwardRejection ? cause.code : 'other' }
+    return 'none'
+  }
+
+  it('refuses a tab on a non-same-port entry without starting a child', () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    expect(codeOf(() => forwards.pin(5432, { workbenchTab: true }))).toBe('workbench-tab-requires-same-port')
+    expect(additional(forwards)).toEqual([])
+    expect(connector.requests).toEqual([])
+  })
+
+  it('refuses dropping same-port while the tab is on, keeping the child', async () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    forwards.pin(3082, { sameLocalPort: true, workbenchTab: true })
+    await settle()
+    const pid = additional(forwards)[0]!.pid
+    expect(codeOf(() => forwards.pin(3082, { sameLocalPort: false }))).toBe('workbench-tab-requires-same-port')
+    expect(additional(forwards)[0]).toMatchObject({ sameLocalPort: true, workbenchTab: true, pid })
+    // Turning both off together is allowed.
+    forwards.pin(3082, { sameLocalPort: false, workbenchTab: false })
+    expect(additional(forwards)[0]).toMatchObject({ sameLocalPort: false, workbenchTab: false })
+  })
+
+  it('toggles the tab without rebuilding the child', async () => {
+    const connector = new FakeConnector()
+    const forwards = table(connector)
+    forwards.pin(3082, { sameLocalPort: true })
+    await settle()
+    const pid = additional(forwards)[0]!.pid
+    forwards.pin(3082, { workbenchTab: true })
+    await settle()
+    expect(additional(forwards)[0]).toMatchObject({ workbenchTab: true, pid })
+    expect(connector.requests).toHaveLength(1)
+  })
+})
+

@@ -65,6 +65,8 @@ export interface AdditionalForwardRow {
   /** Pinned with the same-port mark: the local port always equals the device
    * port (change forward-fixed-port-open). Cockpit-only: never in a snapshot. */
   readonly sameLocalPort: boolean
+  /** Shown as a workbench tab (change forward-workbench-tab). Cockpit-only. */
+  readonly workbenchTab: boolean
   readonly openPath?: string
   readonly urlCommand?: string
   readonly holders: readonly string[]
@@ -90,6 +92,7 @@ export interface PinnedForwardRecord {
   readonly devicePort: number
   readonly label?: string
   readonly sameLocalPort?: true
+  readonly workbenchTab?: true
   readonly openPath?: string
   readonly urlCommand?: string
 }

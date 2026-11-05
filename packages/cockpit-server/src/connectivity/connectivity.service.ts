@@ -945,6 +945,7 @@ function pinnedOptions(mark: PinnedForwardRecord): PinOptions {
   return {
     ...(mark.label === undefined ? {} : { label: mark.label }),
     sameLocalPort: mark.sameLocalPort === true,
+    workbenchTab: mark.workbenchTab === true,
     ...(mark.openPath === undefined ? {} : { openPath: mark.openPath }),
     ...(mark.urlCommand === undefined ? {} : { urlCommand: mark.urlCommand }),
   }
@@ -956,12 +957,14 @@ function mergePinnedMark(devicePort: number, previous: PinnedForwardRecord | und
   const pick = (next: string | undefined, before: string | undefined) => next === undefined ? before : next === '' ? undefined : next
   const label = options.label ?? previous?.label
   const sameLocalPort = options.sameLocalPort ?? previous?.sameLocalPort === true
+  const workbenchTab = options.workbenchTab ?? previous?.workbenchTab === true
   const openPath = pick(options.openPath, previous?.openPath)
   const urlCommand = pick(options.urlCommand, previous?.urlCommand)
   return {
     devicePort,
     ...(label === undefined ? {} : { label }),
     ...(sameLocalPort ? { sameLocalPort: true as const } : {}),
+    ...(workbenchTab ? { workbenchTab: true as const } : {}),
     ...(openPath === undefined ? {} : { openPath }),
     ...(urlCommand === undefined ? {} : { urlCommand }),
   }
