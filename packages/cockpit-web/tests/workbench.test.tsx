@@ -88,9 +88,9 @@ describe('workbench', () => {
     expect(frame.getAttribute('allow')).toBe('clipboard-read; clipboard-write; microphone')
     // DSH browser login preopens about:blank and navigates it later; a popup
     // that inherits the iframe sandbox rejects that navigation (SecurityError).
-    // Popups escape the sandbox; the iframe's own token set stays minimal.
+    // Popups escape the sandbox; allow-downloads permits the embedded page's native file downloads.
     expect(frame.getAttribute('sandbox')?.split(/\s+/).sort()).toEqual([
-      'allow-forms', 'allow-popups', 'allow-popups-to-escape-sandbox', 'allow-same-origin', 'allow-scripts',
+      'allow-downloads', 'allow-forms', 'allow-popups', 'allow-popups-to-escape-sandbox', 'allow-same-origin', 'allow-scripts',
     ])
     src.disconnect()
   })
