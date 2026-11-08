@@ -15,3 +15,7 @@ Confirmed the running repository from runtime.json as D:\opensource\dsh-cockpit,
 The actual Windows Web package passed 161 tests across 13 files, typecheck, lint and production build. Output includes assets/index-FR5AFIq7.js. The existing Windows Cockpit served the new shell; a fresh browser reached the native device iframe and verified its sandbox contains allow-downloads. Additional full-shell automation did not complete its hand-written Session RPC lookup, so it is not reported as another completed ZIP download.
 
 No Cockpit or DSH restart was needed for this frontend repair. Existing user pages must refresh the whole Cockpit shell to create iframes with the updated sandbox; reconnecting only the embedded device does not update the parent DOM attribute.
+
+## User acceptance
+
+On 2026-11-08 the user confirmed the refreshed Cockpit download workflow works and authorized archiving and pushing. The main specification already contains the delta, so archive skips reapplying it.
