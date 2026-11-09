@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { NAV_MARKER, SECTION_ATTRIBUTE, SECTION_CSS, injectSectionStyles, type StyleElement, type StyleHost } from '../src/client/settings-styles.js'
+import { SECTION_ATTRIBUTE, SECTION_CSS, injectSectionStyles, type StyleElement, type StyleHost } from '../src/client/settings-styles.js'
 
 /** The section's stylesheet lives inside the host's settings panel, so the host
  * owns the theme: every colour must be a role mapped onto an official
@@ -44,11 +44,9 @@ function fakeDocument() {
 
 describe('cockpit forwards settings styles', () => {
   it('maps section colours onto host theme tokens without literals or external resources', () => {
-    // The only asset the sheet may carry is an inline data: URI (the nav glyph);
-    // everything else is fetched or imported, and neither is allowed.
-    expect(SECTION_CSS).toMatch(/url\("data:image\/svg\+xml,/)
-    const inlineOnly = SECTION_CSS.replace(/url\("data:[^"]*"\)/g, 'INLINE-ASSET')
-    expect(inlineOnly).not.toMatch(/url\(|@import|https?:|@font-face/i)
+    // The nav-row glyph moved to the official `settings.section.icon` slot, so
+    // the sheet carries no asset of any kind now — not even an inline data: URI.
+    expect(SECTION_CSS).not.toMatch(/url\(|@import|https?:|@font-face/i)
     // The host switches the theme; the section must not decide it.
     expect(SECTION_CSS).not.toMatch(/prefers-color-scheme/)
     // No colour is written out by hand anywhere in the sheet.
@@ -73,22 +71,15 @@ describe('cockpit forwards settings styles', () => {
     for (const [, , value] of SECTION_CSS.matchAll(/(--dshcf-[a-z0-9-]+):([^;]+)/g)) {
       expect(value).toMatch(/var\(--dsw-alias-|^ui-monospace/)
     }
-    // Rules only ever reach markup this plugin renders (its own classes) or the
-    // one nav row it marked itself — never another plugin's nodes.
+    // Rules only ever reach markup this plugin renders (its own classes),
+    // never the host's navigation or another plugin's nodes: the nav-row glyph
+    // goes through the official `settings.section.icon` slot instead.
     expect(SECTION_ATTRIBUTE).toBe('data-dsh-cockpit-forwards')
-    expect(NAV_MARKER).toBe('data-dsh-cockpit-forwards-nav')
     const rules = selectors(SECTION_CSS)
     expect(rules.length).toBeGreaterThan(5)
-    for (const rule of rules) expect(rule).toMatch(new RegExp(`\\.dshcf|\\[${NAV_MARKER}\\]`))
-    // The glyph is painted as a mask so it follows currentColor like the
-    // official glyphs, instead of shipping a coloured image.
-    const navRule = SECTION_CSS.match(new RegExp(`\\[${NAV_MARKER}\\]::before\\{[^}]*\\}`, 's'))
-    expect(navRule).not.toBeNull()
-    expect(navRule![0]).toMatch(/mask:/)
-    expect(navRule![0]).toMatch(/background-color:\s*currentColor/)
-    // The row is only restyled through the marker, so removing it restores the
-    // host's own icon.
-    expect(SECTION_CSS).toMatch(new RegExp(`\\[${NAV_MARKER}\\]>svg\\{display:none\\}`))
+    for (const rule of rules) expect(rule).toMatch(/\.dshcf/)
+    // No marker, no pseudo-element rewrite, no hiding of the host's own icon.
+    expect(SECTION_CSS).not.toMatch(/\[data-dsh-cockpit-forwards-nav\]|::before|::after|display:\s*none|mask:/)
   })
 
   it('injects the stylesheet once and removes it again on dispose', () => {

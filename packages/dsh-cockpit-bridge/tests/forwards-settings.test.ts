@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ReactElement } from 'react'
 import type { ForwardsSnapshot } from '@dsh-cockpit/shared'
 
 /** The read-only "驾驶舱转发" settings section (device-forward-registry D9).
  * The bridge test environment is `node` with no DOM library, so this asserts
- * the section's render description: the registered slot, and the plain view
- * model the component renders from (lede, rows, usage, guidance). */
+ * the section's render description: the registered slots — the section and its
+ * official `settings.section.icon` seat — and the plain view model the component
+ * renders from (lede, rows, usage, guidance). */
 
 const COCKPIT_ORIGIN = 'http://127.0.0.1:4317'
 
@@ -25,12 +25,13 @@ class FakeWindow {
 interface SlotRegistration {
   readonly name: string
   readonly id: string
-  readonly label: () => string
-  readonly inject: () => { view: () => unknown; subscribe: (listener: () => void) => () => void }
+  readonly order?: number
+  readonly label?: () => string
+  readonly inject?: () => { view: () => unknown; subscribe: (listener: () => void) => () => void }
 }
 
-function fakeCtx() {
-  const registrations: Array<{ options: SlotRegistration; component: (props: object) => ReactElement | null }> = []
+function fakeCtx(options: { readonly withIconSlot?: boolean } = {}) {
+  const registrations: Array<{ options: SlotRegistration; component: unknown }> = []
   const slotInjects: string[] = []
   const ctx = {
     sessions: { list: { getSnapshot: () => ({ current: undefined }), subscribe: () => () => {} } },
@@ -41,8 +42,14 @@ function fakeCtx() {
       if (deps.every(dep => dep in ctx)) callback(ctx)
     },
     slots: {
-      inject: (name: string, callback: () => unknown) => { slotInjects.push(name); callback() },
-      register: (options: SlotRegistration, component: (props: object) => ReactElement | null) => {
+      inject: (name: string, callback: () => unknown) => {
+        slotInjects.push(name)
+        // A host without the slot never declares it, so `slots.inject` keeps
+        // waiting and never runs the callback — exactly what this models.
+        if (name === 'settings.section.icon' && options.withIconSlot === false) return
+        callback()
+      },
+      register: (options: SlotRegistration, component: unknown) => {
         registrations.push({ options, component })
         return () => {}
       },
@@ -80,15 +87,16 @@ async function section() {
   const mod = await import('../src/client/index.js')
   ;(mod.apply as (ctx: unknown) => void)(fixture.ctx)
   expect(fixture.slotInjects).toContain('settings.section')
+  expect(fixture.slotInjects).toContain('settings.section.icon')
   const registration = fixture.registrations.find(entry => entry.options.name === 'settings.section')
   expect(registration).toBeDefined()
-  return { fixture, registration: registration!, injected: registration!.options.inject() }
+  return { fixture, registration: registration!, injected: registration!.options.inject!() }
 }
 
 /** Handshake, then deliver one snapshot, and return the resulting view. */
 async function connectedView(deliver: ForwardsSnapshot) {
   const { registration, injected } = await section()
-  expect(registration.options.label()).toBe('驾驶舱转发')
+  expect(registration.options.label!()).toBe('驾驶舱转发')
   const fake = window as unknown as FakeWindow
   // Like React's useSyncExternalStore, read the view inside the listener.
   const seen: unknown[] = []
@@ -101,6 +109,29 @@ async function connectedView(deliver: ForwardsSnapshot) {
 }
 
 describe('cockpit forwards settings section', () => {
+  it('registers the nav glyph on the official icon slot under the section id', async () => {
+    const { fixture } = await section()
+    const sectionRegistration = fixture.registrations.find(entry => entry.options.name === 'settings.section')
+    const icon = fixture.registrations.find(entry => entry.options.name === 'settings.section.icon')
+    expect(icon).toBeDefined()
+    expect(icon!.options.id).toBe('dsh-cockpit-forwards')
+    // The shell seats the glyph on `only: row.id`, so a different id would
+    // silently leave the row with the fallback gear.
+    expect(icon!.options.id).toBe(sectionRegistration!.options.id)
+    expect(typeof icon!.component).toBe('function')
+  })
+
+  it('keeps the host default icon and the section when the icon slot is absent', async () => {
+    const fixture = fakeCtx({ withIconSlot: false })
+    const mod = await import('../src/client/index.js')
+    // A pre-0.2.2 host declares no such slot: `slots.inject` waits, which must
+    // stay silent — the host then draws its own fallback gear.
+    expect(() => (mod.apply as (ctx: unknown) => void)(fixture.ctx)).not.toThrow()
+    expect(fixture.slotInjects).toContain('settings.section.icon')
+    expect(fixture.registrations.map(entry => entry.options.name)).toEqual(['settings.section'])
+    expect(fixture.registrations[0].options.id).toBe('dsh-cockpit-forwards')
+  })
+
   it('lists the main channel and a held 3939 row with 1 / 8 and no mutation controls', async () => {
     const view = await connectedView(snapshot)
     expect(view).toMatchObject({

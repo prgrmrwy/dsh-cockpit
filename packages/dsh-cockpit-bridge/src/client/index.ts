@@ -33,13 +33,22 @@ import {
   type CockpitEditorOpenService,
 } from '@dsh-cockpit/shared'
 import { createForwards } from './forwards.js'
-import { registerForwardsSettingsNavIcon } from './nav-icon.js'
+import { ForwardsSettingsNavIcon } from './nav-icon.js'
 import { createSettingsStore, ForwardsSettingsSection, SECTION_LABEL, type SettingsInjected } from './settings.js'
 import { injectSectionStyles } from './settings-styles.js'
+
+/** Owner props the settings shell passes to a `settings.section.icon`
+ * contribution: the shell's own icon size and whether this row is the open
+ * section (the glyph inherits the row's `currentColor` either way). */
+interface IconSlotProps {
+  readonly size?: number
+  readonly active?: boolean
+}
 
 /** The slice of the `slots` service (dsh-client-ui-renderer) used here. */
 interface SlotsLike {
   inject(name: 'settings.section', callback: () => unknown): unknown
+  inject(name: 'settings.section.icon', callback: () => unknown): unknown
   register(options: {
     name: 'settings.section'
     id: string
@@ -47,12 +56,19 @@ interface SlotsLike {
     label: () => string
     inject: () => SettingsInjected
   }, component: (props: Partial<SettingsInjected>) => unknown): unknown
+  register(options: {
+    name: 'settings.section.icon'
+    id: string
+  }, component: (props: IconSlotProps) => unknown): unknown
 }
 
 export const inject = ['sessions', 'uiSession']
 
 const CAPABILITY_HEADER = 'x-dsh-cockpit-bridge-capability'
-const PLUGIN_VERSION = '0.6.4'
+/** Registered on BOTH `settings.section` and `settings.section.icon`: the shell
+ * seats the glyph only on the row whose id matches the section (`only: row.id`). */
+const FORWARDS_SECTION_ID = 'dsh-cockpit-forwards'
+const PLUGIN_VERSION = '0.6.5'
 const PROTOCOL_VERSION = 2
 /** Official per-session status snapshot (running / completionUnread). */
 const STATUS_PROTOCOL_VERSION = 1
@@ -296,17 +312,23 @@ export function apply(ctx: BridgeContext): void {
       const removeStyles = injectSectionStyles()
       return () => { removeStyles?.() }
     }, 'cockpit-bridge: forwards section styles')
-    // `settings.section` projects no icon field, so the nav row is identified by
-    // its label and drawn by the sheet (design D9, nav-icon.ts).
-    child.effect(() => registerForwardsSettingsNavIcon(() => SECTION_LABEL),
-      'cockpit-bridge: forwards settings nav glyph')
     slots.inject('settings.section', () => slots.register({
       name: 'settings.section',
-      id: 'dsh-cockpit-forwards',
+      id: FORWARDS_SECTION_ID,
       order: 300,
       label: () => SECTION_LABEL,
       inject: (): SettingsInjected => ({ view: settings.view, subscribe: settings.subscribe }),
     }, ForwardsSettingsSection))
+    // The nav-row glyph goes through the official `settings.section.icon` seat
+    // (DSH 0.2.2), under the SAME id as the section: the shell renders that list
+    // slot with `only: row.id` and its own `navIcon(row.id)` as the fallback, so
+    // a host without the slot — or this contribution released — keeps the
+    // default gear, and this plugin never mutates the host's navigation DOM
+    // (nav-icon.ts).
+    slots.inject('settings.section.icon', () => slots.register({
+      name: 'settings.section.icon',
+      id: FORWARDS_SECTION_ID,
+    }, ForwardsSettingsNavIcon))
   })
 
   ctx.effect(() => {

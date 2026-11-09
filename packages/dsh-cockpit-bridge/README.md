@@ -10,6 +10,17 @@ Cordis 服务名 `cockpitBridge.editorOpen` 向任意同页面插件提供远程
 消费方只传绝对路径；bridge 使用父页面握手下发的 SSH config alias，在原始用户点击
 链路中生成 `vscode://vscode-remote/ssh-remote+<alias><path>?windowId=_blank`。
 
+## 0.6.5 发布说明（设置导航图标改用官方图标槽）
+
+只影响设备 DSH 设置导航里「驾驶舱转发」那一行的图标：接缝 `cockpitBridge.forwards`、
+上报协议、区块内容与任何服务端行为均未变。
+
+- **现象**：设备 DSH 升级到 0.2.2 后，设置导航的「驾驶舱转发」一行同时出现转发箭头与宿主默认齿轮。
+- **原因**：0.2.2 把设置导航行改为 `<button><span class="navIcon"><svg/></span><span class="navLabel">…</span></button>`，并新增官方 `settings.section.icon` 槽。0.6.4 及更早版本的适配依赖「按 label 文案给按钮打 marker + 按钮 `::before` 遮罩 + `>svg{display:none}` 隐藏官方图标」；`>svg` 不再命中被 `span` 包住的官方 svg，官方图标于是与自绘字形并存。
+- **修复**：改用官方 `settings.section.icon` 槽，以与 section 相同的 id（`dsh-cockpit-forwards`）注册 16px transfer（相向双箭头）字形，尺寸取宿主传入的 `size`、颜色继承 `currentColor`、标记 `aria-hidden`；删除 marker、按文案定位、MutationObserver 与按钮伪元素等旧适配。槽缺席（旧宿主）或贡献释放时由宿主保留默认图标，页面与区块照常可用。
+- **影响面**：仅设置页导航行图标；区块的 `dshcf-*` 结构与颜色令牌用法、样式表注入、协议版本、会话/状态上报与端口转发均未变。
+- **回滚**：把设备的 bridge pin 改回 0.6.4 并 `dsh build` + 重启该设备 DSH web 即可（0.6.4 在 DSH 0.2.2 上仍有双图标缺陷）；无须迁移。
+
 ## 为什么存在
 
 官方侧栏打开会话（`ctx.sessions.open` → `SessionManager.select`）是纯浏览器端
@@ -95,7 +106,7 @@ DSH 设置页里那个只读区块（design D9）。它存在的理由是：读�
 - **说什么**：隧道由驾驶舱建立；表里的 `127.0.0.1:<localPort>` **只在运行驾驶舱的那台机器上有效**（在这台设备上打开它没有意义）；创建与删除在驾驶舱的设备面板里，本页只读。未连接驾驶舱、本机设备、表为空三种情况各自给出下一步，而不是一句结论。
 - **列什么**：主通道单独成行（不可删除、不受上限约束），附加条目挂在 `N / 8` 的占用计下面，每条显示设备端口 → 本地地址、状态、寿命（常驻 / 随持有者）、标签与持有者标签，失败时另起一行显示诊断。
 - **样式从哪来**：宿主拥有主题。`settings-styles.ts` 只把颜色角色映射到官方 `--dsw-alias-*` 令牌（`label-*` / `border-l*` / `state-*-primary`），因此深色与浅色都由宿主决定；规则只匹配自己的 `dshcf-` 类名，不写死任何色值、不引入字体或图片、不发网络请求。样式表按标记幂等注入，插件卸载时移除。
-- **导航行图标**：`settings.section` 只投影 `id/order/label`，宿主按 id 在闭集里选图标，第三方区块一律回退齿轮。故图标走**有界 DOM 适配**（`nav-icon.ts`）：标记只写到「可见文案等于本区块 label」的那一行，配对 CSS 用 mask 自绘一个 transfer（相向双箭头）字形并隐藏该行官方 svg；定位失败时静默保留官方图标，卸载时移除全部标记。
+- **导航行图标**：走官方 `settings.section.icon` 槽（DSH 0.2.2 起；`nav-icon.ts` 的图标组件），注册 id 与 section 相同（`dsh-cockpit-forwards`），宿主以 `only: row.id` 把字形放进该行的 `navIcon` 座位；尺寸取宿主传入的 `size`，颜色继承 `currentColor` 并标记 `aria-hidden`。宿主没有该槽或贡献被释放时回退宿主默认图标，页面与区块照常可用。不使用导航行 marker、按文案定位、MutationObserver 或伪元素改写宿主 DOM。
   - 字形按宿主自身标准画：`Icon*OutlineMedium` 的 `viewBox="0 0 16 16"` / `fill="none"` / `stroke="currentColor"` / `stroke-width: 1.3`（`ICON_MEDIUM_STROKE`）/ `aria-hidden`，圆头圆角取自该图标集里的箭头形 `IconChevronsUpDownOutlineMedium`，几何落在 1.5–14.5 的方框内。
 - **不做什么**：不提供创建、删除或释放；不改动宿主导航结构与其它插件的行。
 
@@ -140,6 +151,7 @@ DSH 设置页里那个只读区块（design D9）。它存在的理由是：读�
 - 区块自带样式表 `settings-styles.ts`：颜色只映射官方 `--dsw-alias-*` 令牌（深色/浅色由宿主决定），规则只匹配自有 `dshcf-` 类名或本区块自己的导航标记；不引入字体、图片或网络请求。样式表按标记幂等注入，插件卸载时移除。
 - 设置导航行图标：`settings.section` 只投影 `id/order/label`，图标由宿主按 id 在闭集里选，第三方区块一律回退齿轮。故改为**有界 DOM 适配**（`nav-icon.ts`）：标记只写到「可见文案等于本区块 label」的那一行，配对 CSS 用 mask 自绘 transfer（相向双箭头）字形并隐藏该行官方 svg；字形按宿主 `Icon*OutlineMedium` 标准绘制（`viewBox="0 0 16 16"` / `stroke-width: 1.3` / 几何 1.5–14.5 / 圆头圆角取自 `IconChevronsUpDownOutlineMedium`）。定位失败时**静默保留官方齿轮**，不猜、不改宿主导航结构、不碰其它插件的行。
 - 回滚：改回 0.6.1 pin 即可，无须迁移（区块退化为原样式）。
+- 注：其中「导航行图标」的有界 DOM 适配已被 0.6.5 的官方 `settings.section.icon` 槽取代（DSH 0.2.2 起 `>svg` 不再命中被 `span` 包住的官方图标）。
 
 ## 0.6.1 发布说明（DSH 0.2.0 兼容）
 

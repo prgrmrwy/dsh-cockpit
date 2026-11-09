@@ -504,12 +504,12 @@ bridge SHALL 在设备 DSH 的设置页注册一个只读的“驾驶舱转发�
 - 每条状态 SHALL 同时以文字表达，MUST NOT 只靠颜色区分。
 - 区块 SHALL 自适应宿主的深色与浅色主题，颜色 SHALL 取自宿主主题令牌，MUST NOT 自带固定配色、字体或图片资源，MUST NOT 发起网络请求。
 
-**导航行图标（有界适配）**：
+**导航行图标（官方图标槽）**：
 
-- `settings.section` 槽不投影图标字段，因此区块 MAY 用有界 DOM 适配为自己的导航行画一个与转发语义相关的字形。
-- 该适配 MUST 只作用于「可见文案等于本区块当前 label」的那一行，MUST NOT 改动宿主结构或其它插件的行。
-- 定位失败时 MUST 静默保留宿主的官方图标，MUST NOT 让该行失去图标。
-- 适配 MUST 在卸载时移除自己写入的全部标记。
+- 区块 SHALL 通过官方 `settings.section.icon` 槽提供自己的导航行字形，注册 id SHALL 与 `settings.section` 的 section id（`dsh-cockpit-forwards`）完全一致：宿主只把与该行 id 相同的贡献放进该行。
+- 字形 SHALL 使用宿主传入的 `size`，SHALL 以 `currentColor` 取色并标记 `aria-hidden`；MUST NOT 自带固定配色、字体、图片或网络资源。
+- 图标适配 MUST NOT 使用导航行 marker、按可见文案定位、MutationObserver 或按钮伪元素改写宿主导航。
+- 槽缺席（宿主未声明该槽）或贡献被释放时 MUST 静默保留宿主默认图标，页面与区块仍可用；任何失败 MUST NOT 向页面抛错。
 
 #### Scenario: 设置页列出转发
 - **GIVEN** bridge 已握手，设备有主通道，以及一条 `ready` 的随持有者条目 3939
@@ -545,15 +545,15 @@ bridge SHALL 在设备 DSH 的设置页注册一个只读的“驾驶舱转发�
 - **WHEN** 检查该区块注入的样式与页面请求
 - **THEN** 颜色只来自宿主主题令牌、规则里没有字面色值，页面不请求任何外部字体、图片或网络资源
 
-#### Scenario: 导航行图标只作用于本区块那一行
-- **GIVEN** 设置导航中有本区块的行，以及另一个插件的行
-- **WHEN** 区块完成注册并完成一次图标适配
-- **THEN** 只有文案等于本区块 label 的那一行带上标记，另一行不被标记；卸载后标记全部移除
+#### Scenario: 导航行图标由官方图标槽提供
+- **GIVEN** 宿主提供 `settings.section.icon` 槽，设置导航中有本区块的行，以及另一个插件的行
+- **WHEN** 区块完成注册
+- **THEN** 本区块以与 section 相同的 id 注册转发字形，尺寸取宿主传入的 `size`、颜色继承 `currentColor`；另一插件的行不受影响，宿主导航结构不被改写
 
-#### Scenario: 导航行定位失败时保留官方图标
-- **GIVEN** 设置导航中没有文案等于本区块 label 的行
-- **WHEN** 区块完成一次图标适配
-- **THEN** 不抛出异常、不写入任何标记，该行保持宿主原本的图标
+#### Scenario: 图标槽缺席时保留官方图标
+- **GIVEN** 宿主没有 `settings.section.icon` 槽，或该贡献已被释放
+- **WHEN** 设置导航渲染本区块的行
+- **THEN** 该行显示宿主默认图标，注册不抛错，设置区块照常可读
 
 ### Requirement: 常驻条目可要求本地端口等于设备端口
 

@@ -1,88 +1,63 @@
-// @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import type { ReactElement } from 'react'
 
-/** The settings-nav glyph (design D9): the section's own row is the only thing
- * this may touch, and a row it cannot find must stay exactly as the host drew
- * it. jsdom is the environment because the whole risk lives in the selectors. */
-import { registerForwardsSettingsNavIcon } from '../src/client/nav-icon.js'
-import { NAV_MARKER } from '../src/client/settings-styles.js'
+/** The settings-nav glyph (design D9). DSH 0.2.2 seats it through the official
+ * `settings.section.icon` slot, so this asserts the component's own contract —
+ * the official icon set's 16-unit grid, `currentColor`, the host-supplied size
+ * and the transfer geometry. Whether the row keeps the host's default gear when
+ * the slot is absent is the host's fallback, asserted from the registration side
+ * in `forwards-settings.test.ts`. */
+import { ForwardsSettingsNavIcon } from '../src/client/nav-icon.js'
 
-const LABEL = '驾驶舱转发'
+/** The two opposing arrows the glyph is made of, in drawing order. */
+const TRANSFER_PATHS = [
+  'M1.8 5.6h11.4',
+  'm10.9 3.3 2.3 2.3-2.3 2.3',
+  'M14.2 10.4H2.8',
+  'm5.1 8.1-2.3 2.3 2.3 2.3',
+]
 
-function mountNav(): { ours: HTMLButtonElement; other: HTMLButtonElement; nested: HTMLButtonElement } {
-  const dialog = document.createElement('div')
-  dialog.setAttribute('role', 'dialog')
-  const nav = document.createElement('nav')
-  const ours = document.createElement('button')
-  ours.innerHTML = '<svg></svg><span>驾驶舱转发</span>'
-  const other = document.createElement('button')
-  other.innerHTML = '<svg></svg><span>记忆</span>'
-  // A row outside the settings nav must never be marked either.
-  const nested = document.createElement('button')
-  nested.innerHTML = '<span>驾驶舱转发</span>'
-  nav.append(ours, other)
-  dialog.appendChild(nav)
-  const outside = document.createElement('div')
-  outside.appendChild(nested)
-  document.body.append(dialog, outside)
-  return { ours, other, nested }
+function glyph(size?: number): ReactElement {
+  return size === undefined ? ForwardsSettingsNavIcon({}) : ForwardsSettingsNavIcon({ size })
 }
 
-afterEach(() => {
-  document.body.innerHTML = ''
-})
-
 describe('cockpit forwards settings nav glyph', () => {
-  it('marks only the row whose text is this section\'s label, and unmarks it on disposal', () => {
-    const { ours, other, nested } = mountNav()
-    const dispose = registerForwardsSettingsNavIcon(() => LABEL)
-
-    expect(ours.hasAttribute(NAV_MARKER)).toBe(true)
-    expect(other.hasAttribute(NAV_MARKER)).toBe(false)
-    expect(nested.hasAttribute(NAV_MARKER)).toBe(false)
-
-    // The official glyph is only hidden through the marker, so unmarking is
-    // what restores the host's own icon.
-    dispose()
-    expect(ours.hasAttribute(NAV_MARKER)).toBe(false)
+  it('draws on the host icon set\'s 16-unit grid and follows currentColor', () => {
+    const svg = glyph(16)
+    expect(svg.type).toBe('svg')
+    expect(svg.props).toMatchObject({
+      width: 16,
+      height: 16,
+      viewBox: '0 0 16 16',
+      fill: 'none',
+      stroke: 'currentColor',
+      strokeWidth: 1.3,
+      strokeLinecap: 'round',
+      strokeLinejoin: 'round',
+      // Decorative: the row's own label carries the name.
+      'aria-hidden': true,
+    })
   })
 
-  it('re-marks the row when the label or the row content changes', async () => {
-    const { ours } = mountNav()
-    const label = { current: '别的文案' }
-    const dispose = registerForwardsSettingsNavIcon(() => label.current)
-    expect(ours.hasAttribute(NAV_MARKER)).toBe(false)
-
-    label.current = LABEL
-    ours.innerHTML = '<svg></svg><span>驾驶舱转发</span>'
-    await vi.waitFor(() => { expect(ours.hasAttribute(NAV_MARKER)).toBe(true) })
-    dispose()
-    expect(ours.hasAttribute(NAV_MARKER)).toBe(false)
+  it('takes its size from the host seat', () => {
+    expect(glyph(20).props).toMatchObject({ width: 20, height: 20 })
+    expect(glyph(20).props.viewBox).toBe('0 0 16 16')
   })
 
-  it('stays silent when its row cannot be located', () => {
-    const dialog = document.createElement('div')
-    dialog.setAttribute('role', 'dialog')
-    const nav = document.createElement('nav')
-    const other = document.createElement('button')
-    other.innerHTML = '<svg></svg><span>记忆</span>'
-    nav.appendChild(other)
-    dialog.appendChild(nav)
-    document.body.appendChild(dialog)
-
-    const dispose = registerForwardsSettingsNavIcon(() => LABEL)
-    expect(other.hasAttribute(NAV_MARKER)).toBe(false)
-    expect(() => { dispose() }).not.toThrow()
+  it('defaults to the 16-unit grid when the seat supplies no size', () => {
+    expect(glyph().props).toMatchObject({ width: 16, height: 16 })
   })
 
-  it('does nothing at all without a document', () => {
-    const original = globalThis.document
-    // Non-browser environments (the bridge's node tests) must not crash.
-    Reflect.deleteProperty(globalThis, 'document')
-    try {
-      expect(() => { registerForwardsSettingsNavIcon(() => LABEL)() }).not.toThrow()
-    } finally {
-      Object.defineProperty(globalThis, 'document', { value: original, configurable: true, writable: true })
-    }
+  it('keeps the two-line, two-arrowhead transfer geometry', () => {
+    const paths = glyph(16).props.children as ReactElement[]
+    expect(paths).toHaveLength(TRANSFER_PATHS.length)
+    expect(paths.every(path => path.type === 'path')).toBe(true)
+    expect(paths.map(path => path.props.d)).toEqual(TRANSFER_PATHS)
+  })
+
+  it('renders without a document: the host owns the seat, this owns nothing else', () => {
+    // The old adaptation needed jsdom (it located and marked the host's row).
+    // The glyph is pure markup now, so it must survive the node test environment.
+    expect(() => glyph(16)).not.toThrow()
   })
 })

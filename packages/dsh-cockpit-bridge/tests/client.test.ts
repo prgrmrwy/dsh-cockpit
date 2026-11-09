@@ -374,7 +374,7 @@ describe('cockpit bridge client', () => {
       'x-dsh-cockpit-bridge-capability': CAPABILITY,
     })
     expect(JSON.parse(String(helloInit.body))).toEqual({
-      version: '0.6.4',
+      version: '0.6.5',
       protocolVersion: 2,
       current: 'already-open',
     })

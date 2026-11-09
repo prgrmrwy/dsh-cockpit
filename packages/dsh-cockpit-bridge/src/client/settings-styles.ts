@@ -21,39 +21,6 @@
 /** Marks the section root, so the stylesheet and the injected node stay ours. */
 export const SECTION_ATTRIBUTE = 'data-dsh-cockpit-forwards'
 
-/** Marks this section's own row in the settings navigation (see `nav-icon.ts`):
- * the slot projects no icon field, so the row is identified by its label and
- * then drawn by the sheet below. */
-export const NAV_MARKER = 'data-dsh-cockpit-forwards-nav'
-
-/**
- * A 16px transfer glyph: two opposing arrows, the conventional "traffic moves
- * between two ends" mark, drawn as a mask so it inherits `currentColor` like the
- * official glyphs.
- *
- * Style is calibrated against the host's own nav icons rather than invented:
- * `dsh-client-ui-settings-shell` renders every section row through
- * `navIcon(id)`, which returns an `Icon*OutlineMedium` primitive from
- * `@deepseek-ai/dsh-client-ui-primitives` — `viewBox="0 0 16 16"`, `fill="none"`,
- * `stroke="currentColor"`, `stroke-width: ICON_MEDIUM_STROKE` (= 1.3, not 1: the
- * set ships a 1px "Regular" weight too), `aria-hidden`, geometry inside the
- * 1.5–14.5 box. Round caps/joins come from `IconChevronsUpDownOutlineMedium`,
- * the set's own arrow-shaped icon, so the arrowheads match its chevrons.
- *
- * Two ports joined by an arrow was tried first and read as a dense blob at
- * 16px; one outline plus one stroke (the earlier port glyph) then read as a
- * different icon family from its neighbours. No emoji font, no image asset, no
- * network.
- */
-const TRANSFER_MASK = `url("data:image/svg+xml,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
-  + '<path d="M1.8 5.6h11.4"/>'
-  + '<path d="m10.9 3.3 2.3 2.3-2.3 2.3"/>'
-  + '<path d="M14.2 10.4H2.8"/>'
-  + '<path d="m5.1 8.1-2.3 2.3 2.3 2.3"/>'
-  + '</svg>',
-)}")`
-
 const STYLE_ID = 'dsh-cockpit-forwards-styles'
 
 /** The section's whole stylesheet. */
@@ -110,17 +77,6 @@ export const SECTION_CSS = `
 .dshcf-diag-label{flex:none;color:var(--dshcf-ink-3)}
 .dshcf-empty{margin:4px 0 0;max-width:62ch;color:var(--dshcf-ink-3)}
 .dshcf-hint{margin:0;border-top:1px solid var(--dshcf-rule);padding-top:8px;max-width:62ch;color:var(--dshcf-ink-3)}
-/* Nav row glyph. Both rules are scoped to the marker, which only ever lands on
-   the row whose visible text is this section's label, so the sheet cannot reach
-   another plugin's row. The replacement is an explicit inline-block rather than
-   an anonymous inline box: if the host row is not a flex container, an inline
-   ::before would ignore width/height and the row would lose its icon entirely
-   (the official svg is hidden by the rule above it). This way the worst case is
-   a slightly off alignment instead of no icon at all. */
-[${NAV_MARKER}]>svg{display:none}
-[${NAV_MARKER}]::before{content:'';display:inline-block;vertical-align:-3px;flex:none;width:16px;height:16px;
-  background-color:currentColor;
-  -webkit-mask:${TRANSFER_MASK} center/16px 16px no-repeat;mask:${TRANSFER_MASK} center/16px 16px no-repeat}
 `
 
 /** The smallest surface {@link injectSectionStyles} needs, so the injector can

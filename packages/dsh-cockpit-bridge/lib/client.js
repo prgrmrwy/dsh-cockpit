@@ -280,6 +280,55 @@ window.__ModuleLoader__.load({
 			};
 		}
 		//#endregion
+		//#region src/client/nav-icon.ts
+		/**
+		* The transfer glyph for this section's own row in the DSH settings navigation.
+		*
+		* DSH 0.2.2 renders every settings-nav row as
+		* `<button><span class="navIcon"><svg/></span><span class="navLabel">…</span></button>`
+		* and offers the official `settings.section.icon` slot for that seat: the shell
+		* calls `renderSlot('settings.section.icon', { size, active }, { only: row.id,
+		* fallback: navIcon(row.id) })`. Registering this component under the same id as
+		* the section therefore replaces the fallback gear **without touching the host's
+		* DOM**. On a host without that slot the declaration never appears, the
+		* `slots.inject` callback simply does not run, and the host keeps its own icon —
+		* the page and the section stay usable either way.
+		*
+		* Style is calibrated against the host's own nav icons rather than invented:
+		* `dsh-client-ui-settings-shell` renders every section row through `navIcon(id)`,
+		* which returns an `Icon*OutlineMedium` primitive from
+		* `@deepseek-ai/dsh-client-ui-primitives` — `viewBox="0 0 16 16"`,
+		* `fill="none"`, `stroke="currentColor"`, `stroke-width: ICON_MEDIUM_STROKE`
+		* (= 1.3, not 1: the set ships a 1px "Regular" weight too), `aria-hidden`,
+		* geometry inside the 1.5–14.5 box. Round caps/joins come from
+		* `IconChevronsUpDownOutlineMedium`, the set's own arrow-shaped icon, so the
+		* arrowheads match its chevrons.
+		*
+		* Two ports joined by an arrow was tried first and read as a dense blob at 16px;
+		* one outline plus one stroke (the earlier port glyph) then read as a different
+		* icon family from its neighbours. No emoji font, no image asset, no network.
+		*
+		* @module dsh-cockpit-bridge/client/nav-icon
+		*/
+		/**
+		* Two opposing arrows: the conventional "traffic moves between two ends" mark.
+		* It inherits the row's `currentColor` (including the active-row colour) and is
+		* decorative — the row's own label carries the name.
+		*/
+		function ForwardsSettingsNavIcon({ size = 16 }) {
+			return (0, react.createElement)("svg", {
+				width: size,
+				height: size,
+				viewBox: "0 0 16 16",
+				fill: "none",
+				stroke: "currentColor",
+				strokeWidth: 1.3,
+				strokeLinecap: "round",
+				strokeLinejoin: "round",
+				"aria-hidden": true
+			}, (0, react.createElement)("path", { d: "M1.8 5.6h11.4" }), (0, react.createElement)("path", { d: "m10.9 3.3 2.3 2.3-2.3 2.3" }), (0, react.createElement)("path", { d: "M14.2 10.4H2.8" }), (0, react.createElement)("path", { d: "m5.1 8.1-2.3 2.3 2.3 2.3" }));
+		}
+		//#endregion
 		//#region src/client/settings-styles.ts
 		/**
 		* Styles for the read-only “驾驶舱转发” settings section (design D9).
@@ -302,30 +351,6 @@ window.__ModuleLoader__.load({
 		*/
 		/** Marks the section root, so the stylesheet and the injected node stay ours. */
 		const SECTION_ATTRIBUTE = "data-dsh-cockpit-forwards";
-		/** Marks this section's own row in the settings navigation (see `nav-icon.ts`):
-		* the slot projects no icon field, so the row is identified by its label and
-		* then drawn by the sheet below. */
-		const NAV_MARKER = "data-dsh-cockpit-forwards-nav";
-		/**
-		* A 16px transfer glyph: two opposing arrows, the conventional "traffic moves
-		* between two ends" mark, drawn as a mask so it inherits `currentColor` like the
-		* official glyphs.
-		*
-		* Style is calibrated against the host's own nav icons rather than invented:
-		* `dsh-client-ui-settings-shell` renders every section row through
-		* `navIcon(id)`, which returns an `Icon*OutlineMedium` primitive from
-		* `@deepseek-ai/dsh-client-ui-primitives` — `viewBox="0 0 16 16"`, `fill="none"`,
-		* `stroke="currentColor"`, `stroke-width: ICON_MEDIUM_STROKE` (= 1.3, not 1: the
-		* set ships a 1px "Regular" weight too), `aria-hidden`, geometry inside the
-		* 1.5–14.5 box. Round caps/joins come from `IconChevronsUpDownOutlineMedium`,
-		* the set's own arrow-shaped icon, so the arrowheads match its chevrons.
-		*
-		* Two ports joined by an arrow was tried first and read as a dense blob at
-		* 16px; one outline plus one stroke (the earlier port glyph) then read as a
-		* different icon family from its neighbours. No emoji font, no image asset, no
-		* network.
-		*/
-		const TRANSFER_MASK = `url("data:image/svg+xml,${encodeURIComponent("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"#000\" stroke-width=\"1.3\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M1.8 5.6h11.4\"/><path d=\"m10.9 3.3 2.3 2.3-2.3 2.3\"/><path d=\"M14.2 10.4H2.8\"/><path d=\"m5.1 8.1-2.3 2.3 2.3 2.3\"/></svg>")}")`;
 		const STYLE_ID = "dsh-cockpit-forwards-styles";
 		/** The section's whole stylesheet. */
 		const SECTION_CSS = `
@@ -381,17 +406,6 @@ window.__ModuleLoader__.load({
 .dshcf-diag-label{flex:none;color:var(--dshcf-ink-3)}
 .dshcf-empty{margin:4px 0 0;max-width:62ch;color:var(--dshcf-ink-3)}
 .dshcf-hint{margin:0;border-top:1px solid var(--dshcf-rule);padding-top:8px;max-width:62ch;color:var(--dshcf-ink-3)}
-/* Nav row glyph. Both rules are scoped to the marker, which only ever lands on
-   the row whose visible text is this section's label, so the sheet cannot reach
-   another plugin's row. The replacement is an explicit inline-block rather than
-   an anonymous inline box: if the host row is not a flex container, an inline
-   ::before would ignore width/height and the row would lose its icon entirely
-   (the official svg is hidden by the rule above it). This way the worst case is
-   a slightly off alignment instead of no icon at all. */
-[${NAV_MARKER}]>svg{display:none}
-[${NAV_MARKER}]::before{content:'';display:inline-block;vertical-align:-3px;flex:none;width:16px;height:16px;
-  background-color:currentColor;
-  -webkit-mask:${TRANSFER_MASK} center/16px 16px no-repeat;mask:${TRANSFER_MASK} center/16px 16px no-repeat}
 `;
 		/**
 		* Inject the section stylesheet, once per page.
@@ -413,54 +427,6 @@ window.__ModuleLoader__.load({
 				if (removed) return;
 				removed = true;
 				style.remove();
-			};
-		}
-		//#endregion
-		//#region src/client/nav-icon.ts
-		/**
-		* Paint the port-to-port glyph on this section's own row in the DSH settings
-		* navigation.
-		*
-		* `settings.section` projects only `id`, `order` and `label`, and the settings
-		* shell picks the row icon from a closed list of built-in ids — so a third-party
-		* section renders the fallback gear. Until that contract grows an icon field, a
-		* plugin can only identify its **own** row after the dialog mounts, which is the
-		* same bounded adaptation ohmydsh's `dsh-memex` ships for its book glyph.
-		*
-		* Scope discipline: the marker is written only onto the button whose visible
-		* text equals our current label, the paired CSS selects nothing but that marker,
-		* and every marker is removed on disposal. Failure to locate the row is silent —
-		* the official gear stays and the page is unaffected.
-		*
-		* @module dsh-cockpit-bridge/client/nav-icon
-		*/
-		/**
-		* Keep the marker on the settings-nav button showing this section's label.
-		* @param label - resolver for the section's current display label.
-		* @returns disposer that stops observing and removes every owned marker.
-		*/
-		function registerForwardsSettingsNavIcon(label) {
-			const doc = globalThis.document;
-			if (doc === void 0) return () => {};
-			let disposed = false;
-			const sync = () => {
-				if (disposed) return;
-				const current = label().trim();
-				if (current.length === 0) return;
-				for (const button of doc.querySelectorAll("[role=\"dialog\"] nav button")) if (button.textContent?.trim() === current) button.setAttribute(NAV_MARKER, "");
-				else button.removeAttribute(NAV_MARKER);
-			};
-			sync();
-			const observer = new MutationObserver(sync);
-			observer.observe(doc.body, {
-				childList: true,
-				subtree: true,
-				characterData: true
-			});
-			return () => {
-				disposed = true;
-				observer.disconnect();
-				for (const marked of doc.querySelectorAll(`[${NAV_MARKER}]`)) marked.removeAttribute(NAV_MARKER);
 			};
 		}
 		//#endregion
@@ -627,7 +593,10 @@ window.__ModuleLoader__.load({
 		//#region src/client/index.ts
 		const inject = ["sessions", "uiSession"];
 		const CAPABILITY_HEADER = "x-dsh-cockpit-bridge-capability";
-		const PLUGIN_VERSION = "0.6.4";
+		/** Registered on BOTH `settings.section` and `settings.section.icon`: the shell
+		* seats the glyph only on the row whose id matches the section (`only: row.id`). */
+		const FORWARDS_SECTION_ID = "dsh-cockpit-forwards";
+		const PLUGIN_VERSION = "0.6.5";
 		const PROTOCOL_VERSION = 2;
 		/** Official per-session status snapshot (running / completionUnread). */
 		const STATUS_PROTOCOL_VERSION = 1;
@@ -810,10 +779,9 @@ window.__ModuleLoader__.load({
 						removeStyles?.();
 					};
 				}, "cockpit-bridge: forwards section styles");
-				child.effect(() => registerForwardsSettingsNavIcon(() => SECTION_LABEL), "cockpit-bridge: forwards settings nav glyph");
 				slots.inject("settings.section", () => slots.register({
 					name: "settings.section",
-					id: "dsh-cockpit-forwards",
+					id: FORWARDS_SECTION_ID,
 					order: 300,
 					label: () => SECTION_LABEL,
 					inject: () => ({
@@ -821,6 +789,10 @@ window.__ModuleLoader__.load({
 						subscribe: settings.subscribe
 					})
 				}, ForwardsSettingsSection));
+				slots.inject("settings.section.icon", () => slots.register({
+					name: "settings.section.icon",
+					id: FORWARDS_SECTION_ID
+				}, ForwardsSettingsNavIcon));
 			});
 			ctx.effect(() => {
 				forwards.startInstance();
